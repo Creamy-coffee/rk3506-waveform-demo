@@ -92,6 +92,17 @@ stop() {
     fi
     # watchdog 死了，子进程可能还活着，单独清一遍
     killall -9 waveform_demo 2>/dev/null
+
+    # ⚠️ 还要清掉**历史遗留的 watchdog**。
+    #    多次 start（中间没 stop）会攒下好几个 watchdog —— pidfile 只记最后一个，
+    #    上面那句 kill 只干掉一个，剩下的会在 3 秒后把实例拉起来。
+    #    两个实例同时抢 /dev/ttyS1，各拿一半字节，谁都拼不出 16428 字节的完整帧，
+    #    界面就变成一条零线（看起来像"波形没了"）。
+    #    这里按命令行匹配清，跳过自己（$$ 就是本次调用 stop 的那个 shell）。
+    for _p in $(ps | grep S90waveform_demo | grep -v grep | awk '{print $1}'); do
+        [ "$_p" = "$$" ] && continue
+        kill -9 "$_p" 2>/dev/null
+    done
     echo "已停止 waveform_demo"
     return 0
 }
