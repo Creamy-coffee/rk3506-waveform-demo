@@ -735,3 +735,60 @@ WAVE_TDBG=1 /usr/bin/waveform_demo --source uart --view scope --baud 921600 &
    我们的程序本身就是 root 跑的，所以没问题。
 7. **锁相 / AI 两页仍是演示曲线**：只有示波器、频谱和系统页接的是真实帧。
    这两页的读数不构成测量证据（面板里也写了这句）。
+
+---
+
+## 12. 备份到 GitHub
+
+私有仓库：`https://github.com/Creamy-coffee/rk3506-waveform-demo`（`main` 分支）
+
+### 12.1 为什么远端是 `ssh.github.com:443` 而不是 `github.com`
+
+本机到 GitHub 的 **HTTPS 443 被黑洞**：`github.com` 解析到 `20.205.243.166`，
+TCP 直接超时（`Failed to connect to github.com:443`）。但同一台机器上：
+
+| 目标 | 结果 |
+|---|---|
+| `https://api.github.com` | ✅ 通（REST API 建仓库、加 key 都靠它） |
+| `https://github.com` | ❌ 443 超时 |
+| `ssh.github.com:443` | ✅ 通 |
+
+所以远端配成 SSH over 443，`git push` 走的是这台机器唯一能用的那条路。
+
+### 12.2 已经配好的东西（本机一次性）
+
+```bash
+# 远端
+git remote -v
+# origin  git@ssh.github.com:Creamy-coffee/rk3506-waveform-demo.git
+
+# SSH 参数固化在本地 .git/config（提交时不带出去）
+git config core.sshCommand \
+  "ssh -i ~/.ssh/wb_gh_ed25519 -p 443 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+```
+
+密钥是 ed25519，公钥已作为 **deploy key（可写）** 挂在仓库
+`Settings → Deploy keys`（标题 `wb-backup-YYYYMMDD`）。
+换机器重新备份时，把新机器的公钥再挂一个就行，不需要 token。
+
+### 12.3 以后怎么更新备份
+
+```bash
+cd waveform_demo
+git add -A
+git commit -m "改了什么"
+git push            # 走 ssh.github.com:443，直接过
+```
+
+板子上编译产物的 `out/` 已被 `.gitignore` 排除（100MB+ 的截图和二进制不进仓库）。
+
+### 12.4 想改成 HTTPS 推送的注意事项
+
+如果换了网络环境（比如加速器开着），可以把远端换成 HTTPS：
+
+```bash
+git remote set-url origin https://github.com/Creamy-coffee/rk3506-waveform-demo.git
+```
+
+但**不要用 `git config credential.helper store`**——那会把明文令牌写进
+`~/.git-credentials`。本工程一直是用一次性的 `http.extraheader` 传令牌，不落盘。
