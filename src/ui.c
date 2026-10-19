@@ -23,6 +23,7 @@
 #include "wave_source.h"
 #include "v32cap3.h"       /* SYSTEM 页要读 UART 的帧数/CRC 错误统计 */
 #include "fft.h"
+#include "bl_interp.h"
 #include "drm_disp.h"
 
 #include <math.h>
@@ -461,17 +462,38 @@ static float    s_real_phase_deg;           /* CH1 相对 CH0 的相位差 */
  * 用户明确要求断开之后归零，不能保持现状。
  */
 #define REAL_STALE_MS   1000u
+
+/*
+ * 断链超时可覆盖（WAVE_STALE_MS 环境变量），只为调试。
+ *
+ * 平时必须是 1 秒：串口 5.6 帧/秒，1 秒没新帧就是真断了，界面要归零。
+ * 但 `--source file:` 是把整个文件一次性喂进去的，只产出**一帧**，
+ * 过 1 秒就判定断链、屏幕变零线 —— 拿它验证显示/缩放/重建根本来不及操作。
+ * 调试时 WAVE_STALE_MS=60000 就能让那一帧"活"一分钟。
+ */
+static int dbg_on(void)
+{
+    static int v = -1;
+    if(v < 0) v = getenv("WAVE_TDBG") ? 1 : 0;
+    return v;
+}
+
+static uint32_t stale_ms(void)
+{
+    static int32_t v = -1;
+    if(v < 0) {
+        const char *e = getenv("WAVE_STALE_MS");
+        v = e ? (int32_t)atoi(e) : (int32_t)REAL_STALE_MS;
+        if(v < 100) v = 100;
+    }
+    return (uint32_t)v;
+}
 static uint32_t s_real_t_last;          /* 最近一次收到新帧的时刻 */
 
 /* 整帧原始数据，缩放窗口要在这上面取，不能在抽取后的 1024 点上取 */
 static float    s_full0[WAVE_MAX_FRAME];
 static float    s_full1[WAVE_MAX_FRAME];
 static int      s_full_n;
-
-/* AI 页「降噪后」的整帧缓存。长度与 s_full0 一致，这样 map_window()
- * 用的 s_zoom_span / s_zoom_start 对两条曲线是同一套下标，上下两图
- * 时间轴严格对齐 —— 否则放大后两张图会错位，对比就失去意义。 */
-static float    s_den[WAVE_MAX_FRAME];
 
 /*
  * 缩放窗口（两指捏放）。
@@ -612,6 +634,8 @@ static void auto_fit_apply(int fn)
 
     s_gain = 1.0f;
     S.auto_fit = false;
+    if(dbg_on()) fprintf(stderr, "[auto] span=%d start=%d peak=%.0f Hz\n",
+                         s_zoom_span, s_zoom_start, (double)s_real_peak_hz);
     update_axis_label();
 }
 
@@ -643,7 +667,7 @@ static void real_update(void)
     if(s_real_n >= 2 && s_real_fid == st->last_frame_id) {
         /* 但没有新帧超过 1 秒，就是链路断了：保持 s_real_valid = false，
          * 让上层画零线，而不是把最后一帧冻在屏幕上。 */
-        if((uint32_t)(lv_tick_get() - s_real_t_last) > REAL_STALE_MS) return;
+        if((uint32_t)(lv_tick_get() - s_real_t_last) > stale_ms()) return;
         s_real_valid = true;
         /* 按了 AUTO 但这一帧没变（比如刚按完就暂停）也要把窗口算出来，
          * 否则标志一直挂着，等下一帧才生效，看着像 AUTO 没反应。 */
@@ -731,7 +755,20 @@ static void real_update(void)
  * 纵向用的是**整帧**的 `s_real_lo/s_real_sc`，不随缩放变 ——
  * 否则 Vpp 读数会跟着缩放跳，看起来像信号自己在变。
  */
-static void map_window(const float *src, int src_n, float *y01, int n)
+/*
+ * bl = true 时用带限（sinc 多相 FIR）重建，false 时用线性插值。
+ *
+ * 差别只在「窗口比输出点少」的分支（放大来看细节时）：
+ *   线性插值  —— 把两点用直线连起来。10 MHz 方波在 65 MSPS 下只有 6.5 点/周期，
+ *                连出来是斜坡；30 MHz 只有 2.17 点/周期，连出来几乎是乱码。
+ *   带限重建  —— 30 MHz < 32.5 MHz 奈奎斯特，理论可完全恢复，实测重建误差
+ *                0.025 counts（幅度 1000）。方波会带一点吉布斯振铃，那是带限的
+ *                必然结果，不是 bug。
+ *
+ * 缩得很小（span >= n*2）时还是走 min/max 分桶，因为那时一屏几百个周期，
+ * 逐点重建既慢又没有意义（每个像素里本来就有好几个完整周期）。
+ */
+static void map_window(const float *src, int src_n, float *y01, int n, bool bl)
 {
     if(src_n < 2 || n < 2) return;
 
@@ -760,6 +797,10 @@ static void map_window(const float *src, int src_n, float *y01, int n)
             y01[2 * b]     = src[imin < imax ? imin : imax];
             y01[2 * b + 1] = src[imin < imax ? imax : imin];
         }
+    } else if(bl) {
+        /* 输出点恰好等于窗口样点数时 dt=1，重建结果就是原始样点本身 */
+        bl_resample(src, src_n, y01, n,
+                    (float)start, (float)(span - 1) / (float)(n - 1));
     } else {
         for(int i = 0; i < n; i++) {
             const float t = (float)i * (float)(span - 1) / (float)(n - 1);
@@ -784,7 +825,7 @@ static void fetch_scope(int ch, float *y01, int n)
 {
     if(S.use_real) {
         if(s_real_valid && s_full_n >= 2) {
-            map_window(ch ? s_full1 : s_full0, s_full_n, y01, n);
+            map_window(ch ? s_full1 : s_full0, s_full_n, y01, n, true);
             return;
         }
         /* 接了串口但没有数据 / 链路已断：平直零线，不再退回演示曲线 */
@@ -1133,7 +1174,7 @@ static void build_ai(lv_obj_t *pg)
     lv_obj_set_width(s_plot_raw, LV_PCT(100));
     lv_obj_set_height(s_plot_raw, half);
     lv_obj_t *tr1 = mk_title_row(s_plot_raw, V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
-    lv_obj_t *t1 = mk_label(tr1, 0, 0, "原始输入 · CH1", V32_FONT_SMALL, V32_C_PLOT_TITLE);
+    lv_obj_t *t1 = mk_label(tr1, 0, 0, "原始采样点 · CH1", V32_FONT_SMALL, V32_C_PLOT_TITLE);
     lv_obj_set_style_text_letter_space(t1, 1, LV_PART_MAIN);
     mk_label(tr1, 0, 0, "●", V32_FONT_SMALL, V32_C_CH1);
 
@@ -1141,7 +1182,7 @@ static void build_ai(lv_obj_t *pg)
     lv_obj_set_width(s_plot_den, LV_PCT(100));
     lv_obj_set_height(s_plot_den, MAIN_H - V32_PAGE_GAP - half);
     lv_obj_t *tr2 = mk_title_row(s_plot_den, V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
-    lv_obj_t *t2 = mk_label(tr2, 0, 0, "降噪输出 · 中值 5 点", V32_FONT_SMALL, V32_C_PLOT_TITLE);
+    lv_obj_t *t2 = mk_label(tr2, 0, 0, "重建输出 · 带限 FIR", V32_FONT_SMALL, V32_C_PLOT_TITLE);
     lv_obj_set_style_text_letter_space(t2, 1, LV_PART_MAIN);
     mk_label(tr2, 0, 0, "●", V32_FONT_SMALL, V32_C_GREEN);
 
@@ -1152,15 +1193,15 @@ static void build_ai(lv_obj_t *pg)
     lv_obj_t *p1 = mk_panel(aside, 0, 0, 0, 0);
     lv_obj_set_width(p1, LV_PCT(100));
     lv_obj_set_flex_grow(p1, 1);
-    mk_title(p1, 0, 0, "降噪处理");
-    mk_metric(p1, TITLE_H + METRIC_H * 0, "算法",     "中值 5 点", V32_C_METRIC_VALUE);
+    mk_title(p1, 0, 0, "带限重建");
+    mk_metric(p1, TITLE_H + METRIC_H * 0, "算法",     "多相 FIR ×20", V32_C_METRIC_VALUE);
     s_lbl_ai_stat = mk_metric(p1, TITLE_H + METRIC_H * 1, "状态", "已启用",   V32_C_GREEN);
-    mk_metric(p1, TITLE_H + METRIC_H * 2, "窗口",  "77 ns*",    V32_C_METRIC_VALUE);
-    mk_metric(p1, TITLE_H + METRIC_H * 3, "延迟",   "0 帧",      V32_C_METRIC_VALUE);
+    mk_metric(p1, TITLE_H + METRIC_H * 2, "抽头",  "129/相*",    V32_C_METRIC_VALUE);
+    mk_metric(p1, TITLE_H + METRIC_H * 3, "群延迟", "64 点",      V32_C_METRIC_VALUE);
     mk_metric(p1, TITLE_H + METRIC_H * 4, "SNR 增益",  "—",         V32_C_METRIC_VALUE);
     mk_note(p1, TITLE_H + METRIC_H * 5 + 6, ASIDE_W - V32_PANEL_PAD * 2,
-            "*5 点 @65 MSPS。两图都是串口真实帧。中值会把过渡样点当离群点压掉，"
-            "边沿反而变陡；边沿宽度不能以本页为准。");
+            "*2561 抽头 / 20 相，截止在原奈奎斯特。重建不增加采样率、不降噪；"
+            "超奈奎斯特的成分救不回来。");
 }
 
 /* =========================================================
@@ -1480,7 +1521,7 @@ static void cb_ai(lv_event_t *e)
 {
     LV_UNUSED(e);
     S.ai = !S.ai;
-    chip_set_text(s_chip_ai, S.ai ? "降噪 开" : "降噪 关");
+    chip_set_text(s_chip_ai, S.ai ? "重建 开" : "重建 关");
     chip_selected(s_chip_ai, S.ai);
     lv_label_set_text(s_lbl_ai_stat, S.ai ? "已启用" : "旁路");
     ui_tick();
@@ -1520,6 +1561,7 @@ static void cb_auto(lv_event_t *e)
 {
     LV_UNUSED(e);
 
+    if(dbg_on()) fprintf(stderr, "[auto] pressed use_real=%d full_n=%d\n", (int)S.use_real, s_full_n);
     if(S.use_real) {
         /* 真实链路：只置标志。窗口由 real_update() 末尾的 auto_fit_apply()
          * 用**同一帧**刚算好的 FFT 峰值频率去框 10 个完整周期，
@@ -1573,7 +1615,7 @@ static void cb_reset(lv_event_t *e)
     }
     chip_set_text(s_chip_ch1, "CH1 开"); chip_selected(s_chip_ch1, true);
     chip_set_text(s_chip_ch2, "CH2 开"); chip_selected(s_chip_ch2, true);
-    chip_set_text(s_chip_ai,  "降噪 开"); chip_selected(s_chip_ai, true);
+    chip_set_text(s_chip_ai,  "重建 开"); chip_selected(s_chip_ai, true);
     chip_set_text(s_chip_run, "⏸ 暂停");
     set_run_status(true);
     lv_label_set_text(s_lbl_ai_stat, "已启用");
@@ -1662,7 +1704,7 @@ static void build_controls(lv_obj_t *root)
     s_ctrl_grp[UI_PAGE_LOCK] = gl;
 
     lv_obj_t *ga = mk(cp, 0, 0, LV_SIZE_CONTENT, V32_CHIP_H);
-    s_chip_ai = mk_chip(ga, "降噪 开", cb_ai);
+    s_chip_ai = mk_chip(ga, "重建 开", cb_ai);
     chip_selected(s_chip_ai, true);
     s_ctrl_grp[UI_PAGE_AI] = ga;
 
@@ -1712,7 +1754,7 @@ static void nav_selected(lv_obj_t *b, bool on)
 static void build_nav(lv_obj_t *root)
 {
     static const char *TXT[UI_PAGE_COUNT] = {
-        "⌁ 示波器", "▥ 频谱", "◎ 锁相", "✧ 降噪", "⚙ 系统"
+        "⌁ 示波器", "▥ 频谱", "◎ 锁相", "✧ 重建", "⚙ 系统"
     };
 
     lv_obj_t *nav = mk(root, 0, NAV_Y0, V32_SHELL_W, V32_ROW_NAV);
@@ -1855,66 +1897,33 @@ static void tick_lock(void)
 }
 
 /*
- * AI 页的「降噪」：5 点中值滤波。
+ * 「重建」页：原始采样点 vs 带限重建，同一段数据、同一个时间窗，上下对齐。
  *
- * 为什么不是滑动平均：
- *   V32CAP3 是 65 MSPS，10 MHz 信号每周期只有 6.5 个点。
- *   3 点滑动平均在 10 MHz 处 |H| = sin(3πf/fs)/(3·sin(πf/fs)) ≈ 0.71，
- *   也就是 -3 dB —— 屏幕上会看到「降噪后幅度明显变小」，
- *   那是滤波器把信号一起削了，不是降噪效果，属于骗人。
- *   中值滤波是幅度保持的（直流增益恒为 1），只压掉窄于窗口宽度的毛刺，
- *   方波的台阶电平原样保留，所以「降噪前/后」的纵向刻度可以互相比。
+ * 这一页原来叫「AI 降噪」，两条曲线都是 demo_ai() 合成的。后来接了真实数据，
+ * 下图改成 5 点中值滤波 —— 上板实测发现中值在 65 MSPS 下是**有害**的：
+ * 10 MHz 每周期只有 6.5 点，跳变的 1~2 个过渡样点在 5 点窗口里是少数派，
+ * 被当成离群点压掉了，结果是边沿被画得**比真实更陡**（假象）。
+ * 30 MHz 时每周期只有 2.17 点，中值等于把波形直接毁掉。
  *
- * 代价（**上板实测后修正过，和最初想的不一样**）：
- *   原以为中值只是「钝化边沿」，实际看下来正好相反 —— 10 MHz 方波在 65 MSPS
- *   下每周期只有 6.5 点，一次跳变只占 1~2 个样点，这 1~2 个中间值在 5 点窗口里
- *   是少数派，被中值当成离群点直接压掉了，结果边沿**变陡**、台阶变平。
- *   看着更「干净」，但那是假的：真实上升时间被抹掉了。
- *   所以这一页只能用来判断「毛刺有没有被压掉」，**边沿宽度不能以本页为准**。
+ * 现在换成带限重建（bl_interp.c）—— 这才是「65 MSPS 采 30 MHz」的正解：
+ * 30 MHz < 32.5 MHz 奈奎斯特，理论可完全恢复，实测重建误差 0.025 counts。
+ * 它不降噪、不提高采样率，只是把「采样点」还原成「连续波形」再按像素重取样。
  */
-static void denoise_median5(const float *x, int n, float *y)
-{
-    for(int i = 0; i < n; i++) {
-        float w[5];
-        for(int k = -2; k <= 2; k++) {
-            int j = i + k;
-            if(j < 0)  j = 0;
-            if(j >= n) j = n - 1;
-            w[k + 2] = x[j];
-        }
-        /* 只有 5 个元素，插入排序比通用 qsort 快且不用栈 */
-        for(int a = 1; a < 5; a++) {
-            const float t = w[a];
-            int b = a - 1;
-            while(b >= 0 && w[b] > t) { w[b + 1] = w[b]; b--; }
-            w[b + 1] = t;
-        }
-        y[i] = w[2];
-    }
-}
-
 static void tick_ai(void)
 {
     static float y[PLOT_MAX_PTS];
     const int n = PLOT_MAX_PTS;
 
-    /* 这一页原来只有 demo_ai()，跟串口一点关系都没有：顶栏写着「串口模式」，
-     * 画的却是合成正弦。现在先推进真实链路，再按 S.use_real 分两条路。 */
     real_update();
 
     if(S.use_real) {
         if(s_real_valid && s_full_n >= 2) {
-            /* 上：原始 CH1，与示波器页同一套缩放窗口 */
-            map_window(s_full0, s_full_n, y, n);
+            /* 上：原始点直接连直线 —— 故意不加重建，让你看清「只有 2 个点」长什么样 */
+            map_window(s_full0, s_full_n, y, n, false);
             plot_set_trace(s_plot_raw, 0, y, n, V32_C_CH1, 2);
 
-            /* 下：中值滤波后的同一段数据；关掉开关就是旁路（与上图重合） */
-            if(S.ai) {
-                denoise_median5(s_full0, s_full_n, s_den);
-                map_window(s_den, s_full_n, y, n);
-            } else {
-                map_window(s_full0, s_full_n, y, n);
-            }
+            /* 下：同一段数据做带限重建；关掉开关就是原始（与上图重合） */
+            map_window(s_full0, s_full_n, y, n, S.ai);
             plot_set_trace(s_plot_den, 0, y, n, V32_C_AI_OUT, 2);
         } else {
             /* 接了串口但没帧 / 链路断了：两条零线，绝不退回演示曲线 */

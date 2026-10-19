@@ -43,6 +43,7 @@ add_executable(waveform_demo
     src/wave_source_v32.c
     src/v32cap3.c
     src/fft.c
+    src/bl_interp.c
     src/fonts/lv_font_v32_12.c
     src/fonts/lv_font_v32_16.c
     src/fonts/lv_font_v32_18.c
