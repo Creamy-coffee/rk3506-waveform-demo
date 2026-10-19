@@ -126,6 +126,7 @@ static lv_obj_t *s_lbl_clock, *s_lbl_run_status;
 
 static lv_obj_t *s_chip_ch1, *s_chip_ch2, *s_chip_ai, *s_chip_run;
 static lv_obj_t *s_dd_freq;
+static lv_obj_t *s_lbl_den_title;       /* 重建页下方图标题，随能否重建变化 */
 static lv_obj_t *s_lbl_wave;           /* 重建页右上角：波形类型 */
 static lv_obj_t *s_dd_tb;              /* 时基下拉框，真实模式下要跟着窗口同步 */
 
@@ -682,6 +683,20 @@ static float mag_near_bin(int b, int span)
     return m;
 }
 
+/*
+ * 能不能重建：只有「认得出是什么波形」才行。
+ *
+ * 这是用户定的原则：不清楚是什么就画一条光滑曲线，等于造假。
+ * 所以 未知 / 噪声 / 直流 一律不重建，直接显示原始采样点。
+ * 方波/三角波/锯齿波虽然带限重建出来会有振铃，但那是可解释的（谐波被截断），
+ * 而且它们的谐波都在带内看得到，属于"已知"，可以重建。
+ */
+static int wf_can_reconstruct(void)
+{
+    return s_wf_kind == WF_SINE || s_wf_kind == WF_SQUARE
+        || s_wf_kind == WF_TRIANGLE || s_wf_kind == WF_SAW;
+}
+
 static void classify_wave(void)
 {
     s_wf_alias = 0;
@@ -708,9 +723,22 @@ static void classify_wave(void)
     const float r3 = (b3 < s_real_bins - 1) ? mag_near_bin(b3, 2) / a1 : -1.0f;
 
     if(r2 < 0.0f || r3 < 0.0f) {
-        /* 谐波出界，只能靠偶次谐波做一点区分，其余按正弦兜底 */
+        /*
+         * 谐波已经折叠回带内，谐波比例这条路走不通了。
+         * 这时**不猜**，改用「谱干不干净」这个可以直接观察的证据：
+         *   除基波附近外没有明显谱线 ⇒ 就是单音（正弦），可以重建
+         *   还有别的谱线          ⇒ 源里仍有超奈奎斯特的成分（方波/锯齿的
+         *                            谐波折回来了），判不出来，归「未知」
+         * 未知就不重建 —— 在不知道是什么的情况下画一条漂亮的曲线，那是造假。
+         */
         s_wf_alias = 1;
-        s_wf_kind  = (r2 > 0.25f) ? WF_SAW : WF_SINE;
+        const float a_ref = mag_near_bin(b1, 6);
+        float spur = 0.0f;
+        for(int i = 4; i < s_real_bins; i++) {          /* 跳过 DC 附近的泄漏 */
+            if(i >= b1 - 7 && i <= b1 + 7) continue;      /* 跳过基波主瓣 */
+            if(s_real_mag[i] > spur) spur = s_real_mag[i];
+        }
+        s_wf_kind = (spur < a_ref * 0.0316f) ? WF_SINE : WF_UNKNOWN;  /* -30 dB */
         return;
     }
 
@@ -1279,6 +1307,7 @@ static void build_ai(lv_obj_t *pg)
     lv_obj_set_height(s_plot_den, MAIN_H - V32_PAGE_GAP - half);
     lv_obj_t *tr2 = mk_title_row(s_plot_den, V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
     lv_obj_t *t2 = mk_label(tr2, 0, 0, "重建输出 · 带限 FIR", V32_FONT_SMALL, V32_C_PLOT_TITLE);
+    s_lbl_den_title = t2;
     lv_obj_set_style_text_letter_space(t2, 1, LV_PART_MAIN);
     mk_label(tr2, 0, 0, "●", V32_FONT_SMALL, V32_C_GREEN);
 
@@ -1297,7 +1326,7 @@ static void build_ai(lv_obj_t *pg)
     mk_metric(p1, TITLE_H + METRIC_H * 4, "SNR 增益",  "—",         V32_C_METRIC_VALUE);
     mk_note(p1, TITLE_H + METRIC_H * 5 + 6, ASIDE_W - V32_PANEL_PAD * 2,
             "*2561 抽头 / 20 相。重建不增加采样率，也救不了混叠。"
-            "右上角类型按谐波比例判定，带 * 表示谐波已超奈奎斯特、判据不足。");
+            "认不出是什么波形就不重建，直接显示原始点。");
 }
 
 /* =========================================================
@@ -2018,13 +2047,21 @@ static void tick_ai(void)
             map_window(s_full0, s_full_n, y, n, false);
             plot_set_trace(s_plot_raw, 0, y, n, V32_C_CH1, 2);
 
-            /* 下：同一段数据做带限重建；关掉开关就是原始（与上图重合） */
-            map_window(s_full0, s_full_n, y, n, S.ai);
+            /* 下：同一段数据做带限重建。
+             * **认不出是什么波形就不重建** —— 不知道是什么还画光滑曲线是造假。 */
+            const bool bl_on = S.ai && wf_can_reconstruct();
+            map_window(s_full0, s_full_n, y, n, bl_on);
             plot_set_trace(s_plot_den, 0, y, n, V32_C_AI_OUT, 2);
 
-            /* * = 谐波已超出奈奎斯特，判据不足 */
-            lv_label_set_text_fmt(s_lbl_wave, "%s%s",
-                                  WF_NAME[s_wf_kind], s_wf_alias ? " *" : "");
+            lv_label_set_text(s_lbl_wave, WF_NAME[s_wf_kind]);
+            lv_label_set_text(s_lbl_den_title,
+                              bl_on ? "重建输出 · 带限 FIR" : "未重建 · 原始采样点");
+            lv_label_set_text(s_lbl_ai_stat,
+                              !S.ai ? "旁路" : (bl_on ? "已启用" : "已阻止"));
+            lv_obj_set_style_text_color(s_lbl_ai_stat,
+                              !S.ai ? V32_C_METRIC_VALUE
+                                    : (bl_on ? V32_C_GREEN : V32_C_WARN),
+                              LV_PART_MAIN);
         } else {
             lv_label_set_text(s_lbl_wave, "—");
             /* 接了串口但没帧 / 链路断了：两条零线，绝不退回演示曲线 */
