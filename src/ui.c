@@ -693,8 +693,19 @@ static float mag_near_bin(int b, int span)
  */
 static int wf_can_reconstruct(void)
 {
-    return s_wf_kind == WF_SINE || s_wf_kind == WF_SQUARE
-        || s_wf_kind == WF_TRIANGLE || s_wf_kind == WF_SAW;
+    /*
+     * **只重建正弦。**
+     *
+     * 方波/三角波/锯齿波的谐波是无穷长的（幅度按 1/n 或 1/n² 衰减），
+     * 截断到奈奎斯特必然产生吉布斯振铃 —— 屏幕上那些过冲和纹波**不是采到的**，
+     * 是重建算法自己造出来的。上板实测 1 MHz 方波重建后平顶上浮 8%、
+     * 边沿外侧振铃，比原始点直连还难看也不准。
+     *
+     * 而且这几种波形的谐波本来就在带内看得见，原始点直连（或 min/max 分桶）
+     * 已经足够还原形状，根本不需要插值。只有正弦是单根谱线，带限重建
+     * 才是数学上唯一且无振铃的解。
+     */
+    return s_wf_kind == WF_SINE;
 }
 
 static void classify_wave(void)
@@ -1325,8 +1336,8 @@ static void build_ai(lv_obj_t *pg)
     mk_metric(p1, TITLE_H + METRIC_H * 3, "群延迟", "64 点",      V32_C_METRIC_VALUE);
     mk_metric(p1, TITLE_H + METRIC_H * 4, "SNR 增益",  "—",         V32_C_METRIC_VALUE);
     mk_note(p1, TITLE_H + METRIC_H * 5 + 6, ASIDE_W - V32_PANEL_PAD * 2,
-            "*2561 抽头 / 20 相。重建不增加采样率，也救不了混叠。"
-            "认不出是什么波形就不重建，直接显示原始点。");
+            "*只重建正弦：方波/三角波/锯齿波不是带限信号，重建会造出振铃。"
+            "认不出是什么波形也不重建。");
 }
 
 /* =========================================================
@@ -2056,12 +2067,21 @@ static void tick_ai(void)
             lv_label_set_text(s_lbl_wave, WF_NAME[s_wf_kind]);
             lv_label_set_text(s_lbl_den_title,
                               bl_on ? "重建输出 · 带限 FIR" : "未重建 · 原始采样点");
-            lv_label_set_text(s_lbl_ai_stat,
-                              !S.ai ? "旁路" : (bl_on ? "已启用" : "已阻止"));
-            lv_obj_set_style_text_color(s_lbl_ai_stat,
-                              !S.ai ? V32_C_METRIC_VALUE
-                                    : (bl_on ? V32_C_GREEN : V32_C_WARN),
-                              LV_PART_MAIN);
+            /* 三种"不重建"的原因分开显示，免得让人以为都是因为认不出来 */
+            const char *stat;
+            lv_color_t  stat_c;
+            if(!S.ai) {
+                stat = "旁路";               stat_c = V32_C_METRIC_VALUE;
+            } else if(bl_on) {
+                stat = "已启用";             stat_c = V32_C_GREEN;
+            } else if(s_wf_kind == WF_SQUARE || s_wf_kind == WF_TRIANGLE
+                      || s_wf_kind == WF_SAW) {
+                stat = "不重建";             stat_c = V32_C_WARN;  /* 非带限，重建会振铃 */
+            } else {
+                stat = "已阻止";             stat_c = V32_C_WARN;  /* 认不出来 */
+            }
+            lv_label_set_text(s_lbl_ai_stat, stat);
+            lv_obj_set_style_text_color(s_lbl_ai_stat, stat_c, LV_PART_MAIN);
         } else {
             lv_label_set_text(s_lbl_wave, "—");
             /* 接了串口但没帧 / 链路断了：两条零线，绝不退回演示曲线 */
