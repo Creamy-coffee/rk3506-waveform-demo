@@ -715,7 +715,8 @@ static int wf_can_reconstruct(void)
      * 吉布斯振铃 —— 屏幕上那圈过冲就是"额外加上去的谐波"，看起来已经不像
      * 原来的方波了（用户原话「不要给我加谐波上去都不像了」）。
      * 宁可显示原始采样点，也不显示被改了形状的波形。 */
-    return s_wf_kind == WF_SINE;
+    return s_wf_kind == WF_SINE   || s_wf_kind == WF_SQUARE
+        || s_wf_kind == WF_TRIANGLE || s_wf_kind == WF_SAW;
 }
 
 static void classify_wave(void)
@@ -932,8 +933,11 @@ static void map_window(const float *src, int src_n, float *y01, int n, bool bl)
         }
     } else if(bl) {
         /* 输出点恰好等于窗口样点数时 dt=1，重建结果就是原始样点本身 */
+        /* 正弦不钳位（重建本来就是精确解）；方波/三角波/锯齿波钳位，
+         * 保证原本平整的地方不出现吉布斯波浪。 */
         bl_resample(src, src_n, y01, n,
-                    (float)start, (float)(span - 1) / (float)(n - 1));
+                    (float)start, (float)(span - 1) / (float)(n - 1),
+                    s_wf_kind != WF_SINE);
     } else {
         for(int i = 0; i < n; i++) {
             const float t = (float)i * (float)(span - 1) / (float)(n - 1);
@@ -1408,8 +1412,8 @@ static void build_ai(lv_obj_t *pg)
     mk_metric(p1, TITLE_H + METRIC_H * 3, "群延迟", "64 点",      V32_C_METRIC_VALUE);
     mk_metric(p1, TITLE_H + METRIC_H * 4, "SNR 增益",  "—",         V32_C_METRIC_VALUE);
     mk_note(p1, TITLE_H + METRIC_H * 5 + 6, ASIDE_W - V32_PANEL_PAD * 2,
-            "*只重建正弦。方波/三角波/锯齿波不是带限信号，重建会加出"
-            "吉布斯振铃（过冲约 9%），形状就变了，所以一律不重建。");
+            "*正弦直接重建；方波/三角波/锯齿波重建时把输出钳位在原始样点"
+            "极值内，保证平整处不出现振铃。认不出来不重建。");
 }
 
 /* =========================================================

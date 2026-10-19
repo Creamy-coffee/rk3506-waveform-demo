@@ -12,6 +12,8 @@
  *   · 不降噪 —— 通带一直开到原奈奎斯特，带内噪声原样保留
  *   · 不能救真混叠：超过 32.5 MHz 的成分早就折叠进来了，插值只会把它画得更平滑
  */
+#include <stdbool.h>
+
 #ifndef BL_INTERP_H
 #define BL_INTERP_H
 
@@ -22,6 +24,16 @@
  * 滤波器支撑不够的边界区域（前后各 BL_DELAY 个输入样点）自动退回线性插值，
  * 否则会出现幅度塌陷。
  */
-void bl_resample(const float *x, int n, float *y, int nout, float t0, float dt);
+/*
+ * limit_overshoot：把重建值**钳位在原始采样点的局部极值范围内**。
+ *
+ * 带限重建对方波这类非带限信号必然产生吉布斯振铃 —— 屏幕上平顶会出现
+ * 波浪、边沿外侧过冲，那是"额外加上去的谐波"，不是采到的（用户原话
+ * 「不要给我加谐波上去都不像了」）。
+ * 钳位保证：**原本平整的地方绝不出现波浪**（局部极值范围就是那个平台），
+ * 而对正弦这种本来就带限的信号，重建值本来就落在数据范围内，钳位几乎不起作用。
+ */
+void bl_resample(const float *x, int n, float *y, int nout, float t0, float dt,
+                 bool limit_overshoot);
 
 #endif /* BL_INTERP_H */

@@ -16,7 +16,8 @@
 
 #include <math.h>
 
-void bl_resample(const float *x, int n, float *y, int nout, float t0, float dt)
+void bl_resample(const float *x, int n, float *y, int nout, float t0, float dt,
+                 bool limit_overshoot)
 {
     if (!x || !y || nout <= 0 || n < 2) return;
 
@@ -36,6 +37,25 @@ void bl_resample(const float *x, int n, float *y, int nout, float t0, float dt)
             float acc = 0.0f;
             for (int j = 0; j < BL_TAPS; j++) acc += xp[j] * c[j];
             y[i] = acc;
+
+            if (limit_overshoot) {
+                /*
+                 * 钳位到「以输出点为中心 ±3 个原始样点」的极值范围内。
+                 * 平台上 lo==hi ⇒ 输出被钉死在平台值上，不可能出现波浪；
+                 * 跳变处范围较宽 ⇒ 重建的过渡照原样保留。
+                 */
+                int cc = (int)floorf(t + 0.5f);
+                int a = cc - 3, b = cc + 3;
+                if (a < 0) a = 0;
+                if (b > n - 1) b = n - 1;
+                float lo = x[a], hi = x[a];
+                for (int k = a; k <= b; k++) {
+                    if (x[k] < lo) lo = x[k];
+                    if (x[k] > hi) hi = x[k];
+                }
+                if (y[i] < lo) y[i] = lo;
+                if (y[i] > hi) y[i] = hi;
+            }
         } else {
             /* 边界兜底：前后各 BL_DELAY 个样点没有完整支撑，
              * 硬算会掉幅度，退回线性插值（这一段本来就看不清）。 */
