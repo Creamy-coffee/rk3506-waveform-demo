@@ -1,0 +1,21 @@
+# 构建产物 / 截图（out/ 有 100MB+ 的板子截图和交叉编译产物，不进仓库）
+out/
+build/
+
+# 交叉编译的中间文件
+*.o
+*.a
+*.so
+*.d
+
+# 工具脚本产生的临时文件
+tools/_test/edgeprof/
+tools/_test/frame_js.bin
+tools/_test/dom.err
+tools/.last_frame_id
+*.ppm
+__pycache__/
+*.pyc
+
+# 本机会话数据
+.workbuddy/

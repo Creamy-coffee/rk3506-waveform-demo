@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>波形 / FFT Demo — 界面预览稿</title>
+<style>
+  html, body {
+    margin: 0; padding: 24px;
+    background: #0a0f18;
+    color: #c7d6e5;
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 1024px; margin: 0 auto; }
+  .note {
+    border: 1px solid #1e3a4c; border-radius: 10px;
+    padding: 12px 16px; margin-bottom: 16px;
+    background: #111c2e; font-size: 13px;
+  }
+  .note b { color: #35e08a; font-weight: 500; }
+  .note span { color: #7a93ad; }
+  canvas {
+    display: block; width: 100%; height: auto;
+    border-radius: 10px; border: 1px solid #1e3a4c;
+    cursor: pointer; background: #0B1220;
+  }
+  .legend { margin-top: 12px; font-size: 12px; color: #7a93ad; }
+  .legend code { color: #35d6e0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="note">
+    <b>这是 PC 预览稿</b>，用来确认界面长相和交互 —— 不是最终交付物。<br>
+    <span>板子上跑的是同一套代码逻辑：100 / 300 / 500 Hz 谐波叠加、512 点 FFT、同样的配色。
+    点画布上的 <b>WAVE / FFT</b> 按钮（或直接点图表区域）可以切换视图。</span>
+  </div>
+  <canvas id="cv" width="1024" height="600"></canvas>
+  <div class="legend">
+    图上那根 300 Hz 的柱子会持续上下起伏 —— 这是数据源里做的幅度调制，用来证明画面是活的。
+    频率刻度：每格 <code>7.8 Hz</code>。
+  </div>
+</div>
+
+<script>
+const FS = 4000, N = 512, HALF = N / 2;
+const VIEW_WAVE = 0, VIEW_FFT = 1;
+
+const C = {
+  bg: '#0B1220', panel: '#121E2F', grid: '#1E3A4C',
+  text: '#E6F1FF', muted: '#7A93AD',
+  wave: '#35E08A', spec: '#35D6E0',
+  btnBg: '#1B2A40', btnTxtOn: '#08131F'
+};
+
+const PAD = 12, TOP_H = 64, BOTTOM_H = 92;
+const PLOT = { x0: PAD + 6, y0: TOP_H + PAD + 6, w: 1024 - 2*PAD - 12, h: 600 - TOP_H - BOTTOM_H - 2*PAD - 12 };
+const BTN = [
+  { x: 16,  y: 526, w: 132, h: 56, label: 'WAVE', view: VIEW_WAVE },
+  { x: 168, y: 526, w: 132, h: 56, label: 'FFT',  view: VIEW_FFT  }
+];
+
+let view = VIEW_WAVE;
+let tCursor = 0, noiseLp = 0, rng = 0x12345678;
+const frame = new Float32Array(N);
+const mag = new Float32Array(HALF);
+let peakBin = 2;
+
+/* ---------- 假数据源：与 wave_source.c 完全一致 ---------- */
+function rnd01() {
+  rng ^= rng << 13; rng >>>= 0;
+  rng ^= rng >>> 17;
+  rng ^= rng << 5;  rng >>>= 0;
+  return (rng & 0xFFFFFF) / 0x1000000;
+}
+function noiseSlow() {
+  noiseLp += 0.25 * ((rnd01() - 0.5) * 2 - noiseLp);
+  return noiseLp;
+}
+function genFrame(buf) {
+  const dt = 1 / FS;
+  for (let i = 0; i < N; i++) {
+    const t  = tCursor + i * dt;
+    const a2 = 0.45 + 0.25 * Math.sin(2 * Math.PI * 0.4 * t);
+    buf[i] = 1.00 * Math.sin(2 * Math.PI * 100 * t)
+           + a2   * Math.sin(2 * Math.PI * 300 * t)
+           + 0.20 * Math.sin(2 * Math.PI * 500 * t)
+           + 0.04 * noiseSlow();
+  }
+  tCursor += N * dt;
+}
+
+/* ---------- FFT：与 fft.c 完全一致 ---------- */
+function fftRadix2(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      let t = re[i]; re[i] = re[j]; re[j] = t;
+      t = im[i]; im[i] = im[j]; im[j] = t;
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    const wr = Math.cos(ang), wi = Math.sin(ang), half = len >> 1;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < half; k++) {
+        const a = i + k, b = a + half;
+        const ur = re[a], ui = im[a], xr = re[b], xi = im[b];
+        const vr = xr * cr - xi * ci, vi = xr * ci + xi * cr;
+        re[a] = ur + vr; im[a] = ui + vi;
+        re[b] = ur - vr; im[b] = ui - vi;
+        const ncr = cr * wr - ci * wi;
+        ci = cr * wi + ci * wr;
+        cr = ncr;
+      }
+    }
+  }
+}
+const sRe = new Float32Array(N), sIm = new Float32Array(N);
+function magnitudeSpectrum(x, out) {
+  for (let i = 0; i < N; i++) {
+    sRe[i] = x[i] * 0.5 * (1 - Math.cos(2 * Math.PI * i / (N - 1)));
+    sIm[i] = 0;
+  }
+  fftRadix2(sRe, sIm);
+  const scale = 4 / N;
+  for (let k = 0; k < HALF; k++) out[k] = Math.hypot(sRe[k], sIm[k]) * scale;
+
+  peakBin = 2;
+  for (let i = 3; i < HALF; i++) if (out[i] > out[peakBin]) peakBin = i;
+}
+
+/* ---------- 绘制 ---------- */
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawGrid(ctx) {
+  const { x0, y0, w, h } = PLOT;
+  ctx.strokeStyle = C.grid;
+  ctx.lineWidth = 1;
+  for (let i = 1; i <= 5; i++) {
+    const y = y0 + h * i / 6;
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x0 + w, y); ctx.stroke();
+  }
+  for (let i = 1; i <= 9; i++) {
+    const x = x0 + w * i / 10;
+    ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + h); ctx.stroke();
+  }
+}
+
+function drawWave(ctx) {
+  const { x0, y0, w, h } = PLOT;
+  ctx.strokeStyle = C.wave;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (let i = 0; i < N; i++) {
+    const px = x0 + i / (N - 1) * w;
+    let v = frame[i] * 1000;
+    v = Math.max(-1500, Math.min(1500, v));
+    const py = y0 + h / 2 - (v / 1600) * (h / 2);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+}
+
+function drawSpec(ctx) {
+  const { x0, y0, w, h } = PLOT;
+  const bw = w / HALF;
+  ctx.fillStyle = C.spec;
+  for (let i = 0; i < HALF; i++) {
+    let v = mag[i] * 1000;
+    v = Math.max(0, Math.min(1500, v));
+    const bh = (v / 1600) * h;
+    ctx.fillRect(x0 + i * bw + 0.4, y0 + h - bh, Math.max(bw - 0.8, 0.8), bh);
+  }
+}
+
+function drawButtons(ctx, mouse) {
+  for (const b of BTN) {
+    const on = (b.view === view);
+    const hover = mouse && mouse.x >= b.x && mouse.x <= b.x + b.w &&
+                          mouse.y >= b.y && mouse.y <= b.y + b.h;
+    roundRect(ctx, b.x, b.y, b.w, b.h, 8);
+    ctx.fillStyle = on ? C.wave : (hover ? '#243550' : C.btnBg);
+    ctx.fill();
+    ctx.strokeStyle = on ? C.wave : C.grid;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = on ? C.btnTxtOn : C.muted;
+    ctx.font = '500 20px -apple-system, "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+  }
+}
+
+function statusText() {
+  if (view === VIEW_WAVE) {
+    const span = 1000 * N / FS;
+    return `Fs ${FS} Hz    N ${N}    span ${span.toFixed(0)} ms`;
+  }
+  const df = FS / N;
+  return `Fs ${FS} Hz    ${HALF} bins    df ${df.toFixed(1)} Hz    peak ${(peakBin * df).toFixed(0)} Hz`;
+}
+
+function render(ctx, mouse) {
+  ctx.fillStyle = C.bg;
+  ctx.fillRect(0, 0, 1024, 600);
+
+  /* 顶栏 */
+  ctx.fillStyle = C.panel;
+  ctx.fillRect(0, 0, 1024, TOP_H);
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = C.text;
+  ctx.font = '500 20px -apple-system, "Segoe UI", sans-serif';
+  ctx.fillText('WAVEFORM  DEMO', PAD + 4, TOP_H / 2);
+  ctx.textAlign = 'right';
+  ctx.fillStyle = C.muted;
+  ctx.font = '14px -apple-system, "Segoe UI", sans-serif';
+  ctx.fillText(statusText(), 1024 - PAD - 4, TOP_H / 2);
+
+  /* 图表底 */
+  roundRect(ctx, PAD, TOP_H + PAD, 1024 - 2 * PAD, 600 - TOP_H - BOTTOM_H - 2 * PAD, 8);
+  ctx.fillStyle = C.panel;
+  ctx.fill();
+  ctx.strokeStyle = C.grid;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  drawGrid(ctx);
+  if (view === VIEW_WAVE) drawWave(ctx); else drawSpec(ctx);
+
+  /* 底栏 */
+  ctx.fillStyle = C.panel;
+  ctx.fillRect(0, 600 - BOTTOM_H, 1024, BOTTOM_H);
+  drawButtons(ctx, mouse);
+
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = C.muted;
+  ctx.font = '14px -apple-system, "Segoe UI", sans-serif';
+  ctx.fillText(view === VIEW_WAVE ? 'time domain' : 'frequency domain',
+               1024 - PAD - 4, 600 - BOTTOM_H / 2);
+}
+
+/* ---------- 交互 ---------- */
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let mouse = null;
+
+function toCanvas(e) {
+  const r = cv.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * (cv.width / r.width),
+    y: (e.clientY - r.top) * (cv.height / r.height)
+  };
+}
+
+cv.addEventListener('mousemove', e => { mouse = toCanvas(e); });
+cv.addEventListener('mouseleave', () => { mouse = null; });
+
+cv.addEventListener('click', e => {
+  const p = toCanvas(e);
+  for (const b of BTN) {
+    if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) {
+      view = b.view;
+      refresh();
+      return;
+    }
+  }
+  /* 点图表区域也能切 */
+  if (p.y > TOP_H && p.y < 600 - BOTTOM_H) {
+    view = (view === VIEW_WAVE) ? VIEW_FFT : VIEW_WAVE;
+    refresh();
+  }
+});
+
+/* ---------- 主循环 ---------- */
+let last = 0;
+function refresh() {
+  genFrame(frame);
+  if (view === VIEW_FFT) magnitudeSpectrum(frame, mag);
+  render(ctx, mouse);
+}
+
+function loop(ts) {
+  if (ts - last >= 100) {
+    last = ts;
+    refresh();
+  } else {
+    render(ctx, mouse);
+  }
+  requestAnimationFrame(loop);
+}
+
+refresh();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

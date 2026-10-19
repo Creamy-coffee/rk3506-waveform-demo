@@ -1,0 +1,578 @@
+/*
+ * plot.c —— 自绘波形控件实现
+ *
+ * 绘制顺序（和参考稿的 canvas 一致）：
+ *   1) 网格（竖线 divx-1 根 + 横线 divy-1 根）
+ *   2) 中间那条虚线（dash 4 / gap 6）
+ *   3) 曲线（一条一根一段地 lv_draw_line，跟 lv_chart 的做法一样）
+ *   4) 触发线 / 峰值箭头 / 同心圆 + 矢量
+ *   5) 画布内的坐标文字
+ *
+ * 关于虚线：LVGL 的软件渲染器只在**水平/垂直**线上实现 dash
+ *   （见 lvgl/src/draw/sw/lv_draw_sw_line.c: draw_line_hor / draw_line_ver），
+ *   斜线走 draw_line_skew 会忽略 dash_width。我们中间那条线正好是水平的，
+ *   所以能正常显示成虚线。
+ */
+#include "plot.h"
+#include "theme.h"
+
+#include <math.h>
+#include <string.h>
+
+/* ==================== 内部状态 ==================== */
+
+typedef struct {
+    float      y[PLOT_MAX_PTS];
+    int        n;
+    lv_color_t color;
+    int32_t    width;
+    bool       vis;
+} trace_t;
+
+typedef struct {
+    lv_obj_t   *obj;
+    plot_mode_t mode;
+
+    int  divx, divy;
+    bool center_dash;
+    /* 采样步长 ×10：15 表示每 1.5px 出一个点（照抄参考稿 trace() 的 x+=1.5） */
+    int  px_step_x10;
+    /* 网格底线样式 */
+    lv_color_t grid_color;
+    lv_color_t center_color;
+
+    trace_t tr[PLOT_MAX_TRACE];
+
+    bool  trig_vis;
+    float trig_x;            /* 0..1 */
+
+    bool  peak_vis;
+    float peak_x;            /* 0..1 */
+    char  peak_txt[32];      /* 必须常驻：lv_draw_label 渲染时才读这段内存 */
+
+    float iq_phase;          /* 度，数学约定：0°=+I 向右，逆时针为正 */
+
+    char axis_l[16];
+    char axis_r[16];
+    char leg0[10];
+    char leg1[10];
+} plot_t;
+
+#define PLOT_OF(obj)   ((plot_t *)lv_obj_get_user_data(obj))
+
+/* ==================== 生命周期 ==================== */
+
+static void plot_delete_cb(lv_event_t *e)
+{
+    plot_t *p = lv_event_get_user_data(e);
+    if(p) lv_free(p);
+}
+
+static void plot_draw_cb(lv_event_t *e);
+
+lv_obj_t *plot_create(lv_obj_t *parent, plot_mode_t mode)
+{
+    plot_t *p = lv_malloc_zeroed(sizeof(plot_t));
+    LV_ASSERT_MALLOC(p);
+    if(p == NULL) return NULL;
+
+    lv_obj_t *obj = lv_obj_create(parent);
+    if(obj == NULL) { lv_free(p); return NULL; }
+
+    p->obj = obj;
+    p->grid_color   = V32_C_GRID;
+    p->center_color = V32_C_GRID_CENTER;
+
+    /* .plot{ background:#0a1522; border:1px solid #2a3c4c; border-radius:7px } */
+    lv_obj_remove_style_all(obj);
+    lv_obj_set_style_bg_color(obj, V32_C_PLOT, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(obj, V32_C_PLOT_BORDER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(obj, 1, LV_PART_MAIN);
+    lv_obj_set_style_radius(obj, V32_PLOT_RADIUS, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(obj, 0, LV_PART_MAIN);
+    lv_obj_set_style_clip_corner(obj, true, LV_PART_MAIN);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_set_user_data(obj, p);
+    lv_obj_add_event_cb(obj, plot_draw_cb, LV_EVENT_DRAW_MAIN, p);
+    lv_obj_add_event_cb(obj, plot_delete_cb, LV_EVENT_DELETE, p);
+
+    plot_set_mode(obj, mode);
+    return obj;
+}
+
+void plot_set_mode(lv_obj_t *plot, plot_mode_t mode)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    p->mode = mode;
+
+    /* 分格数照抄参考稿：
+     *   scope/lock grid(10,8)   fft grid(13,8)   iq grid(8,8)   ai grid(10,4)
+     * 中间虚线 grid() 里无条件绘，所以四种模式都打开。 */
+    switch(mode) {
+        case PLOT_FFT:
+            p->divx = V32_GRID_FFT_X; p->divy = V32_GRID_Y; p->px_step_x10 = 10;
+            break;
+        case PLOT_IQ:
+            p->divx = V32_GRID_IQ_X;  p->divy = V32_GRID_Y; p->px_step_x10 = 10;
+            break;
+        case PLOT_AI:
+            p->divx = V32_GRID_X;     p->divy = V32_GRID_AI_Y; p->px_step_x10 = V32_TRACE_STEP_X10;
+            break;
+        case PLOT_SCOPE:
+        case PLOT_HIST:
+        default:
+            p->divx = V32_GRID_X;     p->divy = V32_GRID_Y; p->px_step_x10 = V32_TRACE_STEP_X10;
+            break;
+    }
+    p->center_dash = true;
+    lv_obj_invalidate(plot);
+}
+
+void plot_set_grid(lv_obj_t *plot, int divx, int divy, bool center_dash)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    if(divx > 1) p->divx = divx;
+    if(divy > 1) p->divy = divy;
+    p->center_dash = center_dash;
+    lv_obj_invalidate(plot);
+}
+
+/* ==================== 数据设置 ==================== */
+
+static void set_trace(lv_obj_t *plot, int idx, const float *y, int n,
+                      lv_color_t color, int32_t width, bool vis)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL || idx < 0 || idx >= PLOT_MAX_TRACE) return;
+
+    trace_t *t = &p->tr[idx];
+    t->color = color;
+    t->width = width;
+    t->vis   = vis;
+
+    if(y == NULL || n <= 0) { t->n = 0; return; }
+    if(n > PLOT_MAX_PTS) n = PLOT_MAX_PTS;
+    memcpy(t->y, y, (size_t)n * sizeof(float));
+    t->n = n;
+}
+
+void plot_set_trace(lv_obj_t *plot, int idx, const float *y, int n,
+                    lv_color_t color, int32_t width)
+{
+    set_trace(plot, idx, y, n, color, width, true);
+    lv_obj_invalidate(plot);
+}
+
+void plot_hide_trace(lv_obj_t *plot, int idx)
+{
+    set_trace(plot, idx, NULL, 0, V32_C_TEXT, 1, false);
+    lv_obj_invalidate(plot);
+}
+
+void plot_set_trigger(lv_obj_t *plot, bool vis, float x)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    p->trig_vis = vis;
+    p->trig_x = (x < 0.f) ? 0.f : (x > 1.f ? 1.f : x);
+    lv_obj_invalidate(plot);
+}
+
+void plot_set_peak(lv_obj_t *plot, bool vis, float x, const char *txt)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    p->peak_vis = vis;
+    p->peak_x = (x < 0.f) ? 0.f : (x > 1.f ? 1.f : x);
+    if(txt) {
+        strncpy(p->peak_txt, txt, sizeof(p->peak_txt) - 1);
+        p->peak_txt[sizeof(p->peak_txt) - 1] = '\0';
+    }
+    else p->peak_txt[0] = '\0';
+    lv_obj_invalidate(plot);
+}
+
+void plot_set_iq(lv_obj_t *plot, float phase_deg)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    p->iq_phase = phase_deg;
+    lv_obj_invalidate(plot);
+}
+
+void plot_set_axis_labels(lv_obj_t *plot, const char *left, const char *right)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    p->axis_l[0] = '\0';
+    p->axis_r[0] = '\0';
+    if(left)  { strncpy(p->axis_l, left,  sizeof(p->axis_l) - 1);  p->axis_l[sizeof(p->axis_l) - 1] = '\0'; }
+    if(right) { strncpy(p->axis_r, right, sizeof(p->axis_r) - 1); p->axis_r[sizeof(p->axis_r) - 1] = '\0'; }
+}
+
+void plot_set_legends(lv_obj_t *plot, const char *l0, const char *l1)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    p->leg0[0] = '\0';
+    p->leg1[0] = '\0';
+    if(l0) { strncpy(p->leg0, l0, sizeof(p->leg0) - 1); p->leg0[sizeof(p->leg0) - 1] = '\0'; }
+    if(l1) { strncpy(p->leg1, l1, sizeof(p->leg1) - 1); p->leg1[sizeof(p->leg1) - 1] = '\0'; }
+}
+
+/* ==================== 绘制小工具 ==================== */
+
+/* 拉一条 1px 直线，省掉反复填 dsc 的样板代码 */
+static void line(lv_layer_t *layer, lv_draw_line_dsc_t *ld,
+                 int32_t x1, int32_t y1, int32_t x2, int32_t y2)
+{
+    ld->p1.x = x1; ld->p1.y = y1;
+    ld->p2.x = x2; ld->p2.y = y2;
+    lv_draw_line(layer, ld);
+}
+
+/* 在 layer 上写一行小字。text 必须是常驻内存（字符串字面量或结构体里的 char[]），
+ * 因为真正的渲染发生在回调返回之后。 */
+static void text(lv_layer_t *layer, int32_t x, int32_t y,
+                 const char *s, lv_color_t color, const lv_font_t *font)
+{
+    if(s == NULL || s[0] == '\0') return;
+    lv_draw_label_dsc_t dsc;
+    lv_draw_label_dsc_init(&dsc);
+    dsc.color = color;
+    dsc.font  = font;
+    dsc.text  = s;
+    dsc.opa   = LV_OPA_COVER;
+    const int32_t lh = font->line_height;
+    lv_area_t a = { x, y, x + 150, y + lh };
+    lv_draw_label(layer, &dsc, &a);
+}
+
+/*
+ * 同一行字，但先垫一块和画布同色的半透明底板。
+ *
+ * 为什么需要：画在画布角上的坐标文字（"0 MHz" / "32.5 MHz"）会被曲线
+ * 直接穿过去。深色主题时不太明显，换成白底之后谱线是深绿的，从深灰文字上
+ * 横穿过去会把字切成几截 —— 实测那两处基本读不出来。
+ * 底板只做视觉隔离：位置、颜色、字号都不变，曲线在别处照常可见。
+ */
+static void text_plated(lv_layer_t *layer, int32_t x, int32_t y,
+                        const char *s, lv_color_t color, const lv_font_t *font)
+{
+    if(s == NULL || s[0] == '\0') return;
+
+    lv_point_t sz;
+    lv_text_get_size(&sz, s, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+
+    lv_draw_rect_dsc_t rd;
+    lv_draw_rect_dsc_init(&rd);
+    rd.bg_color = V32_C_PLOT;       /* 和 .plot 底色一致，看起来像"挖空" */
+    rd.bg_opa   = LV_OPA_COVER;
+    rd.radius   = 3;
+    lv_area_t a = { x - 4, y - 1, x + sz.x + 4, y + font->line_height };
+    lv_draw_rect(layer, &rd, &a);
+
+    text(layer, x, y, s, color, font);
+}
+
+static void draw_grid(lv_layer_t *layer, plot_t *p,
+                      int32_t x0, int32_t y0, int32_t w, int32_t h)
+{
+    lv_draw_line_dsc_t ld;
+    lv_draw_line_dsc_init(&ld);
+    ld.color = p->grid_color;
+    ld.width = 1;
+    ld.opa = LV_OPA_COVER;
+
+    int i;
+    for(i = 1; i < p->divx; i++) {
+        int32_t x = x0 + (int32_t)((int64_t)w * i / p->divx);
+        line(layer, &ld, x, y0, x, y0 + h - 1);
+    }
+    for(i = 1; i < p->divy; i++) {
+        int32_t y = y0 + (int32_t)((int64_t)h * i / p->divy);
+        line(layer, &ld, x0, y, x0 + w - 1, y);
+    }
+
+    if(p->center_dash) {
+        ld.color = p->center_color;
+        ld.dash_width = 4;
+        ld.dash_gap   = 6;
+        const int32_t yc = y0 + h / 2;
+        line(layer, &ld, x0, yc, x0 + w - 1, yc);
+    }
+}
+
+static void draw_one_trace(lv_layer_t *layer, plot_t *p, int ti,
+                           int32_t x0, int32_t y0, int32_t w, int32_t h)
+{
+    trace_t *t = &p->tr[ti];
+    if(!t->vis || t->n < 2 || w < 4 || h < 4) return;
+
+    /*
+     * 一条曲线最多画多少个点。
+     *
+     * 参考稿是 canvas 上 x += 1.5 的步长，本来就画不满每个像素列；
+     * 但这个"稀疏化"在我们这儿会毁掉示波器的包络：
+     *   数据源已经按 min/max 抽成 1024 点（每 2 个点 = 一个像素桶的峰和谷），
+     *   再按 1.5px 的步长**跨点取样**（stride=3 时会跳过成对的峰/谷），
+     *   4106 样本 @10 MHz 挤进 740 px 的结果就不是"密集成带"，
+     *   而是一串假的低频脉冲 —— 实测 10 MHz 被画成约 35 个周期（≈0.55 MHz）。
+     * 所以这里给到 2 点/像素：只要 t->n <= 2w 就 stride=1 全画，
+     * 每个像素列都能拿到该列的峰和谷，高频信号显示成实心带（示波器就是这样）。
+     * 只有 t->n 远大于像素数（>2w）时才退回跨点取样。
+     */
+    int max_seg = w * 2;
+    if(max_seg < 2) max_seg = 2;
+    int stride = (t->n + max_seg - 1) / max_seg;
+    if(stride < 1) stride = 1;
+
+    lv_draw_line_dsc_t ld;
+    lv_draw_line_dsc_init(&ld);
+    ld.color = t->color;
+    ld.width = t->width;
+    ld.opa   = LV_OPA_COVER;
+    ld.round_start = 1;
+    ld.round_end   = 1;
+    /* 宽度 1 时让渲染器走最省的路径（lv_chart 也这么做） */
+    if(t->width == 1) ld.raw_end = 1;
+
+    const int32_t nm1 = t->n - 1;
+    const int32_t xspan = w - 1;
+    const int32_t yspan = h - 1;
+
+    int32_t px = x0 + 0;
+    int32_t py = y0 + yspan - (int32_t)(t->y[0] * yspan);
+    if(py < y0) py = y0;
+    if(py > y0 + yspan) py = y0 + yspan;
+
+    int i;
+    for(i = stride; i <= nm1; i += stride) {
+        int32_t cx = x0 + (int32_t)((int64_t)i * xspan / nm1);
+        int32_t cy = y0 + yspan - (int32_t)(t->y[i] * yspan);
+        if(cy < y0) cy = y0;
+        if(cy > y0 + yspan) cy = y0 + yspan;
+        if(cx <= px) continue;
+
+        ld.p1.x = px; ld.p1.y = py;
+        ld.p2.x = cx; ld.p2.y = cy;
+        lv_draw_line(layer, &ld);
+        px = cx; py = cy;
+    }
+
+    /* 收尾：一定画到最后一列，否则右边缘会缺一小段 */
+    const int32_t lx = x0 + xspan;
+    int32_t ly = y0 + yspan - (int32_t)(t->y[nm1] * yspan);
+    if(ly < y0) ly = y0;
+    if(ly > y0 + yspan) ly = y0 + yspan;
+    if(lx > px) {
+        ld.p1.x = px; ld.p1.y = py;
+        ld.p2.x = lx; ld.p2.y = ly;
+        lv_draw_line(layer, &ld);
+    }
+}
+
+static void draw_iq(lv_layer_t *layer, plot_t *p,
+                    int32_t x0, int32_t y0, int32_t w, int32_t h)
+{
+    const int32_t cx = x0 + w / 2;
+    const int32_t cy = y0 + h / 2;
+    int32_t r = (w < h ? w : h) * 36 / 100;      /* .36 */
+    if(r < 4) return;
+
+    lv_draw_arc_dsc_t ad;
+    lv_draw_arc_dsc_init(&ad);
+    ad.center.x = cx;
+    ad.center.y = cy;
+    ad.color    = V32_C_IQ_RING;
+    ad.width    = 1;
+    ad.opa      = LV_OPA_COVER;
+    /* ⚠️ lv_draw_arc 的角度单位是**度**（不是 lv_arc 控件的 0.1 度）：
+     *    见 lvgl/src/draw/sw/lv_draw_sw_arc.c 里 `while(start_angle >= 360) start_angle -= 360`
+     *    以及 lv_draw_arc_get_area() 里的 `start_quarter = start_angle_int / 90`。 */
+    ad.start_angle = 0;
+    ad.end_angle   = 360;
+
+    int i;
+    for(i = 1; i <= 3; i++) {
+        ad.radius = (uint16_t)(r * i / 3);
+        lv_draw_arc(layer, &ad);
+    }
+
+    /* 矢量：JS 是 ctx.lineTo(cx + cos(θ)*r*.82, cy - sin(θ)*r*.82) */
+    const float rad = p->iq_phase * 3.14159265f / 180.f;
+    const int32_t vr = r * 82 / 100;
+    const int32_t vx = cx + (int32_t)(cosf(rad) * (float)vr);
+    const int32_t vy = cy - (int32_t)(sinf(rad) * (float)vr);
+
+    lv_draw_line_dsc_t ld;
+    lv_draw_line_dsc_init(&ld);
+    ld.color = V32_C_CH1;
+    ld.width = 3;
+    ld.opa   = LV_OPA_COVER;
+    ld.round_start = 1;
+    ld.round_end   = 1;
+    line(layer, &ld, cx, cy, vx, vy);
+
+    /* 轴标注：Q 在上方中间，I 在右侧。参考稿是 ctx.fillText 的 baseline 坐标，
+     * 这里换算成左上角坐标，差几像素不影响观感。 */
+    text(layer, cx + 8, y0 + 6, "Q", V32_C_CH1, V32_FONT_SMALL);
+    text(layer, x0 + w - 20, cy - 16, "I", V32_C_CH1, V32_FONT_SMALL);
+}
+
+static void draw_trigger(lv_layer_t *layer, plot_t *p,
+                         int32_t x0, int32_t y0, int32_t w, int32_t h)
+{
+    if(!p->trig_vis) return;
+
+    const int32_t x = x0 + (int32_t)(p->trig_x * (float)(w - 1));
+
+    lv_draw_line_dsc_t ld;
+    lv_draw_line_dsc_init(&ld);
+    ld.color = V32_C_TRIGGER;
+    ld.width = 1;
+    ld.opa   = LV_OPA_COVER;
+    line(layer, &ld, x, y0, x, y0 + h - 1);
+
+    /* JS: ctx.fillText('T', w*.46+4, 28) */
+    text(layer, x + 4, y0 + 18, "T", V32_C_TRIGGER, V32_FONT_SMALL);
+}
+
+/* 找 trace ti 在 peak_x 附近的最高点，用来把 ▼ 贴到曲线的峰上 */
+static int32_t peak_curve_y(plot_t *p, int ti, float at_x, int32_t y0, int32_t h)
+{
+    trace_t *t = &p->tr[ti];
+    if(!t->vis || t->n < 2) return -1;
+
+    int32_t best = -1;
+    int i;
+    for(i = 0; i < t->n; i++) {
+        const float u = (float)i / (float)(t->n - 1);
+        if(fabsf(u - at_x) > 0.03f) continue;
+        const int32_t y = (int32_t)(t->y[i] * (h - 1));
+        if(y > best) best = y;          /* y 越大 = 屏幕越靠上 = 值越高 */
+    }
+    if(best < 0) return -1;
+    return y0 + (h - 1) - best;
+}
+
+static void draw_peak(lv_layer_t *layer, plot_t *p,
+                      int32_t x0, int32_t y0, int32_t w, int32_t h)
+{
+    if(!p->peak_vis) return;
+
+    const int32_t px = x0 + (int32_t)(p->peak_x * (float)(w - 1));
+
+    /* 曲线上的 ▼ 三角标 */
+    const int32_t cy = peak_curve_y(p, 0, p->peak_x, y0, h);
+    if(cy > 0) {
+        lv_draw_triangle_dsc_t td;
+        lv_draw_triangle_dsc_init(&td);
+        td.bg_color = V32_C_FFT;
+        td.bg_opa   = LV_OPA_COVER;
+        td.p[0].x = px - 5; td.p[0].y = cy - 10;
+        td.p[1].x = px + 5; td.p[1].y = cy - 10;
+        td.p[2].x = px;     td.p[2].y = cy - 2;
+        lv_draw_triangle(layer, &td);
+    }
+
+    /* 文字放到画面上方（照抄参考稿的 y=32），水平夹在画布内 */
+    int32_t tx = px - 30;
+    const int32_t tx_min = x0 + 10;
+    const int32_t tx_max = x0 + w - 130;
+    if(tx < tx_min) tx = tx_min;
+    if(tx > tx_max) tx = tx_max;
+    if(tx_max < tx_min) tx = tx_min;
+    text(layer, tx, y0 + 22, p->peak_txt, V32_C_FFT, V32_FONT_SMALL);
+}
+
+/* ==================== 主绘制回调 ==================== */
+
+static void plot_draw_cb(lv_event_t *e)
+{
+    plot_t *p = lv_event_get_user_data(e);
+    if(p == NULL || p->obj == NULL) return;
+
+    lv_layer_t *layer = lv_event_get_layer(e);
+    if(layer == NULL) return;
+
+    lv_area_t c;
+    lv_obj_get_coords(p->obj, &c);
+
+    const int32_t full_w = c.x2 - c.x1 + 1;
+    const int32_t full_h = c.y2 - c.y1 + 1;
+    if(full_w < 10 || full_h < 10) return;
+
+    /* .plot 的 canvas 在 1px border 里面（box-sizing:border-box） */
+    const int32_t bw = (int32_t)lv_obj_get_style_border_width(p->obj, LV_PART_MAIN);
+    const int32_t x0 = c.x1 + bw;
+    const int32_t y0 = c.y1 + bw;
+    const int32_t w  = full_w - bw * 2;
+    const int32_t h  = full_h - bw * 2;
+    if(w < 6 || h < 6) return;
+
+    draw_grid(layer, p, x0, y0, w, h);
+
+    if(p->mode == PLOT_IQ) {
+        draw_iq(layer, p, x0, y0, w, h);
+    }
+    else {
+        draw_one_trace(layer, p, 0, x0, y0, w, h);
+        draw_one_trace(layer, p, 1, x0, y0, w, h);
+        if(p->mode == PLOT_SCOPE) draw_trigger(layer, p, x0, y0, w, h);
+        if(p->mode == PLOT_FFT)   draw_peak(layer, p, x0, y0, w, h);
+    }
+
+    /* 角落坐标文字（参考稿 FFT 页画在画布左下角）。
+     * 用 text_plated：这两处会被曲线穿过，白底上不垫底板就读不清。 */
+    if(p->axis_l[0]) text_plated(layer, x0 + 8,   y0 + h - 20, p->axis_l, V32_C_TEXT, V32_FONT_SMALL);
+    if(p->axis_r[0]) text_plated(layer, x0 + w - 80, y0 + h - 20, p->axis_r, V32_C_TEXT, V32_FONT_SMALL);
+
+    /* 曲线右端的小图例 */
+    if(p->leg0[0]) text(layer, x0 + w - 60, y0 + 6,      p->leg0, V32_C_CH1, V32_FONT_SMALL);
+    if(p->leg1[0]) text(layer, x0 + w - 60, y0 + 6 + 15, p->leg1, V32_C_CH2, V32_FONT_SMALL);
+}
+
+/* ==================== 归一化 ==================== */
+
+int plot_norm(const float *src, int n, float *dst, int dst_n, float margin)
+{
+    if(src == NULL || dst == NULL || n < 2 || dst_n < 2) return -1;
+
+    float lo = src[0], hi = src[0];
+    int i;
+    for(i = 1; i < n; i++) {
+        if(src[i] < lo) lo = src[i];
+        if(src[i] > hi) hi = src[i];
+    }
+    float span = hi - lo;
+    if(span <= 1e-12f) {
+        /* 全等于一个值：画成中间一条直线，而不是除零 */
+        for(i = 0; i < dst_n; i++) dst[i] = 0.5f;
+        return -1;
+    }
+    if(margin < 0.f) margin = 0.f;
+    if(margin > 0.5f) margin = 0.5f;
+
+    /* 用 lo/hi 把数据压到 [margin, 1-margin]，再做线性插值重采样 */
+    const float inv = 1.0f / span;
+    for(i = 0; i < dst_n; i++) {
+        const float u = (dst_n == 1) ? 0.f : (float)i / (float)(dst_n - 1);
+        const float fi = u * (float)(n - 1);
+        const int   i0 = (int)fi;
+        const int   i1 = (i0 + 1 < n) ? i0 + 1 : i0;
+        const float fr = fi - (float)i0;
+        const float v = src[i0] * (1.f - fr) + src[i1] * fr;
+
+        float yn = (v - lo) * inv;                 /* 0..1 */
+        yn = yn * (1.f - 2.f * margin) + margin;   /* 留白 */
+        if(yn < 0.f) yn = 0.f;
+        if(yn > 1.f) yn = 1.f;
+        dst[i] = yn;
+    }
+    return 0;
+}
