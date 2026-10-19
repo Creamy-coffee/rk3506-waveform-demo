@@ -126,6 +126,7 @@ static lv_obj_t *s_lbl_clock, *s_lbl_run_status;
 
 static lv_obj_t *s_chip_ch1, *s_chip_ch2, *s_chip_ai, *s_chip_run;
 static lv_obj_t *s_dd_freq;
+static lv_obj_t *s_lbl_wave;           /* 重建页右上角：波形类型 */
 static lv_obj_t *s_dd_tb;              /* 时基下拉框，真实模式下要跟着窗口同步 */
 
 /*
@@ -639,6 +640,86 @@ static void auto_fit_apply(int fn)
     update_axis_label();
 }
 
+/* ---- 波形类型判定 ------------------------------------------------
+ *
+ * 只靠谐波比例判，判据很少但足够区分常见的几种，而且**能解释**：
+ *   rK = 第 K 次谐波幅度 / 基波幅度
+ *     正弦    r2、r3 都很小
+ *     方波    r2≈0，r3≈1/3
+ *     三角波  r2≈0，r3≈1/9
+ *     锯齿波  r2≈1/2 —— **有强的偶次谐波**，这是和方波的关键区别
+ *
+ * ⚠️ 前提是这些谐波落在奈奎斯特以内。10 MHz 时 3 次谐波 30 MHz 没问题；
+ *    30 MHz 时 3 次谐波 90 MHz 早折叠回来了，根本看不到 ——
+ *    这时标一个 `*`，表示「判据不足」，不假装认得出来。
+ */
+enum {
+    WF_UNKNOWN = 0,
+    WF_DC,
+    WF_NOISE,
+    WF_SINE,
+    WF_SQUARE,
+    WF_TRIANGLE,
+    WF_SAW
+};
+
+static const char *const WF_NAME[] = {
+    "未知", "直流", "噪声", "正弦", "方波", "三角波", "锯齿波"
+};
+
+static int s_wf_kind  = WF_UNKNOWN;
+static int s_wf_alias;          /* 1 = 谐波超出奈奎斯特，判定可能不准 */
+
+/* 在中心 bin 附近找最大值：谱线未必正好落在整数 bin 上 */
+static float mag_near_bin(int b, int span)
+{
+    int lo = b - span, hi = b + span;
+    if(lo < 1) lo = 1;
+    if(hi > s_real_bins - 1) hi = s_real_bins - 1;
+    float m = 0.0f;
+    for(int i = lo; i <= hi; i++)
+        if(s_real_mag[i] > m) m = s_real_mag[i];
+    return m;
+}
+
+static void classify_wave(void)
+{
+    s_wf_alias = 0;
+    s_wf_kind  = WF_UNKNOWN;
+
+    if(s_real_peak_hz <= 0.0f) return;
+
+    const float vpp = (s_real_vpp0_mv > s_real_vpp1_mv) ? s_real_vpp0_mv : s_real_vpp1_mv;
+    if(vpp < 20.0f) { s_wf_kind = WF_DC; return; }
+
+    /* 峰值比底噪高不到 10 dB 就按噪声算，别硬套成某种波形 */
+    if(s_real_peak_dbfs < s_real_floor_dbfs + 10.0f) { s_wf_kind = WF_NOISE; return; }
+
+    const wave_source_t *src = wave_source_get();
+    const float fs = (src && src->sample_rate > 0) ? (float)src->sample_rate : 65000000.0f;
+    const int   b1 = (int)((double)s_real_peak_hz * (double)REAL_FFT_N / (double)fs + 0.5);
+    if(b1 < 2 || b1 >= s_real_bins - 2) return;
+
+    const float a1 = mag_near_bin(b1, 2);
+    if(a1 <= 0.0f) return;
+
+    const int   b2 = 2 * b1, b3 = 3 * b1;
+    const float r2 = (b2 < s_real_bins - 1) ? mag_near_bin(b2, 2) / a1 : -1.0f;
+    const float r3 = (b3 < s_real_bins - 1) ? mag_near_bin(b3, 2) / a1 : -1.0f;
+
+    if(r2 < 0.0f || r3 < 0.0f) {
+        /* 谐波出界，只能靠偶次谐波做一点区分，其余按正弦兜底 */
+        s_wf_alias = 1;
+        s_wf_kind  = (r2 > 0.25f) ? WF_SAW : WF_SINE;
+        return;
+    }
+
+    if(r2 < 0.20f && r3 > 0.20f && r3 < 0.60f) { s_wf_kind = WF_SQUARE;   return; }
+    if(r2 < 0.20f && r3 > 0.05f && r3 <= 0.20f) { s_wf_kind = WF_TRIANGLE; return; }
+    if(r2 > 0.25f && r2 < 0.80f && r3 > 0.15f)  { s_wf_kind = WF_SAW;      return; }
+    if(r2 < 0.10f && r3 < 0.05f)                { s_wf_kind = WF_SINE;     return; }
+}
+
 static void real_update(void)
 {
     /*
@@ -740,6 +821,9 @@ static void real_update(void)
                                        / REAL_FULLSCALE_COUNTS);
     s_real_phase_deg = phase_diff_deg(f0, f1, fn, s_real_peak_hz, (float)src->sample_rate);
 
+    /* 波形类型：判据只用前三次谐波的比例，见 classify_wave() */
+    classify_wave();
+
     s_real_fid   = st->last_frame_id;
     s_real_t_last = lv_tick_get();
     s_real_valid = true;
@@ -825,7 +909,10 @@ static void fetch_scope(int ch, float *y01, int n)
 {
     if(S.use_real) {
         if(s_real_valid && s_full_n >= 2) {
-            map_window(ch ? s_full1 : s_full0, s_full_n, y01, n, true);
+            /* 示波器页是**测量视图**，必须显示原始采样点直连的样子 ——
+             * 这里做带限重建等于造假：看到的波形不是采集到的。
+             * 重建只在「重建」页作为对照显示（见 tick_ai）。 */
+            map_window(ch ? s_full1 : s_full0, s_full_n, y01, n, false);
             return;
         }
         /* 接了串口但没有数据 / 链路已断：平直零线，不再退回演示曲线 */
@@ -1178,6 +1265,15 @@ static void build_ai(lv_obj_t *pg)
     lv_obj_set_style_text_letter_space(t1, 1, LV_PART_MAIN);
     mk_label(tr1, 0, 0, "●", V32_FONT_SMALL, V32_C_CH1);
 
+    /* 右上角：波形类型。底板同色，波形压过来也读得清。 */
+    s_lbl_wave = mk_label(s_plot_raw, 0, 0, "—", V32_FONT_SMALL, V32_C_METRIC_VALUE);
+    lv_obj_align(s_lbl_wave, LV_ALIGN_TOP_RIGHT, -V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
+    lv_obj_set_style_bg_color(s_lbl_wave, V32_C_PLOT, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_lbl_wave, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_lbl_wave, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(s_lbl_wave, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(s_lbl_wave, 2, LV_PART_MAIN);
+
     s_plot_den = plot_create(stack, PLOT_AI);
     lv_obj_set_width(s_plot_den, LV_PCT(100));
     lv_obj_set_height(s_plot_den, MAIN_H - V32_PAGE_GAP - half);
@@ -1200,8 +1296,8 @@ static void build_ai(lv_obj_t *pg)
     mk_metric(p1, TITLE_H + METRIC_H * 3, "群延迟", "64 点",      V32_C_METRIC_VALUE);
     mk_metric(p1, TITLE_H + METRIC_H * 4, "SNR 增益",  "—",         V32_C_METRIC_VALUE);
     mk_note(p1, TITLE_H + METRIC_H * 5 + 6, ASIDE_W - V32_PANEL_PAD * 2,
-            "*2561 抽头 / 20 相，截止在原奈奎斯特。重建不增加采样率、不降噪；"
-            "超奈奎斯特的成分救不回来。");
+            "*2561 抽头 / 20 相。重建不增加采样率，也救不了混叠。"
+            "右上角类型按谐波比例判定，带 * 表示谐波已超奈奎斯特、判据不足。");
 }
 
 /* =========================================================
@@ -1925,7 +2021,12 @@ static void tick_ai(void)
             /* 下：同一段数据做带限重建；关掉开关就是原始（与上图重合） */
             map_window(s_full0, s_full_n, y, n, S.ai);
             plot_set_trace(s_plot_den, 0, y, n, V32_C_AI_OUT, 2);
+
+            /* * = 谐波已超出奈奎斯特，判据不足 */
+            lv_label_set_text_fmt(s_lbl_wave, "%s%s",
+                                  WF_NAME[s_wf_kind], s_wf_alias ? " *" : "");
         } else {
+            lv_label_set_text(s_lbl_wave, "—");
             /* 接了串口但没帧 / 链路断了：两条零线，绝不退回演示曲线 */
             for(int i = 0; i < n; i++) y[i] = 0.5f;
             plot_set_trace(s_plot_raw, 0, y, n, V32_C_CH1, 2);
