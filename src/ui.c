@@ -103,6 +103,7 @@ static struct {
     float phase;        /* ° */
     bool  fullscreen;
     bool  use_real;     /* WAVE_SRC=real */
+    bool  auto_fit;     /* 按下「自动」后等下一帧真实数据到位再算窗口 */
     demo_sig_t sig;
 } S;
 
@@ -124,6 +125,7 @@ static lv_obj_t *s_lbl_clock, *s_lbl_run_status;
 
 static lv_obj_t *s_chip_ch1, *s_chip_ch2, *s_chip_ai, *s_chip_run;
 static lv_obj_t *s_dd_freq;
+static lv_obj_t *s_dd_tb;              /* 时基下拉框，真实模式下要跟着窗口同步 */
 
 /*
  * 原来这里还有 s_slider_noise / s_lbl_noise（控制条上的「噪声」滑条）。
@@ -484,7 +486,19 @@ static int      s_zoom_start;
 
 #define ZOOM_GAIN_MIN   0.05f
 #define ZOOM_GAIN_MAX   200.0f
+
+/*
+ * 横向最少显示多少个样点（= 最大放大倍率）。
+ * 原来是 64 点（≈0.98 µs），10 MHz 以下根本放不到 1 个周期里看细节。
+ * 现在放开到 8 点（≈0.123 µs），配合下面的线性插值分支，能贴到单个样点看。
+ * 上限就是整帧 4096 点 —— 一帧只有 63 µs，这是接收端的硬边界，不是缩放限制。
+ */
+#define ZOOM_SPAN_MIN   8
+
 static float    s_gain = 1.0f;          /* 1.0 = 按整帧满幅铺满 */
+/* 程序里同步「时基」下拉框时置位，避免 set_selected 反过来触发 cb_timebase
+ * 把刚捏好的窗口又按档位拍扁（会形成「捏不动」的假象）。 */
+static bool     s_tb_lock;
 
 /* 抽样中位数当底噪：每 16 个 bin 取一个，插入排序足够快，
  * 而且不会被单根强谱线带偏（用平均值就会）。 */
@@ -544,6 +558,63 @@ static float phase_diff_deg(const float *x0, const float *x1, int n,
     return d * 180.0f / pi;
 }
 
+static void update_axis_label(void);
+static void sync_timebase_dd(float us_div);
+
+/*
+ * 「自动」（AUTO / 自动设置）真正要做的两件事：
+ *   ① 横向：用 FFT 峰值频率把窗口框成**正好 10 个完整周期**
+ *   ② 纵向：满刻度 = 峰峰值的 **110%**（波形居中，上下各留 5%）
+ *
+ * 为什么不放在 cb_auto() 里直接算：峰值频率是 real_update() 里 FFT 算出来的，
+ * 按下 AUTO 的那一刻它多半还是上一帧的值。放到 real_update() 末尾，
+ * 用的就是同一帧刚算好的 s_real_peak_hz，窗口和读数天然一致。
+ *
+ * 只执行一次，算完清标志。之后两指捏放立即接管 —— ui_pinch_zoom/gain 会把
+ * S.auto_fit 清掉，不然你捏完松手它又跳回 10 个周期，会以为是手势乱了。
+ */
+static void auto_fit_apply(int fn)
+{
+    if(fn < 8) return;
+
+    /* ① 10 个完整周期 */
+    if(s_real_peak_hz > 1.0f) {
+        const wave_source_t *src = wave_source_get();
+        const float fs = (src && src->sample_rate > 0)
+                       ? (float)src->sample_rate : 65000000.0f;
+        int span = (int)(10.0f * fs / s_real_peak_hz + 0.5f);
+        if(span < 4)  span = 4;
+        if(span > fn) span = fn;
+        s_zoom_span  = span;
+        s_zoom_start = (fn - span) / 2;
+    }
+
+    /* ② 满刻度 = 峰峰值的 110%。
+     *    峰峰值按**显示窗口**统计，不按整帧 —— 整帧里有个毛刺就会把波形压小，
+     *    那就不是「纵轴最高到峰峰值的 110%」了。 */
+    {
+        const int st0 = s_zoom_start;
+        const int n   = (s_zoom_span > 0) ? s_zoom_span : fn;
+        float mn = s_full0[st0], mx = s_full0[st0];
+        for(int i = 0; i < n && st0 + i < fn; i++) {
+            const float v0 = s_full0[st0 + i];
+            const float v1 = s_full1[st0 + i];
+            if(v0 < mn) mn = v0;
+            if(v0 > mx) mx = v0;
+            if(v1 < mn) mn = v1;
+            if(v1 > mx) mx = v1;
+        }
+        float span = mx - mn;
+        if(span < 1e-3f) span = 1e-3f;
+        s_real_lo = mn - span * 0.05f;
+        s_real_sc = 1.0f / (span * 1.10f);
+    }
+
+    s_gain = 1.0f;
+    S.auto_fit = false;
+    update_axis_label();
+}
+
 static void real_update(void)
 {
     /*
@@ -574,6 +645,9 @@ static void real_update(void)
          * 让上层画零线，而不是把最后一帧冻在屏幕上。 */
         if((uint32_t)(lv_tick_get() - s_real_t_last) > REAL_STALE_MS) return;
         s_real_valid = true;
+        /* 按了 AUTO 但这一帧没变（比如刚按完就暂停）也要把窗口算出来，
+         * 否则标志一直挂着，等下一帧才生效，看着像 AUTO 没反应。 */
+        if(S.auto_fit) auto_fit_apply(s_full_n);
         return;
     }
 
@@ -645,6 +719,8 @@ static void real_update(void)
     s_real_fid   = st->last_frame_id;
     s_real_t_last = lv_tick_get();
     s_real_valid = true;
+
+    if(S.auto_fit) auto_fit_apply(fn);
 }
 
 /*
@@ -755,6 +831,32 @@ static void update_axis_label(void)
         lv_label_set_text(s_lbl_scope_axis, buf);
         snprintf(last, sizeof last, "%s", buf);
     }
+
+    sync_timebase_dd(us_div);
+}
+
+/* 把「时基」下拉框拨到和当前真实窗口最接近的那一档。
+ *
+ * 为什么不干脆不显示：这个下拉框现在是真的能改窗口的（cb_timebase），
+ * 如果它停在「2 µs/格」而左边读数写着 6.302，用户会以为又被骗了。
+ * 它是**档位**不是精确值，精确值看左下角那行。 */
+static void sync_timebase_dd(float us_div)
+{
+    if(!s_dd_tb || !S.use_real) return;
+
+    int   best  = 0;
+    float bestd = 1e9f;
+    for(int i = 0; i < 5; i++) {
+        float d = us_div - TIMEBASE_US[i];
+        if(d < 0.f) d = -d;
+        if(d < bestd) { bestd = d; best = i; }
+    }
+    if((int)lv_dropdown_get_selected(s_dd_tb) == best) return;
+
+    S.tb_idx  = best;
+    s_tb_lock = true;
+    lv_dropdown_set_selected(s_dd_tb, (uint32_t)best);
+    s_tb_lock = false;
 }
 
 /*
@@ -772,7 +874,7 @@ void ui_pinch_zoom(float scale, float anchor)
     if(s_zoom_span <= 0 || s_zoom_span > total) s_zoom_span = total;
 
     int span = (int)((float)s_zoom_span / scale + 0.5f);
-    if(span < 64) span = 64;                 /* 最小 64 点 ≈ 0.98 µs */
+    if(span < ZOOM_SPAN_MIN) span = ZOOM_SPAN_MIN;   /* 最小 8 点 ≈ 0.123 µs */
     if(span > total) span = total;
 
     const int anchor_sample = s_zoom_start + (int)(anchor * (float)s_zoom_span);
@@ -783,6 +885,7 @@ void ui_pinch_zoom(float scale, float anchor)
 
     s_zoom_span  = span;
     s_zoom_start = start;
+    S.auto_fit = false;          /* 手动缩放立即接管，别让 AUTO 又跳回 10 个周期 */
     update_axis_label();
 }
 
@@ -796,6 +899,7 @@ void ui_pinch_gain(float ratio)
     s_gain *= ratio;
     if(s_gain < ZOOM_GAIN_MIN) s_gain = ZOOM_GAIN_MIN;
     if(s_gain > ZOOM_GAIN_MAX) s_gain = ZOOM_GAIN_MAX;
+    S.auto_fit = false;          /* 纵向手动调整同样接管，理由见 ui_pinch_zoom */
     if(S.ch1 || S.ch2) update_axis_label();
 }
 
@@ -1303,13 +1407,41 @@ static void cb_freq(lv_event_t *e)
 
 static void cb_timebase(lv_event_t *e)
 {
+    if(s_tb_lock) return;        /* 程序在同步档位，不是用户点的 */
     S.tb_idx = (int)lv_dropdown_get_selected(lv_event_get_target(e));
-    /* 真实数据时时基由帧长决定（4096 点 @65 MSPS = 63 µs 满屏），
-     * 下拉框只对演示数据有意义 —— 所以写完立刻让 update_axis_label() 覆盖回去，
-     * 否则真实链路下点一下下拉框，左下角就变成和波形对不上的假读数。 */
-    if(S.use_real) update_axis_label();
-    else            lv_label_set_text_fmt(s_lbl_scope_axis, "%g µs/格 · 触发 自动",
-                                         (double)TIMEBASE_US[S.tb_idx]);
+
+    if(S.use_real) {
+        /*
+         * 真实链路：这个下拉框**现在真的改时间窗口**。
+         * 以前这里只是把标签覆盖回去，点了等于没反应 —— 用户会以为控件坏了。
+         *
+         *   一屏 = V32_GRID_X 格  ⇒  span = (µs/格) × 格数 × fs
+         *
+         * 上限是整帧：4096 点 @65 MSPS 只有 63 µs，想看更长的时间窗
+         * 只能让 FPGA 端做抽取（协议头里有 decimation 字段，见 v32cap3.h）。
+         */
+        const wave_source_t *src = wave_source_get();
+        const float fs = (src && src->sample_rate > 0) ? (float)src->sample_rate : 65000000.0f;
+        const int   total = s_full_n > 0 ? s_full_n : V32_POINTS;
+
+        int span = (int)(TIMEBASE_US[S.tb_idx] * 1e-6f * fs * (float)V32_GRID_X + 0.5f);
+        if(span < ZOOM_SPAN_MIN) span = ZOOM_SPAN_MIN;
+        if(span > total)         span = total;
+
+        /* 以当前窗口中心为基准缩放，改时基时波形不会突然跳到一边 */
+        const int c = s_zoom_start + ((s_zoom_span > 0 ? s_zoom_span : total) / 2);
+        int start = c - span / 2;
+        if(start < 0) start = 0;
+        if(start > total - span) start = total - span;
+
+        s_zoom_span  = span;
+        s_zoom_start = start;
+        S.auto_fit   = false;        /* 手动改时基就退出 AUTO 跟踪 */
+        update_axis_label();
+    } else {
+        lv_label_set_text_fmt(s_lbl_scope_axis, "%g µs/格 · 触发 自动",
+                              (double)TIMEBASE_US[S.tb_idx]);
+    }
     ui_tick();
 }
 
@@ -1388,9 +1520,17 @@ static void cb_auto(lv_event_t *e)
 {
     LV_UNUSED(e);
 
-    s_zoom_span  = 0;
-    s_zoom_start = 0;
-    s_gain       = 1.0f;
+    if(S.use_real) {
+        /* 真实链路：只置标志。窗口由 real_update() 末尾的 auto_fit_apply()
+         * 用**同一帧**刚算好的 FFT 峰值频率去框 10 个完整周期，
+         * 这里自己改 s_zoom_span 的话会跟真实帧对不上。 */
+        S.auto_fit = true;
+    } else {
+        /* 演示源没有真实 FFT，保持原来的「整帧 + 1:1」 */
+        s_zoom_span  = 0;
+        s_zoom_start = 0;
+    }
+    s_gain = 1.0f;
 
     S.running = true;
     S.ch1 = true;
@@ -1415,10 +1555,12 @@ static void cb_reset(lv_event_t *e)
     S.win_idx = WIN_DEF; S.tau_idx = TAU_DEF; S.phase = 43.7f;
     S.sig.t = 0.f;
 
-    /* 显示缩放回位：整帧 + 纵向 1:1（示波器的「自动设置」） */
+    /* 显示缩放回位：整帧 + 纵向 1:1（这是「复位」，不是「自动」——
+     * 自动走的是 auto_fit_apply()，会按 FFT 峰值频率框 10 个周期） */
     s_zoom_span  = 0;
     s_zoom_start = 0;
     s_gain       = 1.0f;
+    S.auto_fit   = false;
     /* 控件回位（设了下拉框会触发 VALUE_CHANGED，顺手把状态也同步了） */
     lv_dropdown_set_selected(s_dd_freq, (uint32_t)FREQ_DEF);
     {
@@ -1484,6 +1626,12 @@ static void build_controls(lv_obj_t *root)
     lv_obj_t *g1 = mk_group(bar, "信号频率");
     s_dd_freq = mk_dropdown(g1, FREQ_OPTS, FREQ_DEF, cb_freq);
     lv_obj_set_style_max_width(s_dd_freq, V32_SEL_MAX_W, LV_PART_MAIN);
+    /*
+     * 真实数据时这个下拉框改不动任何东西 —— 信号频率是 FFT 从真实帧里量出来的
+     * （示波器页左下角「频率」那一项），下拉框只在 --source demo 下有意义。
+     * 与其让人点了没反应以为坏了，不如直接置灰。
+     */
+    if(S.use_real) lv_obj_add_state(s_dd_freq, LV_STATE_DISABLED);
 
     /*
      * 原来这里还有一组「噪声」滑条（lv_slider + 百分比标签）。
@@ -1499,6 +1647,7 @@ static void build_controls(lv_obj_t *root)
 
     lv_obj_t *gs = mk_group(cp, "时基");
     lv_obj_t *dd_tb = mk_dropdown(gs, TIMEBASE_OPTS, TIMEBASE_DEF, cb_timebase);
+    s_dd_tb = dd_tb;
     lv_obj_set_style_max_width(dd_tb, V32_SEL_MAX_W, LV_PART_MAIN);
     s_ctrl_grp[UI_PAGE_SCOPE] = gs;
 

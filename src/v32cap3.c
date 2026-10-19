@@ -57,6 +57,7 @@ static int         s_baud_actual;   /* 驱动实际生效的波特率 */
 static uint32_t    s_last_id;
 static uint64_t    s_last_index;
 static int         s_have_last;
+static int         s_idxdbg = -1;   /* -1 = 还没查环境变量；见 WAVE_IDXDBG */
 
 /* 帧率统计窗口 */
 static struct timespec s_fps_t0;
@@ -242,6 +243,23 @@ static void v32_feed(const uint8_t *data, int n)
                 continue;
             }
             s_st.missing_frames += delta - 1u;
+        }
+
+        /*
+         * 帧连续性诊断（WAVE_IDXDBG=1 打开）。
+         *
+         * 协议头的 start_idx 是这个窗口在 ADC 样点序列里的绝对下标。
+         *   d = 4096  ⇒ 相邻帧在时间上严丝合缝，理论上可以拼接成更长的一段
+         *   d ≫ 4096 ⇒ 帧与帧之间有空洞（串口来不及传，中间全丢了），
+         *              那就**绝对不能**把两帧接起来当成连续信号画。
+         * 这个判断决定了「能不能在软件里看更长的时间窗」，所以留着这个开关。
+         */
+        if (s_idxdbg < 0) s_idxdbg = getenv("WAVE_IDXDBG") ? 1 : 0;
+        if (s_idxdbg) {
+            fprintf(stderr, "[idx] fid=%u start=%llu d=%lld decim=%u\n",
+                    (unsigned)fid, (unsigned long long)start_idx,
+                    s_have_last ? (long long)(start_idx - s_last_index) : -1LL,
+                    (unsigned)dec);
         }
 
         s_stage.frame_id    = fid;
