@@ -523,7 +523,8 @@ static void plot_draw_cb(lv_event_t *e)
     else {
         draw_one_trace(layer, p, 0, x0, y0, w, h);
         draw_one_trace(layer, p, 1, x0, y0, w, h);
-        if(p->mode == PLOT_SCOPE) draw_trigger(layer, p, x0, y0, w, h);
+        /* PLOT_FFT 也画游标线：频谱页要用手指点选频率（cb_fft_cursor） */
+        if(p->mode == PLOT_SCOPE || p->mode == PLOT_FFT) draw_trigger(layer, p, x0, y0, w, h);
         if(p->mode == PLOT_FFT)   draw_peak(layer, p, x0, y0, w, h);
     }
 

@@ -25,6 +25,7 @@
 #include "fft.h"
 #include "bl_interp.h"
 #include "drm_disp.h"
+#include "port.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -126,7 +127,11 @@ static lv_obj_t *s_lbl_clock, *s_lbl_run_status;
 
 static lv_obj_t *s_chip_ch1, *s_chip_ch2, *s_chip_ai, *s_chip_run;
 static lv_obj_t *s_dd_freq;
-static lv_obj_t *s_lbl_den_title;       /* 重建页下方图标题，随能否重建变化 */
+static lv_obj_t *s_lbl_den_title;
+static lv_obj_t *s_lbl_recon_badge;      /* 示波器页右上角「重建」牌 */
+static lv_obj_t *s_lbl_fft_cur;          /* 频谱页游标读数 */
+static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
+static bool      s_fft_cur_on;       /* 重建页下方图标题，随能否重建变化 */
 static lv_obj_t *s_lbl_wave;           /* 重建页右上角：波形类型 */
 static lv_obj_t *s_dd_tb;              /* 时基下拉框，真实模式下要跟着窗口同步 */
 
@@ -272,6 +277,7 @@ static void chip_styles(lv_obj_t *b)
 
 static void chip_selected(lv_obj_t *b, bool on)
 {
+    if(!b) return;                 /* 还没建好就别刷，避免空指针 */
     lv_obj_set_style_bg_color(b, on ? V32_C_CHIP_ON_BG : V32_C_CHIP_BG, LV_PART_MAIN);
     lv_obj_set_style_border_color(b, on ? V32_C_CHIP_ON_BORDER : V32_C_CHIP_BORDER, LV_PART_MAIN);
     lv_obj_set_style_text_color(b, on ? V32_C_CHIP_ON_FG : V32_C_CHIP_FG, LV_PART_MAIN);
@@ -694,18 +700,18 @@ static float mag_near_bin(int b, int span)
 static int wf_can_reconstruct(void)
 {
     /*
-     * **只重建正弦。**
+     * **认出来了就允许重建，认不出来一律不重建。**
      *
-     * 方波/三角波/锯齿波的谐波是无穷长的（幅度按 1/n 或 1/n² 衰减），
-     * 截断到奈奎斯特必然产生吉布斯振铃 —— 屏幕上那些过冲和纹波**不是采到的**，
-     * 是重建算法自己造出来的。上板实测 1 MHz 方波重建后平顶上浮 8%、
-     * 边沿外侧振铃，比原始点直连还难看也不准。
+     * 这是用户定的规矩（原话「不知道是什么波形还画一条光滑曲线，那是造假」），
+     * 所以门槛是"认得出"，不是"带限"。
      *
-     * 而且这几种波形的谐波本来就在带内看得见，原始点直连（或 min/max 分桶）
-     * 已经足够还原形状，根本不需要插值。只有正弦是单根谱线，带限重建
-     * 才是数学上唯一且无振铃的解。
+     * 但方波/三角波/锯齿波**不是带限信号**，谐波按 1/n 或 1/n² 衰减到无穷，
+     * 截断到奈奎斯特必然产生吉布斯振铃：平顶上浮、边沿外侧过冲，实测约 9%。
+     * **那些过冲不是采到的，是重建算法造的**，界面上必须写明，不能当成测量结果。
+     * 只有正弦是单根谱线，重建是唯一且无振铃的解。
      */
-    return s_wf_kind == WF_SINE;
+    return s_wf_kind == WF_SINE   || s_wf_kind == WF_SQUARE
+        || s_wf_kind == WF_TRIANGLE || s_wf_kind == WF_SAW;
 }
 
 static void classify_wave(void)
@@ -948,10 +954,11 @@ static void fetch_scope(int ch, float *y01, int n)
 {
     if(S.use_real) {
         if(s_real_valid && s_full_n >= 2) {
-            /* 示波器页是**测量视图**，必须显示原始采样点直连的样子 ——
-             * 这里做带限重建等于造假：看到的波形不是采集到的。
-             * 重建只在「重建」页作为对照显示（见 tick_ai）。 */
-            map_window(ch ? s_full1 : s_full0, s_full_n, y01, n, false);
+            /* 示波器页是否重建，跟着**全局重建开关**走（用户要求）。
+             * 关掉 = 原始采样点直连（测量视图，所见即所采）；
+             * 打开 = 带限重建，右上角会亮一个「重建」牌，免得看不出来是加工过的。 */
+            map_window(ch ? s_full1 : s_full0, s_full_n, y01, n,
+                       S.ai && wf_can_reconstruct());
             return;
         }
         /* 接了串口但没有数据 / 链路已断：平直零线，不再退回演示曲线 */
@@ -1119,6 +1126,15 @@ static void build_scope(lv_obj_t *pg)
 
     lv_obj_t *tr = mk_title_row(s_plot_scope, V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
     lv_obj_t *t0 = mk_label(tr, 0, 0, "时域波形", V32_FONT_SMALL, V32_C_PLOT_TITLE);
+
+    /* 右上角「重建」牌：示波器页一旦是加工过的波形，必须让人一眼看出来 */
+    s_lbl_recon_badge = mk_label(s_plot_scope, 0, 0, "重建", V32_FONT_SMALL, V32_C_WARN);
+    lv_obj_align(s_lbl_recon_badge, LV_ALIGN_TOP_RIGHT, -V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
+    lv_obj_set_style_bg_color(s_lbl_recon_badge, V32_C_PLOT, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_lbl_recon_badge, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_lbl_recon_badge, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(s_lbl_recon_badge, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(s_lbl_recon_badge, 2, LV_PART_MAIN);
     lv_obj_set_style_text_letter_space(t0, 1, LV_PART_MAIN);
     mk_label(tr, 0, 0, "● CH1", V32_FONT_SMALL, V32_C_CH1);
     mk_label(tr, 0, 0, "● CH2", V32_FONT_SMALL, V32_C_CH2);
@@ -1186,6 +1202,38 @@ static void build_scope(lv_obj_t *pg)
 /* =========================================================
  * 页面 2：FFT
  * ========================================================= */
+/* 频谱页手指点选：把游标挪到点中的位置，读出那一点的频率和幅度。
+ * 不做拖拽，只做点一下 —— 拖拽要跟触摸手势状态机抢事件，收益不大。 */
+static void cb_fft_cursor(lv_event_t *e)
+{
+    if(dbg_on()) fprintf(stderr, "[cur] ev=%d\n", (int)lv_event_get_code(e));
+    /* lv_indev_get_act() 在 CLICKED 时可能已被清空，返回 NULL；
+     * 这时退而求其次取第一个输入设备（板上只有触摸屏一个），
+     * 否则永远拿到 (0,0)，游标会一直停在最左边。 */
+    lv_indev_t *indev = lv_indev_get_act();
+    if(!indev) indev = lv_indev_get_next(NULL);
+    if(!indev) return;
+
+    /* 不用 lv_indev_get_point()：实测在事件回调里拿到的是控件左上角(13,0)，
+     * 不是手指落点。改用 port.c 里存下来的原始触点。 */
+    lv_point_t p;
+    { int32_t tx = 0, ty = 0; port_touch_last_point(&tx, &ty); p.x = tx; p.y = ty; }
+
+    lv_area_t a;
+    lv_obj_get_coords(s_plot_fft, &a);
+    if(p.x < a.x1) p.x = a.x1;
+    if(p.x > a.x2) p.x = a.x2;
+
+    const int w = a.x2 - a.x1;
+    s_fft_cur_x = (w > 0) ? (float)(p.x - a.x1) / (float)w : 0.0f;
+    if(s_fft_cur_x < 0.f) s_fft_cur_x = 0.f;
+    if(s_fft_cur_x > 1.f) s_fft_cur_x = 1.f;
+    s_fft_cur_on = true;
+    if(dbg_on()) fprintf(stderr, "[cur] tap=(%d,%d) plot=(%d..%d) x=%.3f\n",
+                         (int)p.x, (int)p.y, (int)a.x1, (int)a.x2, (double)s_fft_cur_x);
+    ui_tick();
+}
+
 static void build_fft(lv_obj_t *pg)
 {
     lv_obj_set_flex_flow(pg, LV_FLEX_FLOW_ROW);
@@ -1200,6 +1248,26 @@ static void build_fft(lv_obj_t *pg)
     lv_obj_t *t0 = mk_label(tr, 0, 0, "FFT 频谱 · 8192 点",
                             V32_FONT_SMALL, V32_C_PLOT_TITLE);
     lv_obj_set_style_text_letter_space(t0, 1, LV_PART_MAIN);
+
+    /* 频谱页游标：手指点哪儿就读哪儿的频率和幅度。
+     * 只显示一个尖峰确实浪费 —— 一屏 32.5 MHz 范围内的任意位置都该能读。 */
+    s_lbl_fft_cur = mk_label(s_plot_fft, 0, 0, "点击频谱读取", V32_FONT_SMALL, V32_C_WARN);
+    lv_obj_align(s_lbl_fft_cur, LV_ALIGN_TOP_RIGHT, -V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
+    lv_obj_set_style_bg_color(s_lbl_fft_cur, V32_C_PLOT, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_lbl_fft_cur, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_lbl_fft_cur, 4, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(s_lbl_fft_cur, 6, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(s_lbl_fft_cur, 2, LV_PART_MAIN);
+
+    lv_obj_add_flag(s_plot_fft, LV_OBJ_FLAG_CLICKABLE);
+    /* 用 PRESSED 而不是 CLICKED：CLICKED 触发时输入设备的坐标可能已被清掉，
+     * lv_indev_get_point() 会拿到 0，游标永远停在最左边。 */
+    /* ⚠️ lv_obj_add_event_cb 的 filter 是**单个事件码精确匹配**，
+     *    写成 (A|B|C) 是一个谁都不等于的值，回调永远不触发（踩过）。
+     *    要听多个事件就注册多次。 */
+    lv_obj_add_event_cb(s_plot_fft, cb_fft_cursor, LV_EVENT_CLICKED, NULL);
+    /* 图上的标题/读数标签会挡住图本身，事件不冒泡，所以页容器也挂一份 */
+    lv_obj_add_event_cb(pg, cb_fft_cursor, LV_EVENT_CLICKED, NULL);
 
     /*
      * 左下角原来还有一行 LVGL 标签 "0 — 32.5 MHz · dBFS"。
@@ -1336,8 +1404,8 @@ static void build_ai(lv_obj_t *pg)
     mk_metric(p1, TITLE_H + METRIC_H * 3, "群延迟", "64 点",      V32_C_METRIC_VALUE);
     mk_metric(p1, TITLE_H + METRIC_H * 4, "SNR 增益",  "—",         V32_C_METRIC_VALUE);
     mk_note(p1, TITLE_H + METRIC_H * 5 + 6, ASIDE_W - V32_PANEL_PAD * 2,
-            "*只重建正弦：方波/三角波/锯齿波不是带限信号，重建会造出振铃。"
-            "认不出是什么波形也不重建。");
+            "*认出来就重建；认不出来不重建。方波/三角波/锯齿波重建会有"
+            "吉布斯振铃（过冲约 9%），那不是采到的，别当测量值用。");
 }
 
 /* =========================================================
@@ -1840,8 +1908,8 @@ static void build_controls(lv_obj_t *root)
     s_ctrl_grp[UI_PAGE_LOCK] = gl;
 
     lv_obj_t *ga = mk(cp, 0, 0, LV_SIZE_CONTENT, V32_CHIP_H);
-    s_chip_ai = mk_chip(ga, "重建 开", cb_ai);
-    chip_selected(s_chip_ai, true);
+    /* 重建开关是**全局**的（示波器页也跟着变），所以放在主控制条，不放页内组 */
+    mk_label(ga, 0, 0, "开关在主控条", V32_FONT_SMALL, V32_C_HINT);
     s_ctrl_grp[UI_PAGE_AI] = ga;
 
     lv_obj_t *gsys = mk(cp, 0, 0, LV_SIZE_CONTENT, V32_CHIP_H);
@@ -1858,6 +1926,8 @@ static void build_controls(lv_obj_t *root)
     /* ---- 四个动作按钮 ----
      * 「自动」放在最前面紧挨着「暂停」：示波器上 Auto Set 和 Run/Stop 是
      * 挨着的两个常用键，捏乱了之后第一反应就是先按自动。 */
+    s_chip_ai = mk_chip(bar, "重建 开", cb_ai);   /* 全局开关 */
+    chip_selected(s_chip_ai, S.ai);              /* S.ai 初始为 true，补一次选中色 */
     s_chip_run = mk_chip(bar, "⏸ 暂停", cb_run);
     mk_chip(bar, "⊞ 自动", cb_auto);
     mk_chip(bar, "↺ 复位", cb_reset);
@@ -1979,6 +2049,26 @@ static void tick_scope(void)
     if(use_real) update_axis_label();
 }
 
+static void fft_cursor_tick(void)
+{
+    if(!s_fft_cur_on || !s_lbl_fft_cur) return;
+
+    const wave_source_t *src = wave_source_get();
+    const float fs = (src && src->sample_rate > 0) ? (float)src->sample_rate : 65000000.0f;
+    const float f  = s_fft_cur_x * fs * 0.5f;
+
+    float db = -200.0f;
+    if(s_real_bins > 2) {
+        int b = (int)(s_fft_cur_x * (float)(s_real_bins - 1) + 0.5f);
+        if(b < 1) b = 1;
+        if(b > s_real_bins - 1) b = s_real_bins - 1;
+        db = 20.0f * log10f((s_real_mag[b] + 1e-9f) / REAL_FULLSCALE_COUNTS);
+    }
+    lv_label_set_text_fmt(s_lbl_fft_cur, "%.3f MHz · %.1f dBFS",
+                          (double)f / 1e6, (double)db);
+    plot_set_trigger(s_plot_fft, true, s_fft_cur_x);
+}
+
 static void tick_fft(void)
 {
     static float y[256];
@@ -2014,6 +2104,8 @@ static void tick_fft(void)
 
     plot_set_peak(s_plot_fft, true, px, peak_txt);
     lv_label_set_text(s_lbl_fft_win, WIN_NAME[S.win_idx]);
+
+    fft_cursor_tick();      /* 手指点选的频率/幅度读数 */
 }
 
 static void tick_lock(void)
@@ -2220,14 +2312,22 @@ void ui_create(void)
         s_page[i] = mk(root, MAIN_X0, MAIN_Y0, MAIN_W, MAIN_H);
         lv_obj_add_flag(s_page[i], LV_OBJ_FLAG_HIDDEN);
     }
+    if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] scope\n");
     build_scope (s_page[UI_PAGE_SCOPE]);
+    if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] fft\n");
     build_fft   (s_page[UI_PAGE_FFT]);
+    if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] lock\n");
     build_lock  (s_page[UI_PAGE_LOCK]);
+    if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] ai\n");
     build_ai    (s_page[UI_PAGE_AI]);
+    if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] system\n");
     build_system(s_page[UI_PAGE_SYSTEM]);
 
+    if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] controls\n");
     build_controls(root);
+    if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] nav\n");
     build_nav(root);
+    if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] done\n");
     /* 右下角那行原型注记已按需求删除（见 build_fsnote 的注释） */
 
     ui_set_page(UI_PAGE_SCOPE);
@@ -2235,6 +2335,13 @@ void ui_create(void)
     /* 接了真实源就立刻按真实帧长把时基写对，
      * 否则没有数据时左下角会一直挂着演示时代的 "2 µs/div"，和实际帧对不上。 */
     if(S.use_real) update_axis_label();
+
+    /* 右上角「重建」牌：只要当前画的是加工过的波形就亮，让人一眼看出 */
+    if(s_lbl_recon_badge) {
+        const bool bl_on = S.use_real && s_real_valid && S.ai && wf_can_reconstruct();
+        lv_obj_set_style_opa(s_lbl_recon_badge,
+                             bl_on ? LV_OPA_COVER : LV_OPA_TRANSP, LV_PART_MAIN);
+    }
 }
 
 int  ui_page_count(void) { return UI_PAGE_COUNT; }
@@ -2283,6 +2390,7 @@ void ui_tick(void)
     S.sig.phase_deg   = S.phase;
     S.sig.window      = S.win_idx;
 
+    if(getenv("WAVE_TDBG")) { fprintf(stderr, "[tick] page=%d\n", (int)S.page); fflush(stderr); }
     switch(S.page) {
         case UI_PAGE_SCOPE:  tick_scope();  break;
         case UI_PAGE_FFT:    tick_fft();    break;

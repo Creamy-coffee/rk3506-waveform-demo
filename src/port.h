@@ -1,6 +1,8 @@
 /*
  * port.h —— Linux 板级移植：framebuffer/DRM 显示 + evdev 触摸
  */
+#include <stdint.h>
+
 #ifndef PORT_H
 #define PORT_H
 
@@ -33,3 +35,6 @@ int port_input_init(void);
 const char *port_touch_device(void);
 
 #endif /* PORT_H */
+
+/* 上一次触摸落点的屏幕坐标（读数游标等需要用精确位置的地方） */
+void port_touch_last_point(int32_t *x, int32_t *y);

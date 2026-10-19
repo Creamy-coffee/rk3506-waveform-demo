@@ -314,6 +314,14 @@ static void frame_commit_b(touch_t *t)
     t->nd = k;
 }
 
+static int32_t s_last_tx, s_last_ty;   /* 上一次触点的屏幕坐标 */
+
+void port_touch_last_point(int32_t *x, int32_t *y)
+{
+    if(x) *x = s_last_tx;
+    if(y) *y = s_last_ty;
+}
+
 static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     touch_t *t = (touch_t *)lv_indev_get_user_data(indev);
@@ -476,6 +484,10 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         data->point.x = (int32_t)map_x(t, t->rx[0]);
         data->point.y = (int32_t)map_y(t, t->ry[0]);
         data->state   = LV_INDEV_STATE_PRESSED;
+        /* 记一份原始触点：lv_indev_get_point() 在事件回调里取到的值不可靠
+         * （实测拿到的是控件左上角），需要精确落点的地方直接用这个。 */
+        s_last_tx = data->point.x;
+        s_last_ty = data->point.y;
     } else {
         data->point.x = (int32_t)(nd >= 1 ? map_x(t, t->rx[0]) : 0);
         data->point.y = (int32_t)(nd >= 1 ? map_y(t, t->ry[0]) : 0);
