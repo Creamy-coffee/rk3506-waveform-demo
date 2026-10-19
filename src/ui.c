@@ -710,8 +710,12 @@ static int wf_can_reconstruct(void)
      * **那些过冲不是采到的，是重建算法造的**，界面上必须写明，不能当成测量结果。
      * 只有正弦是单根谱线，重建是唯一且无振铃的解。
      */
-    return s_wf_kind == WF_SINE   || s_wf_kind == WF_SQUARE
-        || s_wf_kind == WF_TRIANGLE || s_wf_kind == WF_SAW;
+    /* 只重建正弦。方波/三角波/锯齿波**不重建**：
+     * 它们不是带限信号，谐波按 1/n 衰减到无穷，截断到奈奎斯特必然产生
+     * 吉布斯振铃 —— 屏幕上那圈过冲就是"额外加上去的谐波"，看起来已经不像
+     * 原来的方波了（用户原话「不要给我加谐波上去都不像了」）。
+     * 宁可显示原始采样点，也不显示被改了形状的波形。 */
+    return s_wf_kind == WF_SINE;
 }
 
 static void classify_wave(void)
@@ -1404,8 +1408,8 @@ static void build_ai(lv_obj_t *pg)
     mk_metric(p1, TITLE_H + METRIC_H * 3, "群延迟", "64 点",      V32_C_METRIC_VALUE);
     mk_metric(p1, TITLE_H + METRIC_H * 4, "SNR 增益",  "—",         V32_C_METRIC_VALUE);
     mk_note(p1, TITLE_H + METRIC_H * 5 + 6, ASIDE_W - V32_PANEL_PAD * 2,
-            "*认出来就重建；认不出来不重建。方波/三角波/锯齿波重建会有"
-            "吉布斯振铃（过冲约 9%），那不是采到的，别当测量值用。");
+            "*只重建正弦。方波/三角波/锯齿波不是带限信号，重建会加出"
+            "吉布斯振铃（过冲约 9%），形状就变了，所以一律不重建。");
 }
 
 /* =========================================================
