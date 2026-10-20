@@ -858,7 +858,24 @@ static void real_update(void)
     /* ③ 频谱。用**交流成分大的那一路**做 FFT —— 另一路可能没接或者只有直流，
      *    拿它算频率会得到一个恒在 bin 1（≈0 Hz）的假读数。 */
     const float *spec_src = (s_real_vpp1_mv >= s_real_vpp0_mv) ? f1 : f0;
-    fft_magnitude_spectrum_zero(spec_src, fn, REAL_FFT_N, s_real_mag);
+
+    /*
+     * 先去掉直流再算谱。
+     *
+     * ADC 有零点偏置，不过去的话 bin 0 永远是全场最大 —— 后果有两个：
+     *   1. 频谱左边缘立着一根直流尖峰，把真正关心的信号压得看不见；
+     *   2. fetch_spectrum() 从 i=0 开始找峰值，▼ 箭头永远钉在原点。
+     *      （频率读数看着是对的，因为它从 bin 1 开始搜；错的是箭头和画面。）
+     * 示波器的频谱本来就是交流耦合的，先减均值是标准做法。
+     */
+    {
+        static float s_fft_tmp[WAVE_MAX_FRAME];
+        double sum = 0.0;
+        for(int i = 0; i < fn; i++) sum += (double)spec_src[i];
+        const float mean = (float)(sum / (double)fn);
+        for(int i = 0; i < fn; i++) s_fft_tmp[i] = spec_src[i] - mean;
+        fft_magnitude_spectrum_zero(s_fft_tmp, fn, REAL_FFT_N, s_real_mag);
+    }
     s_real_bins = REAL_FFT_N / 2;
 
     int pk = 1;
@@ -866,6 +883,10 @@ static void real_update(void)
         if(s_real_mag[i] > s_real_mag[pk]) pk = i;
 
     s_real_peak_hz   = (float)pk * (float)src->sample_rate / (float)REAL_FFT_N;
+    if(dbg_on())
+        fprintf(stderr, "[fft] pk_bin=%d (%.3f MHz)  mag pk=%.1f bin1=%.1f bin2=%.1f bin3=%.1f bins=%d\n",
+                pk, (double)s_real_peak_hz/1e6, (double)s_real_mag[pk],
+                (double)s_real_mag[1], (double)s_real_mag[2], (double)s_real_mag[3], s_real_bins);
     s_real_peak_dbfs = 20.0f * log10f((s_real_mag[pk] + 1e-9f) / REAL_FULLSCALE_COUNTS);
     s_real_floor_dbfs = 20.0f * log10f((noise_floor_mag(s_real_mag, s_real_bins) + 1e-9f)
                                        / REAL_FULLSCALE_COUNTS);
@@ -1093,19 +1114,47 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
      * 这样 PEAK LEVEL / NOISE FLOOR 两个读数才有物理意义。
      */
     if(S.use_real && s_real_valid && s_real_bins > 2) {
-        int   bi = 1;
+        int   bi = 2;
         float bv = -1e30f;
         for(int i = 0; i < n; i++) {
-            const int si = (int)((long)i * (s_real_bins - 1) / (n > 1 ? n - 1 : 1));
-            const float db = 20.0f * log10f((s_real_mag[si] + 1e-9f) / REAL_FULLSCALE_COUNTS);
+            /*
+             * 每个输出点取**对应这一组 bin 的最大值**，不能只抽一个 bin。
+             *
+             * 一屏 256 点要覆盖 4096 个 bin，每点平均跨 16 个 bin；
+             * 而 30 MHz 这类谱线只占 1~2 个 bin —— 均匀抽点会**整条谱线漏掉**，
+             * 画出来的"频谱"全是噪声底，▼ 也会在噪声里乱跳（看着像停在原点）。
+             * 取组内最大值才能保证窄谱线一定被画出来。
+             */
+            int s0 = (int)((long)i * (s_real_bins - 1) / (n > 1 ? n - 1 : 1));
+            int s1 = (int)((long)(i + 1) * (s_real_bins - 1) / (n > 1 ? n - 1 : 1));
+            if(s1 <= s0) s1 = s0 + 1;
+            if(s1 > s_real_bins) s1 = s_real_bins;
+
+            float mx = 0.0f;
+            for(int k = s0; k < s1; k++)
+                if(s_real_mag[k] > mx) mx = s_real_mag[k];
+
+            const float db = 20.0f * log10f((mx + 1e-9f) / REAL_FULLSCALE_COUNTS);
             float y = (db + V32_DEMO_DB_FULLSCALE) / V32_DEMO_DB_FULLSCALE;
             if(y < 0.f) y = 0.f;
             if(y > 1.f) y = 1.f;
             y01[i] = y;
-            if(y > bv) { bv = y; bi = i; }
+            if(i >= 2 && y > bv) { bv = y; bi = i; }
         }
         if(peak_x)   *peak_x   = (float)bi / (float)(n - 1);
         if(peak_y01) *peak_y01 = bv;
+        if(dbg_on()) {
+            /* 列出曲线最高的三个点，确认 ▼ 落点对不对 */
+            int b1=-1,b2=-1,b3=-1;
+            for(int i=2;i<n;i++){
+                if(b1<0||y01[i]>y01[b1]){b3=b2;b2=b1;b1=i;}
+                else if(b2<0||y01[i]>y01[b2]){b3=b2;b2=i;}
+                else if(b3<0||y01[i]>y01[b3]){b3=i;}
+            }
+            fprintf(stderr, "[spec] n=%d  top: i=%d y=%.3f / i=%d y=%.3f / i=%d y=%.3f  peak_x=%.3f\n",
+                    n, b1, (double)y01[b1], b2, (double)y01[b2], b3, (double)y01[b3],
+                    (double)((float)bi/(float)(n-1)));
+        }
         return;
     }
 
@@ -1376,7 +1425,7 @@ static void build_ai(lv_obj_t *pg)
     lv_obj_set_width(s_plot_raw, LV_PCT(100));
     lv_obj_set_height(s_plot_raw, half);
     lv_obj_t *tr1 = mk_title_row(s_plot_raw, V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
-    lv_obj_t *t1 = mk_label(tr1, 0, 0, "原始采样点 · CH1", V32_FONT_SMALL, V32_C_PLOT_TITLE);
+    lv_obj_t *t1 = mk_label(tr1, 0, 0, "原始采样点 · CH1 / CH2", V32_FONT_SMALL, V32_C_PLOT_TITLE);
     lv_obj_set_style_text_letter_space(t1, 1, LV_PART_MAIN);
     mk_label(tr1, 0, 0, "●", V32_FONT_SMALL, V32_C_CH1);
 
@@ -2154,19 +2203,25 @@ static void tick_ai(void)
 
     if(S.use_real) {
         if(s_real_valid && s_full_n >= 2) {
-            /* 上：原始点直接连直线 —— 故意不加重建，让你看清「只有 2 个点」长什么样 */
+            /* 上：两个通道的原始点直接连直线 —— 故意不加重建，
+             * 让你看清「一周期只有 2 个点」长什么样。 */
             map_window(s_full0, s_full_n, y, n, false);
             plot_set_trace(s_plot_raw, 0, y, n, V32_C_CH1, 2);
+            map_window(s_full1, s_full_n, y, n, false);
+            plot_set_trace(s_plot_raw, 1, y, n, V32_C_CH2, 2);
 
-            /* 下：同一段数据做带限重建。
-             * **认不出是什么波形就不重建** —— 不知道是什么还画光滑曲线是造假。 */
+            /* 下：两个通道**各自**做带限重建。
+             * **认不出是什么波形就不重建** —— 不知道是什么还画光滑曲线是造假。
+             * 波形类型是按交流成分大的那一路判的，两路共用同一套判定。 */
             const bool bl_on = S.ai && wf_can_reconstruct();
             map_window(s_full0, s_full_n, y, n, bl_on);
-            plot_set_trace(s_plot_den, 0, y, n, V32_C_AI_OUT, 2);
+            plot_set_trace(s_plot_den, 0, y, n, V32_C_CH1, 2);
+            map_window(s_full1, s_full_n, y, n, bl_on);
+            plot_set_trace(s_plot_den, 1, y, n, V32_C_CH2, 2);
 
             lv_label_set_text(s_lbl_wave, WF_NAME[s_wf_kind]);
             lv_label_set_text(s_lbl_den_title,
-                              bl_on ? "重建输出 · 带限 FIR" : "未重建 · 原始采样点");
+                              bl_on ? "重建输出 · CH1 / CH2" : "未重建 · 原始采样点");
             /* 三种"不重建"的原因分开显示，免得让人以为都是因为认不出来 */
             const char *stat;
             lv_color_t  stat_c;
