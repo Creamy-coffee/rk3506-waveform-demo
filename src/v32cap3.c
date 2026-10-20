@@ -56,6 +56,7 @@ static int         s_baud_actual;   /* 驱动实际生效的波特率 */
 
 static uint32_t    s_last_id;
 static uint64_t    s_last_index;
+static int         s_seq_rejects;   /* 连续被判「序列不对」的次数，用于自动重新对齐 */
 static int         s_have_last;
 static int         s_idxdbg = -1;   /* -1 = 还没查环境变量；见 WAVE_IDXDBG */
 
@@ -240,8 +241,27 @@ static void v32_feed(const uint8_t *data, int n)
             if (delta == 0u || delta >= 0x80000000u
                 || start_idx < s_last_index + V32_POINTS) {
                 s_st.sequence_errors++;
+
+                /*
+                 * **自动重新对齐。**
+                 *
+                 * FPGA 一旦复位/重新加载比特流，帧号 fid 和 start_idx 都会从
+                 * 小数字重来。这时 delta = fid - s_last_id 会下溢成一个巨大的
+                 * 值（≥ 0x80000000），被当成"倒序帧"；start_idx 也小于上次的值
+                 * —— 于是**之后每一帧都被拒绝，永远锁死**，只能重启进程才恢复。
+                 * 用户遇到的"FPGA 重来之后就没波形了"就是这个。
+                 *
+                 * 连续拒绝几次就认为对面换了一台/重启了，丢掉旧基准重新对齐。
+                 */
+                if (++s_seq_rejects >= 4) {
+                    s_have_last   = 0;
+                    s_seq_rejects = 0;
+                    if (s_idxdbg > 0)
+                        fprintf(stderr, "[idx] 连续拒绝，重新对齐序列\n");
+                }
                 continue;
             }
+            s_seq_rejects = 0;
             s_st.missing_frames += delta - 1u;
         }
 
