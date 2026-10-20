@@ -145,7 +145,8 @@ static void v32_src_deinit(void)
     s_inited = 0;
 }
 
-const wave_source_t wave_source_v32 = {
+/* 非 const：抽取倍数 dec>1 时 sample_rate 要改成 fs/dec（见 v32cap3.c） */
+wave_source_t wave_source_v32 = {
     .name          = "v32cap3",
     .frame_len     = V32_POINTS,
     .sample_rate   = (int)V32_ADC_FS_HZ,

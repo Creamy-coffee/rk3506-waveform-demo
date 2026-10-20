@@ -78,8 +78,13 @@ static const int   FREQ_MHZ[5]     = { 1, 5, 10, 20, 30 };
 static const char  FREQ_OPTS[]     = "1 MHz\n5 MHz\n10 MHz\n20 MHz\n30 MHz";
 static const int   FREQ_DEF        = 2;    /* 10 MHz */
 
-static const float TIMEBASE_US[5]  = { 0.5f, 1.f, 2.f, 5.f, 10.f };
-static const char  TIMEBASE_OPTS[] = "0.5 µs/格\n1 µs/格\n2 µs/格\n5 µs/格\n10 µs/格";
+/* 0.5 µs/格 ~ 500 µs/格：上限要能覆盖 FPGA 抽取后的长帧
+ * （dec=32 时一屏 2048 µs，正好一个 500 Hz 周期）。 */
+static const float TIMEBASE_US[10] = { 0.5f, 1.f, 2.f, 5.f, 10.f,
+                                       20.f, 50.f, 100.f, 200.f, 500.f };
+static const char  TIMEBASE_OPTS[] =
+    "0.5 µs/格\n1 µs/格\n2 µs/格\n5 µs/格\n10 µs/格"
+    "\n20 µs/格\n50 µs/格\n100 µs/格\n200 µs/格\n500 µs/格";
 static const int   TIMEBASE_DEF    = 2;    /* 2 µs/div */
 
 static const char  WIN_OPTS[]      = "HANN\nHAMMING\nBLACKMAN";

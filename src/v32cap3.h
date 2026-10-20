@@ -50,7 +50,8 @@
 
 #define V32_VERSION          3u
 #define V32_ADC_FS_HZ        65000000u
-#define V32_DECIMATION       1u
+#define V32_DECIMATION       1u      /* 默认；运行时允许 1..256 的 2 的幂 */
+#define V32_DECIMATION_MAX   256u
 #define V32_ADC_MIN          (-2048)
 #define V32_ADC_MAX          2047
 

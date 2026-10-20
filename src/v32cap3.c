@@ -16,6 +16,7 @@
  *      不要拿它做严格统计。
  */
 #include "v32cap3.h"
+#include "wave_source.h"   /* 抽取倍数变了要改 wave_source_v32.sample_rate */
 
 #include <errno.h>
 #include <fcntl.h>
@@ -190,7 +191,18 @@ static void v32_feed(const uint8_t *data, int n)
         const uint32_t lo      = rd32(s_buf + 32);
         const uint32_t hi      = rd32(s_buf + 36);
 
-        if (version != V32_VERSION || fs != V32_ADC_FS_HZ || dec != V32_DECIMATION
+        /*
+         * dec 允许 1..256 的 2 的幂。
+         *
+         * FPGA 做抽取之后，一帧仍然 4096 点，但它代表的**时间跨度**变成
+         * dec × 63 µs —— 这是 500 Hz 这种低频信号能看到完整周期的唯一途径
+         * （4096 点 @65 MSPS 只有 63 µs，而 500 Hz 一个周期是 2000 µs）。
+         * 采样率随之变成 fs/dec，时基和 FFT 频率轴都按这个走。
+         * 之前把 dec 写死成 1，抽取帧会被当成"头错误"整帧丢弃。
+         */
+        const bool dec_ok = (dec >= 1u && dec <= V32_DECIMATION_MAX &&
+                             (dec & (dec - 1u)) == 0u);
+        if (version != V32_VERSION || fs != V32_ADC_FS_HZ || !dec_ok
             || pts != V32_POINTS || flags != 0u) {
             s_st.header_errors++;
             s_st.discarded_bytes++;
@@ -285,6 +297,13 @@ static void v32_feed(const uint8_t *data, int n)
         s_stage.frame_id    = fid;
         s_stage.start_index = start_idx;
         s_stage.crc32       = want;
+
+        /* 抽取倍数变了就同步采样率（时基/FFT 都读它） */
+        {
+            const int rate = (int)(fs / dec);
+            if (rate > 0 && wave_source_v32.sample_rate != rate)
+                wave_source_v32.sample_rate = rate;
+        }
 
         s_last_id    = fid;
         s_last_index = start_idx;

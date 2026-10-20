@@ -58,7 +58,8 @@ extern const wave_source_t wave_source_demo;
 /* V32CAP3 真实数据源。
  * 由 main.c 的 --source 参数选择串口或文件，先调 wave_source_v32_set_spec()
  * 再让 wave_source_get() 返回它。 */
-extern const wave_source_t wave_source_v32;
+/* 非 const：FPGA 抽取倍数变化时 sample_rate 要跟着改（见 v32cap3.c） */
+extern wave_source_t wave_source_v32;
 /* spec 形如 "uart:/dev/ttyS1" 或 "file:/path/to/frame.bin" */
 void wave_source_v32_set_spec(const char *spec);
 /* 串口波特率，默认 921600。必须在 init 之前调；init 后改无效。
