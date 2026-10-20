@@ -79,6 +79,7 @@ static const char  FREQ_OPTS[]     = "1 MHz\n5 MHz\n10 MHz\n20 MHz\n30 MHz";
 static const int   FREQ_DEF        = 2;    /* 10 MHz */
 
 static const float TIMEBASE_US[5]  = { 0.5f, 1.f, 2.f, 5.f, 10.f };
+static const char  FFTCH_OPTS[] = "自动\nCH1\nCH2";
 static const char  TIMEBASE_OPTS[] = "0.5 µs/格\n1 µs/格\n2 µs/格\n5 µs/格\n10 µs/格";
 static const int   TIMEBASE_DEF    = 2;    /* 2 µs/div */
 
@@ -101,6 +102,7 @@ static struct {
     int   freq_idx;
     int   tb_idx;
     int   win_idx;
+    int   fft_ch;        /* FFT 用哪一路：0=自动(交流大的一路) 1=CH1 2=CH2 */
     int   tau_idx;
     float phase;        /* ° */
     bool  fullscreen;
@@ -129,7 +131,9 @@ static lv_obj_t *s_chip_ch1, *s_chip_ch2, *s_chip_ai, *s_chip_run;
 static lv_obj_t *s_dd_freq;
 static lv_obj_t *s_lbl_den_title;
 static lv_obj_t *s_lbl_recon_badge;      /* 示波器页右上角「重建」牌 */
-static lv_obj_t *s_lbl_fft_cur;          /* 频谱页游标读数 */
+static lv_obj_t *s_lbl_fft_cur;
+static lv_obj_t *s_lbl_fft_title;
+static lv_obj_t *s_dd_win;               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
 static bool      s_fft_cur_on;       /* 重建页下方图标题，随能否重建变化 */
 static lv_obj_t *s_lbl_wave;           /* 重建页右上角：波形类型 */
@@ -458,6 +462,7 @@ static float    s_real_vpp0_mv, s_real_vpp1_mv;
 
 static float    s_real_mag[REAL_FFT_N / 2];
 static int      s_real_bins;
+static int      s_real_fft_ch;   /* 本次频谱实际取自哪一路：0=CH1 1=CH2 */
 static float    s_real_peak_hz;
 static float    s_real_peak_dbfs;
 static float    s_real_floor_dbfs;
@@ -855,9 +860,16 @@ static void real_update(void)
     memcpy(s_real_d1, d1, (size_t)dn * sizeof(float));
     s_real_n = dn;
 
-    /* ③ 频谱。用**交流成分大的那一路**做 FFT —— 另一路可能没接或者只有直流，
-     *    拿它算频率会得到一个恒在 bin 1（≈0 Hz）的假读数。 */
-    const float *spec_src = (s_real_vpp1_mv >= s_real_vpp0_mv) ? f1 : f0;
+    /* ③ 频谱。默认用**交流成分大的那一路**（另一路可能没接或只有直流，
+     *    拿它算频率会得到一个恒在 bin 1 的假读数）；
+     *    也可以在频谱页手动指定 CH1 / CH2 —— 两路都接了的时候必须能选，
+     *    否则界面上根本看不出这条谱是谁的。 */
+    int use_ch;
+    if(S.fft_ch == 1)      use_ch = 0;
+    else if(S.fft_ch == 2) use_ch = 1;
+    else                   use_ch = (s_real_vpp1_mv >= s_real_vpp0_mv) ? 1 : 0;
+    s_real_fft_ch = use_ch;
+    const float *spec_src = use_ch ? f1 : f0;
 
     /*
      * 先去掉直流再算谱。
@@ -884,9 +896,9 @@ static void real_update(void)
 
     s_real_peak_hz   = (float)pk * (float)src->sample_rate / (float)REAL_FFT_N;
     if(dbg_on())
-        fprintf(stderr, "[fft] pk_bin=%d (%.3f MHz)  mag pk=%.1f bin1=%.1f bin2=%.1f bin3=%.1f bins=%d\n",
-                pk, (double)s_real_peak_hz/1e6, (double)s_real_mag[pk],
-                (double)s_real_mag[1], (double)s_real_mag[2], (double)s_real_mag[3], s_real_bins);
+        fprintf(stderr, "[fft] ch=CH%d(vpp %.0f/%.0f mV, sel=%d) pk_bin=%d (%.3f MHz) mag=%.1f\n",
+                s_real_fft_ch+1, (double)s_real_vpp0_mv, (double)s_real_vpp1_mv, S.fft_ch,
+                pk, (double)s_real_peak_hz/1e6, (double)s_real_mag[pk]);
     s_real_peak_dbfs = 20.0f * log10f((s_real_mag[pk] + 1e-9f) / REAL_FULLSCALE_COUNTS);
     s_real_floor_dbfs = 20.0f * log10f((noise_floor_mag(s_real_mag, s_real_bins) + 1e-9f)
                                        / REAL_FULLSCALE_COUNTS);
@@ -1302,8 +1314,9 @@ static void build_fft(lv_obj_t *pg)
     plot_set_axis_labels(s_plot_fft, "0 MHz", "32.5 MHz");
 
     lv_obj_t *tr = mk_title_row(s_plot_fft, V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
-    lv_obj_t *t0 = mk_label(tr, 0, 0, "FFT 频谱 · 8192 点",
+    lv_obj_t *t0 = mk_label(tr, 0, 0, "FFT 频谱 · CH1",
                             V32_FONT_SMALL, V32_C_PLOT_TITLE);
+    s_lbl_fft_title = t0;
     lv_obj_set_style_text_letter_space(t0, 1, LV_PART_MAIN);
 
     /* 频谱页游标：手指点哪儿就读哪儿的频率和幅度。
@@ -1747,6 +1760,12 @@ static void cb_timebase(lv_event_t *e)
     ui_tick();
 }
 
+static void cb_fft_ch(lv_event_t *e)
+{
+    S.fft_ch = (int)lv_dropdown_get_selected(lv_event_get_target(e));
+    ui_tick();
+}
+
 static void cb_window(lv_event_t *e)
 {
     S.win_idx = (int)lv_dropdown_get_selected(lv_event_get_target(e));
@@ -1855,7 +1874,12 @@ static void cb_reset(lv_event_t *e)
     S.running = true; S.ch1 = true; S.ch2 = true; S.ai = true;
     S.noise = DEMO_NOISE_PCT;
     S.freq_idx = FREQ_DEF; S.tb_idx = TIMEBASE_DEF;
-    S.win_idx = WIN_DEF; S.tau_idx = TAU_DEF; S.phase = 43.7f;
+    S.win_idx = WIN_DEF;
+    {
+        const char *e = getenv("WAVE_FFT_CH");   /* 调试用：直接指定 FFT 通道 0/1/2 */
+        S.fft_ch = e ? atoi(e) : 0;
+        if(S.fft_ch < 0 || S.fft_ch > 2) S.fft_ch = 0;
+    } S.tau_idx = TAU_DEF; S.phase = 43.7f;
     S.sig.t = 0.f;
 
     /* 显示缩放回位：整帧 + 纵向 1:1（这是「复位」，不是「自动」——
@@ -1869,8 +1893,10 @@ static void cb_reset(lv_event_t *e)
     {
         lv_obj_t *dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_SCOPE], 1);
         if(dd) lv_dropdown_set_selected(dd, (uint32_t)TIMEBASE_DEF);
+        if(s_dd_win) lv_dropdown_set_selected(s_dd_win, (uint32_t)WIN_DEF);
+        /* 频谱通道也回「自动」：UI_PAGE_FFT 那个组现在是通道下拉，不是窗函数 */
         dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_FFT], 1);
-        if(dd) lv_dropdown_set_selected(dd, (uint32_t)WIN_DEF);
+        if(dd) lv_dropdown_set_selected(dd, 0);
         dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_LOCK], 1);
         if(dd) lv_dropdown_set_selected(dd, (uint32_t)TAU_DEF);
     }
@@ -1954,10 +1980,16 @@ static void build_controls(lv_obj_t *root)
     lv_obj_set_style_max_width(dd_tb, V32_SEL_MAX_W, LV_PART_MAIN);
     s_ctrl_grp[UI_PAGE_SCOPE] = gs;
 
-    lv_obj_t *gf = mk_group(cp, "窗函数");
-    lv_obj_t *dd_w = mk_dropdown(gf, WIN_OPTS, WIN_DEF, cb_window);
+    lv_obj_t *gc = mk_group(cp, "通道");
+    lv_obj_t *dd_c = mk_dropdown(gc, FFTCH_OPTS, 0, cb_fft_ch);
+    lv_obj_set_style_max_width(dd_c, V32_SEL_MAX_W, LV_PART_MAIN);
+    s_ctrl_grp[UI_PAGE_FFT] = gc;
+
+    lv_obj_t *gf2 = mk_group(cp, "窗函数");
+    lv_obj_t *dd_w = mk_dropdown(gf2, WIN_OPTS, WIN_DEF, cb_window);
+    s_dd_win = dd_w;
     lv_obj_set_style_max_width(dd_w, V32_SEL_MAX_W, LV_PART_MAIN);
-    s_ctrl_grp[UI_PAGE_FFT] = gf;
+
 
     lv_obj_t *gl = mk_group(cp, "积分时间");
     lv_obj_t *dd_t = mk_dropdown(gl, TAU_OPTS, TAU_DEF, cb_tau);
@@ -2142,7 +2174,8 @@ static void tick_fft(void)
     if(real) {
         /* 峰值/底噪都是**算出来的**绝对 dBFS（满刻度 2048 码 = 0 dBFS），
          * 不再是参考稿里那两个写死的 -12.8 / -79.4 */
-        snprintf(peak_txt, sizeof(peak_txt), "▼ %.3f MHz", (double)s_real_peak_hz / 1e6);
+        snprintf(peak_txt, sizeof(peak_txt), "▼ %.3f MHz %s", (double)s_real_peak_hz / 1e6,
+                 s_real_fft_ch ? "CH2" : "CH1");
         lv_label_set_text_fmt(s_lbl_fft_peakf, "%.3f MHz", (double)s_real_peak_hz / 1e6);
         lv_label_set_text_fmt(s_lbl_fft_peakl, "%.1f dBFS", (double)s_real_peak_dbfs);
         lv_label_set_text_fmt(s_lbl_fft_floor, "%.1f dBFS", (double)s_real_floor_dbfs);
@@ -2161,6 +2194,16 @@ static void tick_fft(void)
 
     plot_set_peak(s_plot_fft, true, px, peak_txt);
     lv_label_set_text(s_lbl_fft_win, WIN_NAME[S.win_idx]);
+
+    /* 标题上写明这条谱取自哪一路 —— 两路都接了时必须一眼看得出来 */
+    if(S.use_real) {
+        char tt[32];
+        snprintf(tt, sizeof tt, "FFT 频谱 · %s",
+                 s_real_fft_ch ? "CH2" : "CH1");
+        lv_label_set_text(s_lbl_fft_title, tt);
+    } else {
+        lv_label_set_text(s_lbl_fft_title, "FFT 频谱 · 8192 点");
+    }
 
     fft_cursor_tick();      /* 手指点选的频率/幅度读数 */
 }
@@ -2328,6 +2371,11 @@ void ui_create(void)
     S.freq_idx = FREQ_DEF;
     S.tb_idx = TIMEBASE_DEF;
     S.win_idx = WIN_DEF;
+    {
+        const char *e = getenv("WAVE_FFT_CH");   /* 调试用：直接指定 FFT 通道 0/1/2 */
+        S.fft_ch = e ? atoi(e) : 0;
+        if(S.fft_ch < 0 || S.fft_ch > 2) S.fft_ch = 0;
+    }
     S.tau_idx = TAU_DEF;
     S.phase = 43.7f;
     S.fullscreen = false;
