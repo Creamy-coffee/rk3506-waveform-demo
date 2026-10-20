@@ -1,0 +1,119 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>V32CAP3 帧格式与修改点</title>
+<style>
+body{max-width:900px;margin:32px auto;padding:0 24px;font:16px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#1a2733}
+h1{font-size:27px;border-bottom:3px solid #1f6feb;padding-bottom:10px}
+h2{font-size:21px;margin-top:34px;border-left:5px solid #1f6feb;padding-left:12px}
+h3{font-size:17px;margin-top:24px;color:#24486e}
+code{background:#f2f5f8;padding:1px 5px;border-radius:3px;font-family:Consolas,monospace;color:#b03060}
+pre{background:#f6f8fa;border:1px solid #e1e8ef;border-radius:6px;padding:14px;overflow-x:auto;font-size:14px;line-height:1.5}
+pre code{background:none;color:#1a2733}
+table{border-collapse:collapse;width:100%;margin:16px 0;font-size:15px}
+th,td{border:1px solid #dde5ec;padding:7px 11px;text-align:left}
+th{background:#eef4fb}
+tr:nth-child(even) td{background:#fafcfe}
+blockquote{border-left:4px solid #cbd5e0;margin:14px 0;padding:6px 16px;color:#4a5568;background:#f8fafc}
+hr{border:none;border-top:1px solid #e1e8ef;margin:26px 0}
+strong{color:#0d1117}
+</style></head><body>
+<h1>V32CAP3 帧格式说明与本次修改点</h1>
+<blockquote>面向：FPGA 采集板</blockquote>
+<blockquote>目标：把<strong>显示帧</strong>从 4096 点改成 1024 点，把帧率从 5.6 提到 22</blockquote>
+<blockquote>协议结构<strong>不变</strong>，只改 <code>points</code> 和对应的 payload 长度</blockquote>
+<hr>
+<h2>一、帧整体结构（小端 little-endian）</h2>
+<table><thead><tr><th>偏移</th><th>长度</th><th>字段</th><th>类型</th><th>取值 / 说明</th></tr></thead><tbody>
+<tr><td>0</td><td>8</td><td><code>magic</code></td><td>char[8]</td><td><code>V32CAP3!</code>（十六进制 <code>56 33 32 43 41 50 33 21</code>）</td></tr>
+<tr><td>8</td><td>4</td><td><code>version</code></td><td>u32</td><td><strong>3</strong></td></tr>
+<tr><td>12</td><td>4</td><td><code>frame_id</code></td><td>u32</td><td>每帧 +1</td></tr>
+<tr><td>16</td><td>4</td><td><code>Fs</code></td><td>u32</td><td><strong>65000000</strong>（ADC 原始采样率，<strong>不要填抽取后的</strong>）</td></tr>
+<tr><td>20</td><td>4</td><td><code>decimation</code></td><td>u32</td><td>1（如需抽取，填 2 的幂）</td></tr>
+<tr><td>24</td><td>4</td><td><strong><code>points</code></strong></td><td>u32</td><td><strong>本次修改点：4096 → 1024</strong></td></tr>
+<tr><td>28</td><td>4</td><td><code>flags</code></td><td>u32</td><td>0（bit0 预留：payload 是频谱）</td></tr>
+<tr><td>32</td><td>4</td><td><code>start_index_lo</code></td><td>u32</td><td>本帧第一个样点的 ADC 绝对序号（低 32 位）</td></tr>
+<tr><td>36</td><td>4</td><td><code>start_index_hi</code></td><td>u32</td><td>高 32 位</td></tr>
+<tr><td>40</td><td><code>points×4</code></td><td><code>payload</code></td><td>i16[points×2]</td><td><strong>两路交错</strong>：ch0[0], ch1[0], ch0[1], ch1[1] …</td></tr>
+<tr><td>40+<code>points×4</code></td><td>4</td><td><code>crc32</code></td><td>u32</td><td>覆盖<strong>前面全部字节</strong>（不含自己）</td></tr>
+</tbody></table>
+<p><strong>单帧总长 = 40 + points×4 + 4</strong></p>
+<table><thead><tr><th>points</th><th>payload 字节</th><th>单帧总长</th><th>921600 下帧率</th></tr></thead><tbody>
+<tr><td>4096（现在）</td><td>16384</td><td><strong>16428</strong></td><td>5.6 帧/秒</td></tr>
+<tr><td><strong>1024（改成）</strong></td><td><strong>4096</strong></td><td><strong>4140</strong></td><td><strong>22.3 帧/秒</strong></td></tr>
+</tbody></table>
+<hr>
+<h2>二、本次要改的：只有三处</h2>
+<h3>① 偏移 24：<code>points</code> 写 1024</h3>
+<pre>
+// 原来
+header_word = 4096;
+// 改成
+header_word = 1024;
+</pre>
+<h3>② payload 只发 1024 个点</h3>
+<p>每点 4 字节（ch0 / ch1 各 2 字节，<strong>小端 int16</strong>，ch0 在前）：</p>
+<pre>
+for (k = 0; k &lt; 1024; k = k + 1) begin
+    tx_byte = ch0[k][7:0];   // ch0 低字节
+    // 然后 ch0 高字节、ch1 低字节、ch1 高字节
+end
+// 共 1024 × 4 = 4096 字节
+</pre>
+<h3>③ CRC32 覆盖范围改为前 4136 字节</h3>
+<pre>
+CRC = crc32( frame[0 .. (40 + 1024*4 - 1)] )   // 前 4136 字节
+</pre>
+<p>CRC 用标准 <strong>CRC-32/ISO-HDLC</strong>（IEEE 802.3，多项式 0x04C11DB7 反射，</p>
+<p>初值 0xFFFFFFFF，结果取反；等价于 Python 的 <code>zlib.crc32</code>）。</p>
+<h3>其余字段一律不动</h3>
+<p><code>magic</code>、<code>version</code>、<code>frame_id</code>、<code>Fs</code>、<code>decimation</code>、<code>flags</code>、</p>
+<p><code>start_index</code> 全部保持原样。</p>
+<blockquote><code>start_index</code> 建议仍按<strong>本帧第一个样点的绝对序号</strong>填，</blockquote>
+<blockquote>每帧至少前进 <code>points</code>（1024）。</blockquote>
+<hr>
+<h2>三、两个实例文件（可直接逐字节对照）</h2>
+<table><thead><tr><th>文件</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>frame_4096_now.bin</code></td><td><strong>现在的</strong>帧：4096 点，16428 字节</td></tr>
+<tr><td><code>frame_1024_target.bin</code></td><td><strong>改完应有的</strong>帧：1024 点，4140 字节</td></tr>
+</tbody></table>
+<p>两个文件里都是 1 MHz 正弦、两路数据（ch0 有信号、ch1 全 0），</p>
+<p>帧头除 <code>points</code>/<code>start_index</code> 外完全一致，方便对照。</p>
+<h3><code>frame_4096_now.bin</code> 前 48 字节</h3>
+<pre>
+00000000  56 33 32 43 41 50 33 21 03 00 00 00 07 00 00 00  V32CAP3!........
+00000010  40 d2 df 03 01 00 00 00 00 10 00 00 00 00 00 00  @...............
+00000020  00 10 00 00 00 00 00 00 00 00 00 00 4d 00 00 00  ............M...
+</pre>
+<h3><code>frame_1024_target.bin</code> 前 48 字节</h3>
+<pre>
+00000000  56 33 32 43 41 50 33 21 03 00 00 00 07 00 00 00  V32CAP3!........
+00000010  40 d2 df 03 01 00 00 00 00 04 00 00 00 00 00 00  @...............
+00000020  00 10 00 00 00 00 00 00 00 00 00 00 4d 00 00 00  ............M...
+</pre>
+<p>注意第 <strong>24</strong> 字节开始的那个 u32：现在是 <code>00 10 00 00</code>（=4096），</p>
+<p>改完应该是 <code>00 04 00 00</code>（=1024）。</p>
+<hr>
+<h2>四、最容易踩的坑 ⚠️</h2>
+<p><strong>只改帧头的 <code>points</code>、payload 还是发 4096 个点（16384 字节）—— 会直接失败。</strong></p>
+<p>主机是按 <code>points</code> 算帧长的：</p>
+<pre>
+帧长 = 40 + points*4 + 4
+</pre>
+<p>如果头里写 1024（帧长按 4140 算），实际却发了 16428 字节，</p>
+<p>主机会从第 4140 字节处取 CRC 字段 —— 取到的是数据不是 CRC，</p>
+<p>于是 <strong>CRC 校验失败 → 整帧丢弃 → 屏幕全黑</strong>。</p>
+<p><strong>头里的 <code>points</code> 和 payload 的实际点数必须一致。</strong></p>
+<hr>
+<h2>五、怎么自检（改完请先跑一次）</h2>
+<p>把板子串口抓一段数据（或用逻辑分析仪导出），然后：</p>
+<pre>
+python check_v32_frame.py 抓包.bin
+</pre>
+<p><strong>正确的输出应该是：</strong></p>
+<pre>
+帧 #0   fid=7   ver=3 Fs=65000000 dec=1(→65.000 MSPS) pts=1024 start=4096
+       一帧覆盖 15.8 µs
+       CRC OK   ch0 -800..800  ch1 0..0
+</pre>
+<p><strong>如果打印出 <code>pts=4096</code></strong>，说明改动没生效（比特流没下载 / 改的不是发帧那个模块）。</p>
+<p><strong>如果 <code>CRC 错误</code></strong>，多半是 payload 长度和 <code>points</code> 对不上。</p>
+<p>校验脚本对帧长和 CRC 都会逐帧检查，会直接告诉你哪一项不对。</p>
+</body></html>

@@ -54,8 +54,9 @@ def main():
             print('       ⚠ decimation 非法（应为 1..256 的 2 的幂）')
         if fs != FS_DEF:
             print('       ⚠ Fs 应为 %d（ADC 原始采样率，不是抽取后的）' % FS_DEF)
-        if pts != POINTS_DEF:
-            print('       ⚠ points 应为 %d' % POINTS_DEF)
+        # 点数：256..4096 的 2 的幂（与主机固件一致，2026-10-20 起支持可变点数）
+        if pts < 256 or pts > 4096 or (pts & (pts - 1)):
+            print('       ⚠ points 非法：%d（应为 256..4096 的 2 的幂）' % pts)
         if ver != 3:
             print('       ⚠ version 应为 3')
 
