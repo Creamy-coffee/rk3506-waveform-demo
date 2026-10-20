@@ -44,7 +44,20 @@
 
 #define V32_MAGIC_LEN        8
 #define V32_HEADER_BYTES     40
-#define V32_POINTS           4096
+/*
+ * 每帧样点数**不再是固定 4096**。
+ *
+ * 显示只需要约 740 个点（屏宽），送 4096 点是 5.5 倍过采样，
+ * 白白占掉带宽，导致帧率上不去。FPGA 可以按需送 1024 点：
+ *   1024 点 → 一帧 4140 B → 921600 下 44.9 ms → **22 帧/秒**
+ *   4096 点 → 一帧 16428 B → 178 ms → 5.6 帧/秒
+ * 解析器接受 [V32_POINTS_MIN, V32_POINTS] 之间的 2 的幂，
+ * 上层按实际帧长自适应，所以两种点数的固件都能用。
+ */
+#define V32_POINTS           4096            /* 上限（缓冲区按这个开） */
+#define V32_POINTS_MIN       256             /* 下限 */
+#define V32_PAYLOAD_BYTES    (V32_POINTS * 4)          /* 16384（最大） */
+#define V32_PACKET_BYTES     (V32_HEADER_BYTES + V32_PAYLOAD_BYTES + 4)  /* 16428（最大） */
 #define V32_PAYLOAD_BYTES    (V32_POINTS * 4)          /* 16384 */
 #define V32_PACKET_BYTES     (V32_HEADER_BYTES + V32_PAYLOAD_BYTES + 4)  /* 16428 */
 
@@ -62,6 +75,8 @@ typedef struct {
     uint32_t frame_id;
     uint64_t start_index;     /* 复位后 ADC 域时钟计数，不是 Unix 时间 */
     uint32_t crc32;
+    uint32_t flags;           /* 帧头 flags，原样带上来（bit0 预留：payload 是 FPGA 端算的频谱） */
+    int      n;               /* 本帧实际样点数（256..4096） */
     int16_t  ch0[V32_POINTS];
     int16_t  ch1[V32_POINTS];
 } v32_frame_t;

@@ -202,8 +202,11 @@ static void v32_feed(const uint8_t *data, int n)
          */
         const bool dec_ok = (dec >= 1u && dec <= V32_DECIMATION_MAX &&
                              (dec & (dec - 1u)) == 0u);
-        if (version != V32_VERSION || fs != V32_ADC_FS_HZ || !dec_ok
-            || pts != V32_POINTS || flags != 0u) {
+        /* 点数：256..4096 的 2 的幂。FPGA 可以只送 1024 点换帧率，
+         * 上层按实际帧长自适应，协议格式不变。 */
+        const bool pts_ok = (pts >= V32_POINTS_MIN && pts <= (uint32_t)V32_POINTS &&
+                             (pts & (pts - 1u)) == 0u);
+        if (version != V32_VERSION || fs != V32_ADC_FS_HZ || !dec_ok || !pts_ok) {
             s_st.header_errors++;
             s_st.discarded_bytes++;
             memmove(s_buf, s_buf + 1, (size_t)(s_len - 1));
@@ -211,11 +214,13 @@ static void v32_feed(const uint8_t *data, int n)
             continue;
         }
 
-        if (s_len < V32_PACKET_BYTES) break;   /* 整帧还没收全 */
+        /* 帧长随 pts 变化 */
+        const uint32_t pkt = V32_HEADER_BYTES + pts * 4u + 4u;
+        if (s_len < (int)pkt) break;           /* 整帧还没收全 */
 
         /* ---- CRC ---- */
-        const uint32_t want = rd32(s_buf + V32_PACKET_BYTES - 4);
-        if (crc32_calc(s_buf, V32_PACKET_BYTES - 4) != want) {
+        const uint32_t want = rd32(s_buf + pkt - 4);
+        if (crc32_calc(s_buf, (int)(pkt - 4)) != want) {
             s_st.crc_errors++;
             s_st.discarded_bytes++;
             memmove(s_buf, s_buf + 1, (size_t)(s_len - 1));
@@ -226,7 +231,7 @@ static void v32_feed(const uint8_t *data, int n)
         /* ---- 解样点 ---- */
         const uint8_t *p = s_buf + V32_HEADER_BYTES;
         int bad = 0;
-        for (int i = 0; i < V32_POINTS; i++) {
+        for (uint32_t i = 0; i < pts; i++) {
             const int16_t a = (int16_t)(uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
             const int16_t b = (int16_t)(uint16_t)((uint16_t)p[2] | ((uint16_t)p[3] << 8));
             if (a < V32_ADC_MIN || a > V32_ADC_MAX
@@ -239,8 +244,8 @@ static void v32_feed(const uint8_t *data, int n)
         const uint64_t start_idx = ((uint64_t)hi << 32) | (uint64_t)lo;
 
         /* 无论接收与否都要把这帧从缓冲区吃掉 */
-        memmove(s_buf, s_buf + V32_PACKET_BYTES, (size_t)(s_len - V32_PACKET_BYTES));
-        s_len -= V32_PACKET_BYTES;
+        memmove(s_buf, s_buf + pkt, (size_t)(s_len - (int)pkt));
+        s_len -= (int)pkt;
 
         if (bad) {
             s_st.sample_errors++;
@@ -251,7 +256,7 @@ static void v32_feed(const uint8_t *data, int n)
         if (s_have_last) {
             const uint32_t delta = fid - s_last_id;
             if (delta == 0u || delta >= 0x80000000u
-                || start_idx < s_last_index + V32_POINTS) {
+                || start_idx < s_last_index + pts) {
                 s_st.sequence_errors++;
 
                 /*
@@ -297,6 +302,8 @@ static void v32_feed(const uint8_t *data, int n)
         s_stage.frame_id    = fid;
         s_stage.start_index = start_idx;
         s_stage.crc32       = want;
+        s_stage.flags       = flags;
+        s_stage.n           = (int)pts;
 
         /* 抽取倍数变了就同步采样率（时基/FFT 都读它） */
         {

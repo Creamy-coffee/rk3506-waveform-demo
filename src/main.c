@@ -37,7 +37,14 @@
 #include <stdint.h>
 #include <linux/input.h>
 
-#define REFRESH_MS      100     /* 数据刷新周期 */
+/*
+ * 数据刷新周期。原来 100 ms —— 界面被锁在 10 Hz，就算数据到了 22 帧/秒
+ * 屏幕也只画 10 次。FPGA 改送 1024 点之后一帧只要 44.9 ms（22 帧/秒），
+ * 所以这里放到 45 ms 跟上去。
+ * 如果将来发现 CPU 跟不上（ui_tick 单次耗时 > 45 ms），会自动被主循环节流，
+ * 不会卡死 —— 只是帧率降下来。
+ */
+#define REFRESH_MS      45      /* 数据刷新周期 */
 #define AUTOSWITCH_MS   8000    /* 无触摸时的自动轮播周期 */
 
 static volatile sig_atomic_t s_quit = 0;

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>低频信号采集问题与改进建议</title>
+<style>
+body{max-width:860px;margin:32px auto;padding:0 24px;font:16px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#1a2733;background:#fff}
+h1{font-size:28px;border-bottom:3px solid #1f6feb;padding-bottom:10px;margin-top:40px}
+h2{font-size:22px;margin-top:36px;border-left:5px solid #1f6feb;padding-left:12px}
+h3{font-size:18px;margin-top:26px;color:#24486e}
+code{background:#f2f5f8;padding:1px 5px;border-radius:3px;font-family:Consolas,Monaco,monospace;font-size:14px;color:#b03060}
+pre{background:#f6f8fa;border:1px solid #e1e8ef;border-radius:6px;padding:14px 16px;overflow-x:auto}
+pre code{background:none;color:#1a2733}
+table{border-collapse:collapse;width:100%;margin:16px 0;font-size:15px}
+th,td{border:1px solid #dde5ec;padding:8px 12px;text-align:left}
+th{background:#eef4fb;font-weight:600}
+tr:nth-child(even) td{background:#fafcfe}
+blockquote{border-left:4px solid #cbd5e0;margin:16px 0;padding:6px 16px;color:#4a5568;background:#f8fafc}
+hr{border:none;border-top:1px solid #e1e8ef;margin:28px 0}
+strong{color:#0d1117}ul,ol{padding-left:26px}li{margin:4px 0}
+</style></head><body>
+<h1>低频信号采集问题与改进建议</h1>
+<blockquote>提交方：波形分析仪（RK3506 + Linux）软件侧</blockquote>
+<blockquote>对象：FPGA 采集板（V32CAP3 协议）</blockquote>
+<blockquote>日期：2026-10-20</blockquote>
+<hr>
+<h2>一、一句话结论</h2>
+<p>**当前一帧固定 4096 个样点、按 65 MSPS 采集，只能覆盖 63 µs。</p>
+<p>低于约 16 kHz 的信号，一帧里连一个完整周期都放不下** ——</p>
+<p>主机再怎么放大/缩小都没用，因为数据里就没有。</p>
+<p>解决办法只有一个：<strong>FPGA 侧按需降采样（抽取），让一帧覆盖更长的时间</strong>。</p>
+<p>协议头里 <code>decimation</code> 字段早就留好了，但<strong>目前没有真正生效</strong>。</p>
+<hr>
+<h2>二、现象与数据</h2>
+<p>现场用 500 Hz 正弦测试，主机上只能看到一段弧线，凑不出一个周期。</p>
+<table><thead><tr><th>项目</th><th>数值</th></tr></thead><tbody>
+<tr><td>帧长</td><td>4096 点</td></tr>
+<tr><td>采样率</td><td>65 MSPS（每点 15.38 ns）</td></tr>
+<tr><td><strong>一帧覆盖的时间</strong></td><td><strong>4096 × 15.38 ns = 63.0 µs</strong></td></tr>
+<tr><td>500 Hz 一个周期</td><td><strong>2000 µs</strong></td></tr>
+<tr><td>一帧占一个周期的比例</td><td><strong>3.2 %</strong></td></tr>
+</tbody></table>
+<p>按这个关系，<strong>能看到完整周期的最低频率</strong>是：</p>
+<pre>
+f_min = 1 / 63.0 µs ≈ 15.9 kHz
+</pre>
+<p>也就是说 16 kHz 以下（500 Hz、1 kHz、音频段）现在都看不到完整波形。</p>
+<hr>
+<h2>三、为什么会这样（不是软件 bug）</h2>
+<p>主机侧的缩放范围是：时间轴可以缩到 8 个采样点一屏（0.12 µs），</p>
+<p>也可以放到整帧（63 µs）。<strong>上限就是「一帧」</strong>，因为再往外没有数据。</p>
+<blockquote>注：放大（看细节）是无限的，最小 0.12 µs；受限制的是缩小（看更长时间）。</blockquote>
+<hr>
+<h2>四、协议现状</h2>
+<p>帧格式（小端，单帧 16428 字节）：</p>
+<table><thead><tr><th>偏移</th><th>字段</th><th>类型</th><th>当前值</th><th>说明</th></tr></thead><tbody>
+<tr><td>0</td><td>magic</td><td>8 B</td><td><code>V32CAP3!</code></td><td>ASCII</td></tr>
+<tr><td>8</td><td>version</td><td>u32</td><td>3</td><td></td></tr>
+<tr><td>12</td><td>frame_id</td><td>u32</td><td>递增</td><td>帧序号</td></tr>
+<tr><td>16</td><td>Fs</td><td>u32</td><td>65000000</td><td><strong>ADC 原始采样率，不要填抽取后的</strong></td></tr>
+<tr><td>20</td><td><strong>decimation</strong></td><td>u32</td><td><strong>1</strong></td><td><strong>抽取倍数（本次要用的字段）</strong></td></tr>
+<tr><td>24</td><td>points</td><td>u32</td><td>4096</td><td>每帧样点数</td></tr>
+<tr><td>28</td><td>flags</td><td>u32</td><td>0</td><td>保留</td></tr>
+<tr><td>32</td><td>start_index_lo</td><td>u32</td><td></td><td>本帧第一个样点在 ADC 流里的序号</td></tr>
+<tr><td>36</td><td>start_index_hi</td><td>u32</td><td></td><td>高 32 位</td></tr>
+<tr><td>40</td><td>payload</td><td>4096×2×i16</td><td></td><td>ch0/ch1 交错，每点 4 字节</td></tr>
+<tr><td>16424</td><td>crc32</td><td>u32</td><td></td><td>覆盖前 16424 字节</td></tr>
+</tbody></table>
+<p><strong>已确认的问题</strong>：参考实现 <code>raw_snapshot_uart.v</code> 里</p>
+<pre>
+parameter integer PERIOD_CLKS=6500000, FS_HZ=65000000, DECIMATION=1,
+...
+5: header_word=DECIMATION;      // 只是把参数写进帧头
+</pre>
+<p><code>DECIMATION</code> <strong>只写进了帧头，没有参与实际采样</strong> —— 采集仍然是 65 MSPS</p>
+<p>逐点取，所以 dec 永远等于 1。（如果你们的工程里不是这样，请忽略这段并</p>
+<p>直接按第五节加抽取即可。）</p>
+<hr>
+<h2>五、建议的改动（FPGA 侧）</h2>
+<h3>5.1 核心：按 DECIMATION 真正丢点</h3>
+<p>采集缓冲仍然存 4096 点，但每个点之间间隔 <code>DECIMATION</code> 个 ADC 时钟：</p>
+<pre>
+对 k = 0..4095：
+    buf[k] = adc_sample[ start_raw + k × DECIMATION ]
+</pre>
+<ul><li>帧头 <code>decimation</code> 填实际倍数</li><li>帧头 <code>Fs</code> <strong>仍然填 65000000</strong>（主机自己算 <code>Fs/dec</code>）</li><li><code>start_index</code> 按<strong>原始 ADC 样点</strong>计数（即每帧前进 <code>4096 × dec</code>），</li></ul>
+<p>  诊断时更好和硬件时钟对照</p>
+<ul><li>一帧覆盖时间 = <code>4096 × dec / 65e6</code></li></ul>
+<h3>5.2 抗混叠（重要）</h3>
+<p>直接丢点会把高频内容折叠到低频，FFT 上会冒出假峰。</p>
+<p>至少在丢点前做一次<strong>平均</strong>：</p>
+<pre>
+// 最简：dec 点求和再右移（boxcar 平均）
+// 更好：一级 CIC，或半带滤波级联
+</pre>
+<p>boxcar 平均的零点在 <code>Fs_eff</code> 的整数倍，第一旁瓣约 −13 dB，对示波器预览够用；</p>
+<p>如果要做频谱分析，建议用 CIC（例如 5 级，抑制可到 −60 dB 以上）。</p>
+<h3>5.3 抽取倍率建议表</h3>
+<table><thead><tr><th>dec</th><th>等效采样率</th><th>一帧覆盖时间</th><th>能看完整周期的最低频率</th></tr></thead><tbody>
+<tr><td>1</td><td>65 MHz</td><td>63 µs</td><td>15.9 kHz</td></tr>
+<tr><td>2</td><td>32.5 MHz</td><td>126 µs</td><td>7.9 kHz</td></tr>
+<tr><td>4</td><td>16.25 MHz</td><td>252 µs</td><td>4.0 kHz</td></tr>
+<tr><td>8</td><td>8.125 MHz</td><td>504 µs</td><td>2.0 kHz</td></tr>
+<tr><td>16</td><td>4.06 MHz</td><td>1.01 ms</td><td>992 Hz</td></tr>
+<tr><td><strong>32</strong></td><td><strong>2.03 MHz</strong></td><td><strong>2.02 ms</strong></td><td><strong>496 Hz</strong></td></tr>
+<tr><td>64</td><td>1.02 MHz</td><td>4.03 ms</td><td>248 Hz</td></tr>
+<tr><td>128</td><td>508 kHz</td><td>8.06 ms</td><td>124 Hz</td></tr>
+<tr><td>256</td><td>254 kHz</td><td>16.1 ms</td><td>62 Hz</td></tr>
+</tbody></table>
+<p><strong>建议支持 dec = 2^n，n = 0..8（1..256）</strong>，覆盖 16 kHz ~ 62 Hz。</p>
+<p>现场 500 Hz 的用例，<strong>dec = 32</strong> 正好一屏一个周期。</p>
+<h3>5.4 不需要改的部分</h3>
+<ul><li>帧长仍 4096 点、帧格式不变 → 波特率 921600 下帧率仍是约 5.6 帧/秒</li><li>CRC、magic、version 都不用动</li><li>主机侧已经就绪（见第七节）</li></ul>
+<hr>
+<h2>六、验收标准</h2>
+<ol><li><strong>回归</strong>：dec = 1 时行为与现在完全一致（主机不需要任何操作）。</li><li><strong>500 Hz 用例</strong>：dec = 32，输入 500 Hz 正弦</li></ol>
+<ul><li>主机示波器页「频率」读数 ≈ 500 Hz</li><li>一屏（10 格）能看到约一个完整周期</li><li>FFT 峰值 ≈ 500 Hz，且没有明显假峰（说明抗混叠有效）</li></ul>
+<ol><li><strong>切换</strong>：运行中把 dec 从 1 切到 32（或反过来），主机应自动跟上，</li></ol>
+<p>   不需要重启程序。</p>
+<ol><li><strong>帧校验</strong>：用附带的 <code>check_v32_frame.py</code> 检查抓到的原始数据，</li></ol>
+<p>   所有帧 CRC 通过、<code>decimation</code> 字段正确。</p>
+<hr>
+<h2>七、主机侧已完成的配套（无需 FPGA 再等）</h2>
+<p>已在主机固件里改好并通过验证（提交 <code>bd62165</code>）：</p>
+<ul><li>接受 <code>decimation</code> = 1..256 的 2 的幂（此前 <code>dec != 1</code> 会被判为头错误、整帧丢弃）</li><li>采样率自动改为 <code>Fs / dec</code> —— 时基、FFT 频率轴、波形类型判据全部自动跟随</li><li>时基档位从 0.5~10 µs/格 扩展到 <strong>0.5~500 µs/格</strong></li></ul>
+<p><strong>验证结果</strong>：用合成的 dec=32、500 Hz、4096 点（= 2.016 ms = 1 个周期）的帧</p>
+<p>测试，主机正常接收，采样率自动变为 2.031 MSPS，FFT 峰值落在 496 Hz。</p>
+<p>所以<strong>FPGA 一改完，接上就能用</strong>。</p>
+<hr>
+<h2>八、附带文件</h2>
+<table><thead><tr><th>文件</th><th>用途</th></tr></thead><tbody>
+<tr><td><code>check_v32_frame.py</code></td><td>校验抓到的原始数据：magic/字段/CRC，并打印每帧的 dec、时间跨度</td></tr>
+<tr><td><code>samples/test_500hz_dec32.bin</code></td><td>一帧示例（dec=32、500 Hz），可用于对照协议实现</td></tr>
+</tbody></table>
+<p>用法：</p>
+<pre>
+python check_v32_frame.py 你的抓包.bin
+</pre>
+<p>输出示例：</p>
+<pre>
+帧 #0  fid=1  Fs=65000000  dec=32 (→2.031 MSPS)  pts=4096  start=0
+      一帧覆盖 2016.0 µs   CRC OK   ch0 -900..900  ch1 -900..900
+</pre>
+<hr>
+<h2>九、另一个现场观察（顺带反馈）</h2>
+<p>最近一次烧录后实测，帧率只有 <strong>1.25 帧/秒</strong>（正常应为 5.6 帧/秒）：</p>
+<p>10 帧耗时 8 秒，而每帧 16428 字节在 921600 波特下只需 178 ms。</p>
+<p>帧内容本身完全正确（CRC 全过），只是发送节奏慢了约 4.5 倍。</p>
+<p>如果这是有意为之可以忽略；如果不是，建议一并查一下采集节拍/触发逻辑。</p>
+<hr>
+<h2>十、小结</h2>
+<table><thead><tr><th></th><th></th></tr></thead><tbody>
+<tr><td><strong>问题</strong></td><td>一帧 63 µs，低频信号（&lt;16 kHz）看不到完整周期</td></tr>
+<tr><td><strong>根因</strong></td><td>帧长固定、无抽取；协议里的 <code>decimation</code> 字段未生效</td></tr>
+<tr><td><strong>方案</strong></td><td>FPGA 按 <code>DECIMATION</code> 真正丢点（建议配 boxcar/CIC 抗混叠）</td></tr>
+<tr><td><strong>主机动工</strong></td><td>已完成，等 FPGA 的 <code>dec&gt;1</code> 帧即可</td></tr>
+<tr><td><strong>关键参数</strong></td><td>500 Hz 用 dec=32；建议支持 dec = 1..256（2 的幂）</td></tr>
+</tbody></table>
+<hr>
+<h2>十一、追加需求：显示帧点数改为 1024（提升帧率）</h2>
+<h3>背景</h3>
+<p>主机屏宽只有约 <strong>740 像素</strong>，现在送 4096 点是 <strong>5.5 倍过采样</strong>，</p>
+<p>多出来的点显示不出来，却把带宽吃光了：</p>
+<table><thead><tr><th>每帧点数</th><th>帧长</th><th>921600 波特下的帧率</th></tr></thead><tbody>
+<tr><td>4096（现在）</td><td>16428 B</td><td>5.6 帧/秒</td></tr>
+<tr><td><strong>1024（建议）</strong></td><td><strong>4140 B</strong></td><td><strong>22.3 帧/秒</strong></td></tr>
+</tbody></table>
+<h3>要改的只有帧头的一个字段</h3>
+<p><strong>协议格式完全不变</strong>，只是 <code>points</code> 填 1024、payload 相应缩短：</p>
+<table><thead><tr><th>项</th><th>现在</th><th>改成</th></tr></thead><tbody>
+<tr><td><code>points</code>（偏移 24）</td><td>4096</td><td><strong>1024</strong></td></tr>
+<tr><td>单帧字节数</td><td>16428</td><td><strong>4140</strong>（= 40 + 1024×4 + 4）</td></tr>
+<tr><td>CRC 覆盖范围</td><td>前 16424 字节</td><td><strong>前 4136 字节</strong></td></tr>
+<tr><td>其余字段</td><td>不变</td><td>不变</td></tr>
+</tbody></table>
+<p>主机侧已经支持 <strong>256 / 512 / 1024 / 2048 / 4096</strong> 任意 2 的幂点数，</p>
+<p><strong>换回 4096 或改成 2048 都不用再改主机程序</strong>。</p>
+<h3>关于 FFT</h3>
+<ul><li>现阶段：FFT 仍由 RK3506 本地计算（<strong>代码保留，未删除</strong>）。</li></ul>
+<p>  用 1024 点时频率分辨率会降到 65 MHz/1024 ≈ 63.5 kHz；</p>
+<p>  如果这一页需要更细的谱，可以让 FPGA 在这一页改发 4096 点（主机自适应，无需改程序）。</p>
+<ul><li>后续：FFT 计划移到 FPGA 端运算。为此帧头 <code>flags</code> 字段<strong>预留 bit0</strong>：</li></ul>
+<p>  <code>flags=1</code> 表示本帧 payload 是 FPGA 算好的频谱（格式待定，主机侧会按 flags 分流）。</p>
+<p>  现在 <code>flags</code> 固定发 0 即可。</p>
+</body></html>

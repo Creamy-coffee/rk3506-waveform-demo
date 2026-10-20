@@ -128,9 +128,11 @@ static int v32_src_read2(float *ch0, float *ch1, int len)
     }
     if (!s_have) return 0;
 
-    if (len > V32_POINTS) len = V32_POINTS;
-    decimate_minmax(s_cur.ch0, V32_POINTS, ch0, len);
-    if (ch1) decimate_minmax(s_cur.ch1, V32_POINTS, ch1, len);
+    /* 用**本帧实际点数**，不是编译期的 4096 —— FPGA 可以按需送 1024 换取帧率 */
+    const int src_n = (s_cur.n > 1 && s_cur.n <= V32_POINTS) ? s_cur.n : V32_POINTS;
+    if (len > src_n) len = src_n;
+    decimate_minmax(s_cur.ch0, src_n, ch0, len);
+    if (ch1) decimate_minmax(s_cur.ch1, src_n, ch1, len);
     return len;
 }
 
