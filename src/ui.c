@@ -797,6 +797,78 @@ static void classify_wave(void)
     if(r2 < 0.10f && r3 < 0.05f)                { s_wf_kind = WF_SINE;     return; }
 }
 
+/*
+ * 自动抽取：用 FFT 测出来的频率决定抽取倍数。
+ *
+ * 目标：一屏（一帧）大约放 10 个周期。判据用"一帧里有几个周期"：
+ *     periods = f × N / fs_eff        （fs_eff = 65MHz / dec）
+ *
+ * 死区 2~30 个周期：太少（<2）说明信号频率太低、一帧装不下一个完整波形，
+ * 要加大抽取；太多（>30）说明抽过头了，波形糊成一团，要减小。
+ * 中间这段不动，避免在边界上来回跳。
+ *
+ * 命令通过 UART 反向通道发给 FPGA（0xA5, k）。FPGA 还没实现接收时，
+ * 命令发出去没有任何副作用；靠帧头的 decimation 字段判断有没有被采纳，
+ * 连续 3 次没变就认为对面不支持，不再发，直到频率变化超过 2 倍再重试。
+ */
+static void auto_decimation(void)
+{
+    static uint32_t s_next_ms;
+    static int      s_tries;
+    static int      s_blind;      /* 连续「测不准」而加大抽取的次数 */
+    static float    s_last_f;
+
+    if(!S.use_real || s_real_peak_hz <= 0.0f || s_full_n < 2) return;
+
+    const int cur = v32_last_decimation();
+    if(cur <= 0) return;                       /* 还没收到过帧 */
+
+    /* 频率大幅变化 -> 重新允许尝试 */
+    if(s_last_f <= 0.0f ||
+       s_real_peak_hz > s_last_f * 2.0f || s_real_peak_hz < s_last_f * 0.5f)
+        s_tries = 0;
+
+    const uint32_t now = lv_tick_get();
+    if((int32_t)(now - s_next_ms) < 0) return;  /* 800 ms 内不重复动 */
+
+    const wave_source_t *src = wave_source_get();
+    const float fs_eff = (src && src->sample_rate > 0) ? (float)src->sample_rate : 0.0f;
+    if(fs_eff <= 0.0f) return;
+
+    float periods = s_real_peak_hz * (float)s_full_n / fs_eff;
+
+    int want = cur;
+
+    /*
+     * 先判断"这一帧到底测不测得准"。
+     *
+     * 抽取倍率不够时，一帧里可能只有零点几个周期 —— 这时 FFT 的峰其实是噪声，
+     * 报出来的频率毫无意义（实测 500 Hz 在 dec=1 下被报成 63 kHz，正好是奈奎斯特边上）。
+     * 拿这种假频率去做"周期数"判断只会越走越偏。
+     *
+     * 所以：**峰值比底噪高不到 15 dB 就认为没测准，逐级加大抽取重测**，
+     * 直到能测出真实频率（或者已经到 256 上限）。
+     */
+    const float margin = s_real_peak_dbfs - s_real_floor_dbfs;
+    if(margin < 15.0f) {
+        if(cur < 256 && s_blind < 9) { want = cur << 1; s_blind++; }
+    } else {
+        s_blind = 0;
+        while(periods < 2.0f && want < 256) { want <<= 1; periods *= 2.0f; }
+        while(periods > 30.0f && want > 1)  { want >>= 1; periods *= 0.5f; }
+    }
+
+    s_next_ms = now + 800;
+    s_last_f  = s_real_peak_hz;
+
+    if(want == cur) { s_tries = 0; return; }   /* 已经合适（或已生效） */
+    if(dbg_on())
+        fprintf(stderr, "[adec] f=%.0f Hz periods=%.1f -> dec %d->%d (第 %d 次)\n",
+                (double)s_real_peak_hz, (double)periods, cur, want, s_tries + 1);
+    if(s_tries >= 3) return;                   /* 对面不认命令，别再发 */
+    if(v32_send_decimation(want) == 0) s_tries++;
+}
+
 static void real_update(void)
 {
     /*
@@ -934,6 +1006,7 @@ static void real_update(void)
     s_real_valid = true;
 
     if(S.auto_fit) auto_fit_apply(fn);
+    auto_decimation();
 }
 
 /*

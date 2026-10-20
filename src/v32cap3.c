@@ -51,6 +51,7 @@ static pthread_t   s_th;
 static int         s_th_running;
 static volatile int s_stop;
 static bool        s_live;
+static int         s_last_dec = 0;   /* 最近一帧帧头里的 decimation */
 static char        s_name[128];
 static char        s_err[160];
 static int         s_baud_actual;   /* 驱动实际生效的波特率 */
@@ -304,6 +305,7 @@ static void v32_feed(const uint8_t *data, int n)
         s_stage.crc32       = want;
         s_stage.flags       = flags;
         s_stage.n           = (int)pts;
+        s_last_dec          = (int)dec;
 
         /* 抽取倍数变了就同步采样率（时基/FFT 都读它） */
         {
@@ -554,6 +556,21 @@ int v32_copy_latest(v32_frame_t *out)
     }
     pthread_mutex_unlock(&s_lock);
     return has;
+}
+
+int v32_last_decimation(void) { return s_last_dec; }
+
+int v32_send_decimation(int dec)
+{
+    if(s_fd < 0 || !s_live) return -1;
+    if(dec < 1)   dec = 1;
+    if(dec > 256) dec = 256;
+    int k = 0;
+    while((1 << k) < dec && k < 16) k++;
+    uint8_t cmd[2];
+    cmd[0] = 0xA5;            /* 命令头 */
+    cmd[1] = (uint8_t)k;      /* dec = 2^k */
+    return (write(s_fd, cmd, 2) == 2) ? 0 : -1;
 }
 
 const v32_stats_t *v32_get_stats(void) { return &s_st; }

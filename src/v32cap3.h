@@ -108,6 +108,19 @@ void v32_shutdown(void);
  * 调用方给 out 传 NULL 时只查询是否有新帧，不拷贝。 */
 int  v32_copy_latest(v32_frame_t *out);
 
+/*
+ * 抽取倍数的**反向通道**（主机 -> FPGA）。
+ *
+ * 命令 2 字节：0xA5, k    其中 dec = 2^k（k = 0..8，即 1..256）
+ * FPGA 侧实现一个 UART 接收状态机即可；收到后切换抽取并把新的 dec
+ * 填进后续帧的帧头 decimation 字段（主机就是靠这个字段确认生效的）。
+ *
+ * 未实现时该函数只是把 2 个字节发出去，对现有单向链路没有任何副作用。
+ */
+int  v32_send_decimation(int dec);
+/* 最近一帧帧头里的 decimation（FPGA 实际在用多少）。没收到帧时返回 0。 */
+int  v32_last_decimation(void);
+
 const v32_stats_t *v32_get_stats(void);
 const char        *v32_source_name(void);   /* "/dev/ttyS1" 或文件名 */
 bool               v32_is_live(void);       /* true=UART，false=文件回放 */
