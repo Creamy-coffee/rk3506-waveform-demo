@@ -141,44 +141,44 @@
 #define V32_C_TOPBAR_BORDER  lv_color_hex(0xDCE6F0)  /* .top border-bottom */
 #define V32_C_BRAND          lv_color_hex(0x0C7B94)  /* .brand（品牌青，白底压深） */
 #define V32_C_BRAND_TEXT     lv_color_hex(0x122C42)  /* .brand span */
-#define V32_C_BRAND_SMALL    lv_color_hex(0x6F879C)  /* .brand small */
-#define V32_C_STATUS         lv_color_hex(0x476071)  /* .statuses */
-#define V32_C_LIVE           lv_color_hex(0x148A63)  /* .live */
+#define V32_C_BRAND_SMALL    lv_color_hex(0x44586C)  /* .brand small */
+#define V32_C_STATUS         lv_color_hex(0x2A3E4E)  /* .statuses */
+#define V32_C_LIVE           lv_color_hex(0x0B6B4A)  /* .live */
 #define V32_C_BADGE_BG       lv_color_hex(0xFFF3D2)  /* .mode-badge */
-#define V32_C_BADGE_FG       lv_color_hex(0x8A5B00)
+#define V32_C_BADGE_FG       lv_color_hex(0x7A4A00)
 
 /* 面板 / 绘图区 */
 #define V32_C_PANEL          lv_color_hex(0xFFFFFF)  /* .panel background */
 #define V32_C_PANEL_BORDER   lv_color_hex(0xDCE6F0)
 #define V32_C_PLOT           lv_color_hex(0xFBFDFF)  /* .plot background */
 #define V32_C_PLOT_BORDER    lv_color_hex(0xD5E0EC)
-#define V32_C_PLOT_TITLE     lv_color_hex(0x5F768B)  /* .plot-title */
-#define V32_C_PLOT_FOOT      lv_color_hex(0x6E8598)  /* .plot-foot */
-#define V32_C_PANEL_TITLE    lv_color_hex(0x6A8098)  /* .panel-title */
+#define V32_C_PLOT_TITLE     lv_color_hex(0x2E4156)  /* .plot-title */
+#define V32_C_PLOT_FOOT      lv_color_hex(0x35485C)  /* .plot-foot */
+#define V32_C_PANEL_TITLE    lv_color_hex(0x2E4156)  /* .panel-title */
 
 /* 指标行 .metric */
-#define V32_C_METRIC_LABEL   lv_color_hex(0x5E7489)
+#define V32_C_METRIC_LABEL   lv_color_hex(0x2E4156)
 #define V32_C_METRIC_VALUE   lv_color_hex(0x12293E)
 #define V32_C_METRIC_BORDER  lv_color_hex(0xE7EDF4)
 
 /* 语义色（.yellow/.cyan/.green）—— 深色主题的同色系压暗版，白底可读 */
-#define V32_C_CH1            lv_color_hex(0xC88200)  /* .yellow   CH1 / 矢量 */
-#define V32_C_CH2            lv_color_hex(0x0C7E96)  /* .cyan     CH2 */
-#define V32_C_GREEN          lv_color_hex(0x128A63)  /* .green    正常/锁定 */
-#define V32_C_FFT            lv_color_hex(0x0F8B62)  /* FFT 曲线 */
-#define V32_C_AI_OUT         lv_color_hex(0x0E9A6B)  /* AI 降噪输出曲线 */
+#define V32_C_CH1            lv_color_hex(0xA85E00)  /* .yellow   CH1 / 矢量 */
+#define V32_C_CH2            lv_color_hex(0x095F73)  /* .cyan     CH2 */
+#define V32_C_GREEN          lv_color_hex(0x0B6B4A)  /* .green    正常/锁定 */
+#define V32_C_FFT            lv_color_hex(0x0B6B4A)  /* FFT 曲线 */
+#define V32_C_AI_OUT         lv_color_hex(0x0A7A52)  /* AI 降噪输出曲线 */
 
 /* 提示文字 */
 #define V32_C_TEXT           lv_color_hex(0x17293A)  /* :root color */
-#define V32_C_FSNOTE         lv_color_hex(0x7A8FA3)  /* .fullscreen-note */
-#define V32_C_NOTE           lv_color_hex(0x6E8397)  /* .note */
-#define V32_C_HINT           lv_color_hex(0x56718A)  /* .touch-hint */
-#define V32_C_MINI           lv_color_hex(0x6B8299)  /* .mini */
-#define V32_C_LABEL          lv_color_hex(0x526B82)  /* .group label */
-#define V32_C_KV_KEY         lv_color_hex(0x5B7285)  /* .kv span */
+#define V32_C_FSNOTE         lv_color_hex(0x4E6378)  /* .fullscreen-note */
+#define V32_C_NOTE           lv_color_hex(0x42576B)  /* .note */
+#define V32_C_HINT           lv_color_hex(0x2E4156)  /* .touch-hint */
+#define V32_C_MINI           lv_color_hex(0x48607A)  /* .mini */
+#define V32_C_LABEL          lv_color_hex(0x2E4156)  /* .group label */
+#define V32_C_KV_KEY         lv_color_hex(0x3D5468)  /* .kv span */
 #define V32_C_KV_BORDER      lv_color_hex(0xE7EDF4)
-#define V32_C_SUBHEAD        lv_color_hex(0x7B90A4)  /* .subhead */
-#define V32_C_WARN           lv_color_hex(0x9A6400)  /* 模拟件的黄色警示 */
+#define V32_C_SUBHEAD        lv_color_hex(0x54687C)  /* .subhead */
+#define V32_C_WARN           lv_color_hex(0x7A3E00)  /* 模拟件的黄色警示 */
 
 /* 控件条 .controls */
 #define V32_C_CTRL_BG        lv_color_hex(0xF5F8FC)
@@ -200,7 +200,7 @@
 /* 底部导航 .nav */
 #define V32_C_NAV_BG         lv_color_hex(0xFFFFFF)
 #define V32_C_NAV_BORDER     lv_color_hex(0xDCE6F0)
-#define V32_C_NAV_FG         lv_color_hex(0x4E667B)
+#define V32_C_NAV_FG         lv_color_hex(0x35506A)
 #define V32_C_NAV_ON_BG      lv_color_hex(0xE2F4FA)  /* .nav button.active */
 #define V32_C_NAV_ON_FG      lv_color_hex(0x046C88)
 #define V32_C_NAV_ON_BAR     lv_color_hex(0x16A3C1)
@@ -208,7 +208,7 @@
 /* 画布内部（网格方向：白底上必须是"比底暗"，见上面的第 3 条） */
 #define V32_C_GRID           lv_color_hex(0xE4EBF3)  /* grid() 网格 */
 #define V32_C_GRID_CENTER    lv_color_hex(0xB7C6D6)  /* 中心虚线 */
-#define V32_C_TRIGGER        lv_color_hex(0x7A93A8)  /* 触发线 + "T" */
+#define V32_C_TRIGGER        lv_color_hex(0x54708A)  /* 触发线 + "T" */
 #define V32_C_IQ_RING        lv_color_hex(0xC3D2E0)  /* 矢量图同心圆 */
 
 /* ==================== 字体 ==================== */
@@ -234,7 +234,12 @@ LV_FONT_DECLARE(lv_font_v32_12_bold);
 LV_FONT_DECLARE(lv_font_v32_18_bold);
 LV_FONT_DECLARE(lv_font_v32_20_bold);
 
-#define V32_FONT_SMALL   (&lv_font_v32_12)   /* 代替 CSS 的 10~12px */
+/*
+ * 录屏要求：字要大、颜色要深，否则视频里看不清。
+ * 原来这一档是 12px（代替 CSS 的 10~12px），录出来太小，整体上调到 16px。
+ * 布局上 12→16 只涨 33%，各处都有余量；上板逐页看过没有溢出。
+ */
+#define V32_FONT_SMALL   (&lv_font_v32_16)   /* 原 12px，录屏看不清，上调一档 */
 #define V32_FONT_BASE    (&lv_font_v32_18)   /* 代替 CSS 的 18px（.metric b） */
 #define V32_FONT_BIG     (&lv_font_v32_20)   /* 代替 CSS 的 19px（.brand） */
 
@@ -264,7 +269,7 @@ LV_FONT_DECLARE(lv_font_v32_20_bold);
  * 全在粗体档，汉字进不去就是一片方块（SimHei 没有真粗体，笔画就是常规的，
  * 12px 上这点字重差看不出来）。四个粗体档因此各多几十 KB。
  */
-#define V32_FONT_SMALL_B (&lv_font_v32_12_bold)
+#define V32_FONT_SMALL_B (&lv_font_v32_18_bold)  /* 原 12px 粗体，同上上调 */
 #define V32_FONT_BASE_B  (&lv_font_v32_18_bold)
 #define V32_FONT_BIG_B   (&lv_font_v32_20_bold)
 
