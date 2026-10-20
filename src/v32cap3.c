@@ -52,6 +52,117 @@ static int         s_th_running;
 static volatile int s_stop;
 static bool        s_live;
 static int         s_last_dec = 0;   /* 最近一帧帧头里的 decimation */
+
+/* ---------------- 锁相帧 ---------------- */
+static const char        s_magic_meas[] = V32_MEAS_MAGIC;
+
+/* 下面两个是文件后部的静态工具函数，这里先声明（handle_meas 在它们之前） */
+static uint32_t crc32_calc(const uint8_t *p, int n);
+static uint32_t rd32(const uint8_t *p);
+static v32_meas_view_t   s_meas;        /* 最近一帧锁相读数 */
+static uint32_t          s_meas_ms;     /* 收到它的时刻（单调毫秒） */
+static uint32_t          s_last_wave_fid;    /* 最近一帧波形帧的 frame_id */
+static uint64_t          s_last_wave_start;  /* 它的 start_index */
+static int               s_have_wave;
+
+static uint32_t mono_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u);
+}
+
+/* FCW -> 毫 Hz（带符号，用于残余频差） */
+static int64_t fcw_millihz(int32_t fcw, uint32_t fs)
+{
+    const int64_t num = (int64_t)fcw * (int64_t)fs;
+    const int64_t hz  = num / 4294967296LL;
+    const int64_t rem = num % 4294967296LL;
+    return hz * 1000 + rem * 1000 / 4294967296LL;
+}
+
+/*
+ * 处理一帧 128 字节的 V32MEAS!（偏移定义见 v32cap3.h / FPGA 交付包）。
+ *
+ * **关联规则**：锁相帧的 wave_frame_id 必须等于刚收到的那一帧波形帧 id，
+ * snapshot_tick 必须等于它的 start_index；否则丢弃 —— 绝不把上一组的测量
+ * 套到新波形上（那会显示出"看着合理其实错位"的读数）。
+ *
+ * **usable 要自己复核**，不能只信 FPGA 的 bit0：低 5 位必须全 1，
+ * settling / cal_clip / adc_otr / 保留位必须全 0，qual==3，flags==0，age≤1 s。
+ */
+static void handle_meas(const uint8_t *p)
+{
+    if(rd32(p + 8) != V32_MEAS_VERSION || rd32(p + 12) != V32_MEAS_BYTES) return;
+    if(rd32(p + 120) != 0u) return;                       /* reserved 必须为 0 */
+    if(crc32_calc(p, (int)V32_MEAS_CRC_OFF) != rd32(p + V32_MEAS_CRC_OFF)) return;
+
+    const uint32_t wid  = rd32(p + 16);
+    const uint64_t tick = (uint64_t)rd32(p + 24) | ((uint64_t)rd32(p + 28) << 32);
+    if(!s_have_wave || wid != s_last_wave_fid || tick != s_last_wave_start) return;
+
+    const uint32_t fs   = rd32(p + 32);
+    const uint32_t age  = rd32(p + 36);
+    const uint32_t fcw  = rd32(p + 40);
+    const uint32_t rat  = rd32(p + 52);
+    const int16_t  pdi  = (int16_t)((uint16_t)p[60] | ((uint16_t)p[61] << 8));
+    const uint8_t  qual = p[62];
+    const uint32_t st   = rd32(p + 64);
+    const uint8_t  fl   = p[68];
+
+    v32_meas_view_t m;
+    memset(&m, 0, sizeof m);
+    m.seq           = s_meas.seq + 1u;
+    m.wave_frame_id = wid;
+    m.status        = st;
+    m.qual          = qual;
+    m.flags         = fl;
+    m.afc_state     = p[69];
+    m.afc_reason    = p[70];
+    m.guard0        = p[72];
+    m.guard1        = p[73];
+    m.decim_log2    = p[74];
+    m.fft_valid     = p[92];
+    m.fft_hz0       = rd32(p + 84);
+    m.fft_hz1       = rd32(p + 88);
+    m.amp0_millicounts = (int64_t)rd32(p + 44) * 1000 / 4096;
+    m.amp1_millicounts = (int64_t)rd32(p + 48) * 1000 / 4096;
+    m.ratio_milli      = (int64_t)rat * 1000 / 65536;
+    m.pdiff_millideg   = (int64_t)pdi * 360000 / 65536;
+    m.tracked_hz_x1000 = fcw_millihz((int32_t)fcw, fs);
+    m.resid0_hz_x1000  = fcw_millihz((int32_t)rd32(p + 104), fs);
+    m.resid1_hz_x1000  = fcw_millihz((int32_t)rd32(p + 108), fs);
+    m.age_ms           = (fs > 0u) ? (uint32_t)((uint64_t)age * 1000u / fs) : 0u;
+
+    m.usable = ((st & V32_ST_REQUIRED) == V32_ST_REQUIRED)
+            && ((st & V32_ST_FORBIDDEN) == 0u)
+            && (qual == 3u) && (fl == 0u) && (age <= V32_MAX_AGE_TICKS);
+    m.valid  = 1;
+
+    s_meas    = m;
+    s_meas_ms = mono_ms();
+
+    {
+        static int dbg = -1;
+        if(dbg < 0) dbg = getenv("WAVE_MEASDBG") ? 1 : 0;
+        if(dbg)
+            fprintf(stderr, "[meas] wid=%u usable=%d amp0=%lld amp1=%lld ratio=%lld pdiff=%lld age=%u qual=%u status=%u\n",
+                    (unsigned)wid, m.usable, (long long)m.amp0_millicounts, (long long)m.amp1_millicounts,
+                    (long long)m.ratio_milli, (long long)m.pdiff_millideg,
+                    (unsigned)m.age_ms, (unsigned)m.qual, (unsigned)m.status);
+    }
+}
+
+int v32_get_meas(v32_meas_view_t *out)
+{
+    if(!out) return 0;
+    *out = s_meas;
+    if(s_meas.seq == 0u) return 0;
+    const uint32_t dt = mono_ms() - s_meas_ms;
+    out->valid = (dt <= 1500u) ? 1 : 0;      /* 1.5 s 没新锁相帧就作废 */
+    if(!out->valid) out->usable = 0;
+    return out->valid;
+}   /* 最近一帧帧头里的 decimation */
 static char        s_name[128];
 static char        s_err[160];
 static int         s_baud_actual;   /* 驱动实际生效的波特率 */
@@ -161,8 +272,10 @@ static void v32_feed(const uint8_t *data, int n)
     for (;;) {
         /* ---- 找魔数 ---- */
         int at = -1;
+        int is_meas = 0;
         for (int i = 0; i + V32_MAGIC_LEN <= s_len; i++) {
-            if (memcmp(s_buf + i, s_magic, V32_MAGIC_LEN) == 0) { at = i; break; }
+            if (memcmp(s_buf + i, s_magic, V32_MAGIC_LEN) == 0) { at = i; is_meas = 0; break; }
+            if (memcmp(s_buf + i, s_magic_meas, V32_MAGIC_LEN) == 0) { at = i; is_meas = 1; break; }
         }
         if (at < 0) {
             /* 保留可能是「被拆开的魔数前缀」的尾巴，其余丢弃 */
@@ -178,6 +291,14 @@ static void v32_feed(const uint8_t *data, int n)
             memmove(s_buf, s_buf + at, (size_t)(s_len - at));
             s_len -= at;
             s_st.discarded_bytes += (uint32_t)at;
+        }
+
+        if (is_meas) {
+            if (s_len < (int)V32_MEAS_BYTES) break;      /* 还没收全 */
+            handle_meas(s_buf);
+            memmove(s_buf, s_buf + V32_MEAS_BYTES, (size_t)(s_len - (int)V32_MEAS_BYTES));
+            s_len -= (int)V32_MEAS_BYTES;
+            continue;
         }
 
         if (s_len < V32_HEADER_BYTES) break;   /* 头还没收全 */
@@ -313,6 +434,10 @@ static void v32_feed(const uint8_t *data, int n)
             if (rate > 0 && wave_source_v32.sample_rate != rate)
                 wave_source_v32.sample_rate = rate;
         }
+
+        s_last_wave_fid   = fid;
+        s_last_wave_start = start_idx;
+        s_have_wave       = 1;
 
         s_last_id    = fid;
         s_last_index = start_idx;

@@ -34,6 +34,23 @@ void fft_magnitude_spectrum(const float *x, int n, float *mag);
  * 15.87 kHz；补零到 8192 后网格变成 7.935 kHz，正好和参考稿 UI 上写的
  * 「8192 POINTS / BIN WIDTH 7.935 kHz」对得上，峰值读数也更平滑。
  */
+/*
+ * 显示/分析用的三种窗（系数取自 SciPy general_cosine，与 FPGA 交付包
+ * linux/spectrum.c 完全一致）。**不提供 Hamming / 矩形窗** ——
+ * 交付包里没验证过的窗不放进菜单，免得"选了但没验证"。
+ *
+ * 统一写成余弦级数 w = Σ a[k]·cos(k·2π·n/N)。
+ */
+typedef enum {
+    FFT_WIN_HANN = 0,      /* 0.5 - 0.5cos */
+    FFT_WIN_BLACKMAN,      /* 0.42 - 0.5cos + 0.08cos2 */
+    FFT_WIN_FLATTOP        /* 5 项 Flat Top */
+} fft_win_t;
+
+void fft_magnitude_spectrum_zero_win(const float *x, int n_real, int n_fft,
+                                     fft_win_t win, float *mag);
+
+/* 兼容旧调用：等价于 FFT_WIN_HANN */
 void fft_magnitude_spectrum_zero(const float *x, int n_real, int n_fft, float *mag);
 
 /*

@@ -70,15 +70,35 @@ void fft_radix2(float *re, float *im, int n)
     }
 }
 
-void fft_magnitude_spectrum_zero(const float *x, int n_real, int n_fft, float *mag)
+/* 窗系数（与 FPGA 交付包 linux/spectrum.c 一致） */
+static float win_coef(fft_win_t win, int i, int n)
+{
+    const float z = 2.0f * (float)M_PI * (float)i / (float)n;
+    switch (win) {
+    case FFT_WIN_BLACKMAN:                       /* SciPy blackman: a=[0.42,0.50,0.08] */
+        return 0.42f - 0.5f * cosf(z) + 0.08f * cosf(2.0f * z);
+    case FFT_WIN_FLATTOP: {                      /* SciPy flattop 五项 */
+        static const float a[5] = { 0.21557895f, 0.41663158f, 0.277263158f,
+                                    0.083578947f, 0.006947368f };
+        float w = 0.0f;
+        for (int k = 0; k < 5; k++) w += a[k] * cosf((float)k * z);
+        return w;
+    }
+    case FFT_WIN_HANN:
+    default:
+        return 0.5f - 0.5f * cosf(z);            /* SciPy hann: a=[0.5,0.5] */
+    }
+}
+
+void fft_magnitude_spectrum_zero_win(const float *x, int n_real, int n_fft,
+                                     fft_win_t win, float *mag)
 {
     if (!x || !mag || n_real < 2 || n_fft < n_real) return;
     if (n_fft > FFT_MAX_N || (n_fft & (n_fft - 1))) return;
 
     /* 窗加在**真实样点**上，补零的部分不加窗（本来就是 0） */
     for (int i = 0; i < n_real; i++) {
-        const float w = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * (float)i / (float)(n_real - 1)));
-        s_re[i] = x[i] * w;
+        s_re[i] = x[i] * win_coef(win, i, n_real);
         s_im[i] = 0.0f;
     }
     for (int i = n_real; i < n_fft; i++) {
@@ -121,4 +141,10 @@ void fft_magnitude_spectrum(const float *x, int n, float *mag)
         const float m = sqrtf(s_re[k] * s_re[k] + s_im[k] * s_im[k]);
         mag[k] = m * scale;
     }
+}
+
+/* 兼容旧调用：Hann */
+void fft_magnitude_spectrum_zero(const float *x, int n_real, int n_fft, float *mag)
+{
+    fft_magnitude_spectrum_zero_win(x, n_real, n_fft, FFT_WIN_HANN, mag);
 }

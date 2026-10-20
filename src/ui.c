@@ -87,8 +87,10 @@ static const char  TIMEBASE_OPTS[] =
     "\n20 µs/格\n50 µs/格\n100 µs/格\n200 µs/格\n500 µs/格";
 static const int   TIMEBASE_DEF    = 2;    /* 2 µs/div */
 
-static const char  WIN_OPTS[]      = "HANN\nHAMMING\nBLACKMAN";
-static const char *WIN_NAME[3]     = { "HANN", "HAMMING", "BLACKMAN" };
+/* 只提供交付包里验证过的三种窗：Hamming / 矩形窗不提供，
+ * 免得菜单里出现"选了但没验证"的选项。 */
+static const char  WIN_OPTS[]      = "HANN\nBLACKMAN\nFLAT TOP";
+static const char *WIN_NAME[3]     = { "HANN", "BLACKMAN", "FLAT TOP" };
 static const int   WIN_DEF         = 0;
 
 static const int   TAU_MS[4]       = { 1, 10, 100, 1000 };
@@ -126,6 +128,7 @@ static lv_obj_t *s_lbl_scope_freq, *s_lbl_v1, *s_lbl_v2, *s_lbl_phase;
 static lv_obj_t *s_lbl_scope_axis;
 static lv_obj_t *s_lbl_fft_peakf, *s_lbl_fft_peakl, *s_lbl_fft_floor, *s_lbl_fft_win;
 static lv_obj_t *s_lbl_lock_ref, *s_lbl_lock_amp, *s_lbl_lock_phase, *s_lbl_lock_tau;
+static lv_obj_t *s_lbl_lock_state;      /* 锁定状态（● 锁定 / ○ 原因） */
 static lv_obj_t *s_lbl_ai_stat;
 static lv_obj_t *s_lbl_fps, *s_lbl_uptime;
 static lv_obj_t *s_lbl_v32_rate, *s_lbl_v32_loss;   /* FPGA 链路实时统计 */
@@ -980,7 +983,8 @@ static void real_update(void)
         for(int i = 0; i < fn; i++) sum += (double)spec_src[i];
         const float mean = (float)(sum / (double)fn);
         for(int i = 0; i < fn; i++) s_fft_tmp[i] = spec_src[i] - mean;
-        fft_magnitude_spectrum_zero(s_fft_tmp, fn, REAL_FFT_N, s_real_mag);
+        fft_magnitude_spectrum_zero_win(s_fft_tmp, fn, REAL_FFT_N,
+                                        (fft_win_t)S.win_idx, s_real_mag);
     }
     s_real_bins = REAL_FFT_N / 2;
 
@@ -1524,9 +1528,9 @@ static void build_lock(lv_obj_t *pg)
     s_lbl_lock_amp   = mk_metric(p1, TITLE_H + METRIC_H * 1, "幅度",      "8.6 mV",     V32_C_CH1);
     s_lbl_lock_phase = mk_metric(p1, TITLE_H + METRIC_H * 2, "相位",      "43.7°",      V32_C_CH2);
     s_lbl_lock_tau   = mk_metric(p1, TITLE_H + METRIC_H * 3, "时间常数",  "10 ms",      V32_C_METRIC_VALUE);
-    mk_metric(p1, TITLE_H + METRIC_H * 4, "锁定状态", "跟踪中", V32_C_GREEN);
+    s_lbl_lock_state = mk_metric(p1, TITLE_H + METRIC_H * 4, "锁定状态", "跟踪中", V32_C_GREEN);
     mk_note(p1, TITLE_H + METRIC_H * 5 + 6, ASIDE_W - V32_PANEL_PAD * 2,
-            "矢量图与积分输出为演示数据，实际结果以 FPGA DDC/CORDIC 为准。");
+            "数值来自 FPGA 片上锁相；不可用时显示「—」，沿用旧值会误导。");
 }
 
 /* =========================================================
@@ -2254,15 +2258,42 @@ static void tick_scope(void)
     lv_label_set_text_fmt(s_lbl_v1, "%.1f mV", (double)v1);
     lv_label_set_text_fmt(s_lbl_v2, "%.1f mV", (double)v2);
 
-    /* 频率：真实链路取 FFT 峰值，演示链路取下拉框 */
-    if(real)          lv_label_set_text_fmt(s_lbl_scope_freq, "%.3f MHz", (double)s_real_peak_hz / 1e6);
-    else if(use_real) lv_label_set_text(s_lbl_scope_freq, "0.000 MHz");
-    else              lv_label_set_text_fmt(s_lbl_scope_freq, "%.3f MHz", (double)FREQ_MHZ[S.freq_idx]);
+    /*
+     * 优先用**片上锁相**的读数。
+     *
+     * 锁相的 tracked_fcw 是 NCO 跟踪出来的频率，精度远高于 FFT 的频率栅格
+     * （栅格 = fs/8192 ≈ 7.9 kHz，而锁相可以到 Hz 级）；相位差更是只有锁相
+     * 才测得出，本地两路 FFT 只能给到栅格级。
+     *
+     * 但**必须严格看 usable**：失锁、未稳定、结果超 1 s、没有匹配波形帧，
+     * 一律显示「—」，绝不沿用上一次的数值 —— 那是"看着合理其实错位"的读数。
+     */
+    v32_meas_view_t mm;
+    const int  meas_fresh  = v32_get_meas(&mm);
+    const bool meas_ok     = meas_fresh && mm.usable;
 
-    /* 相位差也按真实帧算，没有数据时打「—」，不留在演示值上 */
-    if(real)          lv_label_set_text_fmt(s_lbl_phase, "%.1f°", (double)s_real_phase_deg);
-    else if(use_real) lv_label_set_text(s_lbl_phase, "—°");
-    else              lv_label_set_text_fmt(s_lbl_phase, "%.1f°", (double)S.phase);
+    if(real) {
+        if(meas_ok)
+            lv_label_set_text_fmt(s_lbl_scope_freq, "%.4f MHz", (double)mm.tracked_hz_x1000 / 1e6);
+        else
+            lv_label_set_text_fmt(s_lbl_scope_freq, "%.3f MHz", (double)s_real_peak_hz / 1e6);
+    } else if(use_real) {
+        lv_label_set_text(s_lbl_scope_freq, "0.000 MHz");
+    } else {
+        lv_label_set_text_fmt(s_lbl_scope_freq, "%.3f MHz", (double)FREQ_MHZ[S.freq_idx]);
+    }
+
+    /* 相位差：只有锁相可用时才显示，否则「—」 */
+    if(real) {
+        if(meas_ok)
+            lv_label_set_text_fmt(s_lbl_phase, "%.2f°", (double)(mm.pdiff_millideg / 1000.0));
+        else
+            lv_label_set_text(s_lbl_phase, "—°");
+    } else if(use_real) {
+        lv_label_set_text(s_lbl_phase, "—°");
+    } else {
+        lv_label_set_text_fmt(s_lbl_phase, "%.1f°", (double)S.phase);
+    }
 
     /*
      * 真实帧 4096 点 @65 MSPS = 63.015 µs 满屏，10 格 -> 6.302 µs/div。
@@ -2347,6 +2378,68 @@ static void tick_lock(void)
     static float a[PLOT_MAX_PTS], b[PLOT_MAX_PTS];
     const int n = PLOT_MAX_PTS;
 
+    real_update();
+
+    if(S.use_real) {
+        if(s_real_valid && s_full_n >= 2) {
+            map_window(s_full0, s_full_n, a, n, false);
+            map_window(s_full1, s_full_n, b, n, false);
+            plot_set_trace(s_plot_lock, 0, a, n, V32_C_CH1, 2);
+            plot_set_trace(s_plot_lock, 1, b, n, V32_C_CH2, 2);
+
+            /*
+             * 锁定页的读数**全部来自片上锁相**（V32MEAS!）。
+             * usable 不成立（失锁 / 未稳定 / 超时 / 没有匹配波形帧）时一律
+             * 显示「—」，并用灰色，不能拿上一帧的数凑 —— 那是最容易骗人的地方。
+             */
+            v32_meas_view_t mm;
+            const bool ok = (v32_get_meas(&mm) != 0) && mm.usable;
+
+            if(ok) {
+                lv_label_set_text_fmt(s_lbl_lock_ref,   "%.4f MHz",
+                                      (double)mm.tracked_hz_x1000 / 1e6);
+                lv_label_set_text_fmt(s_lbl_lock_amp,   "%.1f mV",
+                                      (double)mm.amp1_millicounts / 1000.0 * V32_ADC_MV_PER_LSB);
+                lv_label_set_text_fmt(s_lbl_lock_phase, "%.2f°",
+                                      (double)(mm.pdiff_millideg / 1000.0));
+                lv_obj_set_style_text_color(s_lbl_lock_ref,   V32_C_METRIC_VALUE, LV_PART_MAIN);
+                lv_obj_set_style_text_color(s_lbl_lock_amp,   V32_C_METRIC_VALUE, LV_PART_MAIN);
+                lv_obj_set_style_text_color(s_lbl_lock_phase, V32_C_GREEN,        LV_PART_MAIN);
+                plot_set_iq(s_plot_iq, (float)(mm.pdiff_millideg / 1000.0));
+                lv_label_set_text(s_lbl_lock_state, "● 锁定");
+                lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_GREEN, LV_PART_MAIN);
+            } else {
+                lv_label_set_text(s_lbl_lock_ref,   "—");
+                lv_label_set_text(s_lbl_lock_amp,   "—");
+                lv_label_set_text(s_lbl_lock_phase, "—");
+                lv_obj_set_style_text_color(s_lbl_lock_ref,   V32_C_WARN, LV_PART_MAIN);
+                lv_obj_set_style_text_color(s_lbl_lock_amp,   V32_C_WARN, LV_PART_MAIN);
+                lv_obj_set_style_text_color(s_lbl_lock_phase, V32_C_WARN, LV_PART_MAIN);
+                plot_set_iq(s_plot_iq, 0.0f);
+                /* 把原因也说出来：失锁 / 未稳定 / 没数据 */
+                const char *why = "○ 未锁定";
+                if(v32_get_meas(&mm) == 0)          why = "○ 无锁相数据";
+                else if(mm.status & V32_ST_SETTLING) why = "○ 收敛中";
+                else if(mm.status & V32_ST_ADC_OTR)  why = "○ ADC 超量程";
+                else if(mm.status & V32_ST_CAL_CLIP) why = "○ 校准削顶";
+                else if(mm.qual != 3)               why = "○ 单通道";
+                lv_label_set_text(s_lbl_lock_state, why);
+                lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_WARN, LV_PART_MAIN);
+            }
+        } else {
+            for(int i = 0; i < n; i++) { a[i] = 0.5f; b[i] = 0.5f; }
+            plot_set_trace(s_plot_lock, 0, a, n, V32_C_CH1, 2);
+            plot_set_trace(s_plot_lock, 1, b, n, V32_C_CH2, 2);
+            plot_set_iq(s_plot_iq, 0.0f);
+            lv_label_set_text(s_lbl_lock_ref,   "—");
+            lv_label_set_text(s_lbl_lock_amp,   "—");
+            lv_label_set_text(s_lbl_lock_phase, "—");
+            lv_label_set_text(s_lbl_lock_state, "○ 无数据");
+            lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_WARN, LV_PART_MAIN);
+        }
+        return;
+    }
+
     demo_lock_a(&S.sig, a, n);
     demo_lock_b(&S.sig, b, n);
     plot_set_trace(s_plot_lock, 0, a, n, V32_C_CH2, 2);
@@ -2356,6 +2449,8 @@ static void tick_lock(void)
     lv_label_set_text_fmt(s_lbl_lock_ref,   "%.3f MHz", (double)FREQ_MHZ[S.freq_idx]);
     lv_label_set_text_fmt(s_lbl_lock_amp,   "%.1f mV",  (double)demo_vpp_mv(a, n, V32_GRID_Y));
     lv_label_set_text_fmt(s_lbl_lock_phase, "%.1f°",    (double)S.phase);
+    lv_label_set_text(s_lbl_lock_state, "● 锁定");
+    lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_GREEN, LV_PART_MAIN);
 }
 
 /*

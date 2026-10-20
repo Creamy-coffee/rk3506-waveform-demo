@@ -154,4 +154,47 @@ int                v32_uart_loopback_test(const char *dev, int baud, int bytes);
  */
 #define V32_ADC_MV_PER_LSB   2.441f
 
+/* ============ 锁相帧 V32MEAS!（AB5 proto 12，紧跟在波形帧之后）============
+ * 128 字节，独立 CRC32。字段偏移与判定规则见 FPGA 交付包
+ * docs/V32_LINUX_LINK_SPEC.md，这里只做接收与复核。
+ */
+#define V32_MEAS_MAGIC    "V32MEAS!"
+#define V32_MEAS_BYTES    128
+#define V32_MEAS_CRC_OFF  124
+#define V32_MEAS_VERSION  1u
+
+/* status 位（偏移 64） */
+#define V32_ST_USABLE       0x00000001u
+#define V32_ST_PRESENT      0x00000002u
+#define V32_ST_RATIO_VALID  0x00000004u
+#define V32_ST_AFC_READY    0x00000008u
+#define V32_ST_SAME_SOURCE  0x00000010u
+#define V32_ST_SETTLING     0x00000020u
+#define V32_ST_CAL_CLIP     0x00000100u
+#define V32_ST_ADC_OTR      0x00000200u
+#define V32_ST_REQUIRED     0x0000001Fu   /* 低 5 位必须全 1 */
+#define V32_ST_FORBIDDEN    0x00000F20u   /* settling/cal_clip/adc_otr/保留 必须全 0 */
+#define V32_MAX_AGE_TICKS   65000000u     /* 1.0 s */
+
+typedef struct {
+    int      valid;             /* 最近一帧是否新鲜（1.5 s 内收到过） */
+    int      usable;            /* 按规格复核：幅相能不能显示 */
+    uint32_t seq;               /* 每收到一帧 +1，上层用它判断有没有更新 */
+    uint32_t wave_frame_id;     /* 关联的波形帧 */
+    uint32_t status;
+    uint8_t  qual, flags, afc_state, afc_reason, guard0, guard1, decim_log2;
+    uint8_t  fft_valid;
+    int64_t  amp0_millicounts;  /* Q12 → 毫码 */
+    int64_t  amp1_millicounts;
+    int64_t  ratio_milli;       /* Q16 → 千分之一 */
+    int64_t  pdiff_millideg;    /* 整周 Q16 → 毫度 */
+    int64_t  tracked_hz_x1000;  /* FCW → 毫 Hz（锁相频率，比 FFT 栅格准） */
+    int64_t  resid0_hz_x1000, resid1_hz_x1000;
+    uint32_t fft_hz0, fft_hz1;
+    uint32_t age_ms;            /* result_age 换算成毫秒 */
+} v32_meas_view_t;
+
+/* 取锁相读数。返回 1 = 有新鲜数据（能不能显示还要看 usable）。 */
+int v32_get_meas(v32_meas_view_t *out);
+
 #endif /* V32CAP3_H */
