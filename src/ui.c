@@ -89,7 +89,6 @@ static const int   TIMEBASE_DEF    = 2;    /* 2 µs/div */
 
 /* 只提供交付包里验证过的三种窗：Hamming / 矩形窗不提供，
  * 免得菜单里出现"选了但没验证"的选项。 */
-static const char  WIN_OPTS[]      = "HANN\nBLACKMAN\nFLAT TOP";
 static const char *WIN_NAME[3]     = { "HANN", "BLACKMAN", "FLAT TOP" };
 static const int   WIN_DEF         = 0;
 
@@ -140,7 +139,7 @@ static lv_obj_t *s_lbl_den_title;
 static lv_obj_t *s_lbl_recon_badge;      /* 示波器页右上角「重建」牌 */
 static lv_obj_t *s_lbl_fft_cur;
 static lv_obj_t *s_lbl_fft_title;
-static lv_obj_t *s_dd_win;
+static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
 static bool      s_fft_cur_on;       /* 重建页下方图标题，随能否重建变化 */
@@ -1896,9 +1895,15 @@ static void cb_fch_auto(lv_event_t *e) { LV_UNUSED(e); fft_ch_set(0); }
 static void cb_fch_ch1 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(1); }
 static void cb_fch_ch2 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(2); }
 
-static void cb_window(lv_event_t *e)
+static void cb_win_cycle(lv_event_t *e)
 {
-    S.win_idx = (int)lv_dropdown_get_selected(lv_event_get_target(e));
+    LV_UNUSED(e);
+    S.win_idx = (S.win_idx + 1) % 3;
+    if(dbg_on())
+        fprintf(stderr, "[win] 窗函数 -> %d (%s)\n", S.win_idx, WIN_NAME[S.win_idx]);
+    if(s_chip_win) chip_set_text(s_chip_win, WIN_NAME[S.win_idx]);
+    /* 该页没有下拉框了，窗名由芯片自己显示 */
+    if(s_lbl_fft_win) lv_label_set_text(s_lbl_fft_win, WIN_NAME[S.win_idx]);
     ui_tick();
 }
 
@@ -2023,7 +2028,7 @@ static void cb_reset(lv_event_t *e)
     {
         lv_obj_t *dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_SCOPE], 1);
         if(dd) lv_dropdown_set_selected(dd, (uint32_t)TIMEBASE_DEF);
-        if(s_dd_win) lv_dropdown_set_selected(s_dd_win, (uint32_t)WIN_DEF);
+        if(s_chip_win) { chip_set_text(s_chip_win, WIN_NAME[WIN_DEF]); chip_selected(s_chip_win, true); }
         /* 频谱通道回「自动」 */
         fft_ch_set(0);
         dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_LOCK], 1);
@@ -2124,9 +2129,16 @@ static void build_controls(lv_obj_t *root)
     s_ctrl_grp[UI_PAGE_FFT] = gc;
 
     lv_obj_t *gf2 = mk_group(cp, "窗函数");
-    lv_obj_t *dd_w = mk_dropdown(gf2, WIN_OPTS, WIN_DEF, cb_window);
-    s_dd_win = dd_w;
-    lv_obj_set_style_max_width(dd_w, V32_SEL_MAX_W, LV_PART_MAIN);
+    /*
+     * ⚠️ 这里原来是个下拉框，实测**点不开**（点下去只重绘了框本身，
+     *    弹出列表从来不出现 —— 和之前「频谱通道」下拉框同一个毛病）。
+     *    控制条离屏幕底部只有 80 px，列表向下弹会出屏，而这一版 LVGL 不会自动翻到上方。
+     *
+     *    改成**一个循环切换的芯片**：芯片显示当前窗名，点一下换下一个。
+     *    芯片的点击在整个界面里都是可靠的，而且一直看得到当前值。
+     */
+    s_chip_win = mk_chip(gf2, WIN_NAME[WIN_DEF], cb_win_cycle);
+    chip_selected(s_chip_win, true);
 
 
     lv_obj_t *gl = mk_group(cp, "积分时间");
