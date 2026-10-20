@@ -1,0 +1,96 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>AB5 差距盘点与待办</title>
+<style>
+body{max-width:880px;margin:32px auto;padding:0 24px;font:16px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#1a2733}
+h1{font-size:25px;border-bottom:3px solid #1f6feb;padding-bottom:10px}
+h2{font-size:20px;margin-top:32px;border-left:5px solid #1f6feb;padding-left:12px}
+h3{font-size:17px;margin-top:24px;color:#24486e}
+code{background:#f2f5f8;padding:1px 5px;border-radius:3px;font-family:Consolas,monospace;color:#b03060}
+pre{background:#f6f8fa;border:1px solid #e1e8ef;border-radius:6px;padding:12px;overflow-x:auto}
+pre code{background:none;color:#1a2733}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:15px}
+th,td{border:1px solid #dde5ec;padding:7px 11px;text-align:left}
+th{background:#eef4fb}
+tr:nth-child(even) td{background:#fafcfe}
+blockquote{border-left:4px solid #cbd5e0;margin:14px 0;padding:6px 16px;color:#4a5568;background:#f8fafc}
+hr{border:none;border-top:1px solid #e1e8ef;margin:24px 0}
+</style></head><body>
+<h1>AB5 联调差距盘点与待办（2026-10-20 19:50 实测）</h1>
+<blockquote>主机侧（RK3506）实测后整理。所有结论都有抓包证据，附文件可复核。</blockquote>
+<blockquote>结论：<strong>接口层目前只跑通了「波形帧 + 锁相帧」两帧，第三帧（频谱）和 2 Mbaud 都还没生效。</strong></blockquote>
+<hr>
+<h2>一、实测抓到的东西</h2>
+<table><thead><tr><th>项</th><th>实测值</th></tr></thead><tbody>
+<tr><td>串口波特率</td><td><strong>921600</strong>（按 2 Mbaud 抓是乱码，按 921600 正常解析）</td></tr>
+<tr><td>波形帧</td><td><code>V32CAP3!</code> fid=1396..1399，<strong>pts=1024</strong>，<strong>dec=1</strong>，CRC 全 OK</td></tr>
+<tr><td>锁相帧</td><td><code>V32MEAS!</code> wid 与波形帧一一对应（关联正确），CRC 全 OK</td></tr>
+<tr><td><strong>帧间距</strong></td><td><strong>4268 字节</strong> = 4140（波形）+ 128（锁相）</td></tr>
+<tr><td>频谱帧</td><td><strong>一帧都没有</strong></td></tr>
+</tbody></table>
+<p>复核办法（附件里就有一段当时的抓包）：</p>
+<pre>
+python check_v32_frame.py 实测抓包_20261020_1950.bin
+</pre>
+<p>现在的输出是「波形 5 帧，锁相 5 帧，<strong>频谱 0 帧</strong>」。</p>
+<hr>
+<h2>二、还没达到期望的 4 件事</h2>
+<h3>① 频谱帧 <code>V32SPEC!</code> 没有发出来  ⚠️ 最关键</h3>
+<table><thead><tr><th></th><th></th></tr></thead><tbody>
+<tr><td><strong>现象</strong></td><td>帧间距 4268，只有两帧；一个 <code>V32SPEC!</code> 都没收到</td></tr>
+<tr><td><strong>期望</strong></td><td>一组三帧：<strong>波形 4140 + 锁相 128 + 频谱 4144 = 8412 字节</strong></td></tr>
+<tr><td><strong>说明</strong></td><td>格式见《频谱帧与窗函数命令》文档第四节；示例帧 <code>sample_3_spec.bin</code> 可按字节对照</td></tr>
+<tr><td><strong>验收</strong></td><td>抓包里 <code>V32SPEC!</code> 出现次数 = 波形帧次数；<code>check_v32_frame.py</code> 能打印第三行</td></tr>
+</tbody></table>
+<blockquote>怀疑：串口器里没有加第三个发送分支，或者加了但没使能。</blockquote>
+<blockquote>最快的自查：确认发送状态机里存在 <code>V32SPEC!</code> 的魔数输出。</blockquote>
+<h3>② 串口波特率还是 921600</h3>
+<table><thead><tr><th></th><th></th></tr></thead><tbody>
+<tr><td><strong>现象</strong></td><td>按 2 Mbaud 收是乱码，按 921600 收完全正常</td></tr>
+<tr><td><strong>期望</strong></td><td><strong>2 Mbaud（2,000,000 bps，8N1）</strong></td></tr>
+<tr><td><strong>为什么必须</strong></td><td>三帧一组 8412 B：921600 下只有 <strong>11 组/秒</strong>（波形都卡）；2 Mbaud 下 <strong>23.8 组/秒</strong></td></tr>
+<tr><td><strong>主机侧已确认可行</strong></td><td>板上回环自测：<strong>2 Mbaud 512 字节逐位一致，实测 140.1 kB/s</strong>；1.5 Mbaud 也通过；3 Mbaud 失败（分频误差）</td></tr>
+</tbody></table>
+<blockquote>注意：主机<strong>不能</strong>用 <code>busybox stty</code> 验证 2 Mbaud（报 <code>Inappropriate ioctl</code>），</blockquote>
+<blockquote>需要直接写 termios 或用主机程序自带的回环自检。所以"stty 看不出来"不代表不支持。</blockquote>
+<h3>③ 抽取倍数 <code>decimation</code> 恒为 1</h3>
+<table><thead><tr><th></th><th></th></tr></thead><tbody>
+<tr><td><strong>现象</strong></td><td>帧头 <code>decimation = 1</code>，一帧 1024 点 @65 MSPS = <strong>15.8 µs</strong></td></tr>
+<tr><td><strong>后果</strong></td><td><strong>低于约 63 kHz 的信号看不到完整周期</strong>（500 Hz 一个周期 2000 µs，一帧只占 0.8%）</td></tr>
+<tr><td><strong>期望</strong></td><td>支持 <code>decimation = 1..256</code>（2 的幂），帧头如实填写</td></tr>
+<tr><td><strong>主机侧已就绪</strong></td><td>已实现"按 FFT 频率自动选抽取倍数"并发送命令 <code>0xA5, k</code>；也接受任意 dec 的帧（采样率自动 = 65MHz/dec）。<strong>只等 FPGA 接收命令 + 真正丢点</strong></td></tr>
+</tbody></table>
+<blockquote>抽取前请做<strong>抗混叠</strong>（boxcar 平均或 CIC），否则高频会折叠成假峰。</blockquote>
+<h3>④ 锁相完全没测到信号</h3>
+<table><thead><tr><th></th><th></th></tr></thead><tbody>
+<tr><td><strong>现象</strong></td><td><code>status = 0x16</code>（只有 present / ratio_valid / same_source）、<code>qual = 0</code>、<strong><code>amp1 = 0.0 counts</code></strong></td></tr>
+<tr><td><strong>后果</strong></td><td>主机按规则屏蔽幅相显示：频率退回本地 FFT、相位差显示「—」</td></tr>
+<tr><td><strong>判断</strong></td><td><strong>不是接口问题</strong>，是模拟输入侧没进来有效信号</td></tr>
+<tr><td><strong>建议排查</strong></td><td>① 信号源是否真的接到输入端（幅度/频率） ② 是否接到了另一个通道 ③ ADC 是否超量程/欠量程</td></tr>
+</tbody></table>
+<hr>
+<h2>三、主机侧还没做的（等 FPGA 改完再做更稳妥）</h2>
+<table><thead><tr><th>项</th><th>状态</th></tr></thead><tbody>
+<tr><td>串口切 2 Mbaud</td><td>待做（已验证板子支持）</td></tr>
+<tr><td>解析并显示 <code>V32SPEC!</code> 频谱</td><td>待做（格式已在交接文档里定好）</td></tr>
+<tr><td>窗函数下拉框 → 发 <code>A6 w</code> 命令</td><td>待做</td></tr>
+<tr><td>频率回退链 tracked → fft_hz → 本地 FFT</td><td>待做（不依赖 FPGA）</td></tr>
+</tbody></table>
+<hr>
+<h2>四、已经达标的（供对照，避免只看到问题）</h2>
+<table><thead><tr><th>项</th><th>状态</th></tr></thead><tbody>
+<tr><td>波形帧 1024 点、CRC 全对</td><td>✅</td></tr>
+<tr><td>波形刷新率 21.4 帧/秒</td><td>✅</td></tr>
+<tr><td>锁相帧解析 / 关联 / usable 复核</td><td>✅ 与官方 Python 实现逐字段一致</td></tr>
+<tr><td>重建（带限 FIR）在 1024 点下正常</td><td>✅</td></tr>
+<tr><td>可变点数 256~4096、时基 0.5~500 µs/格</td><td>✅</td></tr>
+<tr><td>本地频谱三窗（Hann / Blackman / Flat Top）</td><td>✅</td></tr>
+</tbody></table>
+<hr>
+<h2>五、建议的处理顺序</h2>
+<ol><li><strong>先补频谱帧 + 2 Mbaud</strong>（这两件决定方案能不能落地）</li><li>再做<strong>抽取</strong>（低频可视范围）</li><li>锁相那条单独查<strong>模拟输入</strong>（跟前两项无关，可并行）</li></ol>
+<hr>
+<h2>六、附件</h2>
+<table><thead><tr><th>文件</th><th>用途</th></tr></thead><tbody>
+<tr><td><code>实测抓包_20261020_1950.bin</code></td><td>当时从 AB5 抓的 20000 字节原始数据（含 5 组两帧）</td></tr>
+<tr><td><code>check_v32_frame.py</code></td><td>三帧校验脚本，改完拿它跑一遍就知道对不对</td></tr>
+</tbody></table>
+</body></html>
