@@ -462,7 +462,8 @@ static float    s_real_vpp0_mv, s_real_vpp1_mv;
 
 static float    s_real_mag[REAL_FFT_N / 2];
 static int      s_real_bins;
-static int      s_real_fft_ch;   /* 本次频谱实际取自哪一路：0=CH1 1=CH2 */
+static int      s_real_fft_ch;
+static bool     s_ai_autoframed;  /* 重建页这次进入是否已经自动框过窗 */   /* 本次频谱实际取自哪一路：0=CH1 1=CH2 */
 static float    s_real_peak_hz;
 static float    s_real_peak_dbfs;
 static float    s_real_floor_dbfs;
@@ -965,6 +966,9 @@ static void map_window(const float *src, int src_n, float *y01, int n, bool bl)
             y01[2 * b + 1] = src[imin < imax ? imax : imin];
         }
     } else if(bl) {
+        if(dbg_on())
+            fprintf(stderr, "[map] BL span=%d start=%d n=%d kind=%d\n",
+                    span, start, n, s_wf_kind);
         /* 输出点恰好等于窗口样点数时 dt=1，重建结果就是原始样点本身 */
         /* 正弦不钳位（重建本来就是精确解）；方波/三角波/锯齿波钳位，
          * 保证原本平整的地方不出现吉布斯波浪。 */
@@ -994,6 +998,20 @@ static void map_window(const float *src, int src_n, float *y01, int n, bool bl)
 static void fetch_scope(int ch, float *y01, int n)
 {
     if(S.use_real) {
+        /*
+         * 重建只在一屏点数 < 2048 时才有意义（见 map_window 的分支）：
+         * 整帧缩放走 min/max 分桶，上下两图必然一模一样，看着像"重建没了"。
+         * 所以**这次进入重建页后，一拿到有效数据就自动框到 10 个周期**，
+         * 只框一次 —— 之后用户可以自由缩放，不会被强行拉回。
+         * （必须在有峰值之后做：ui_set_page 那一刻还没数据，框不了。）
+         */
+        if(!s_ai_autoframed && s_real_valid && s_real_peak_hz > 0.0f
+           && S.ai && wf_can_reconstruct()
+           && (s_zoom_span <= 0 || s_zoom_span >= PLOT_MAX_PTS * 2)) {
+            S.auto_fit = true;
+            s_ai_autoframed = true;
+        }
+
         if(s_real_valid && s_full_n >= 2) {
             /* 示波器页是否重建，跟着**全局重建开关**走（用户要求）。
              * 关掉 = 原始采样点直连（测量视图，所见即所采）；
@@ -2267,6 +2285,20 @@ static void tick_ai(void)
     real_update();
 
     if(S.use_real) {
+        /*
+         * 重建只在一屏点数 < 2048 时才有意义（见 map_window 的分支）：
+         * 整帧缩放走 min/max 分桶，上下两图必然一模一样，看着像"重建没了"。
+         * 所以**这次进入重建页后，一拿到有效数据就自动框到 10 个周期**，
+         * 只框一次 —— 之后用户可以自由缩放，不会被强行拉回。
+         * （必须在有峰值之后做：ui_set_page 那一刻还没数据，框不了。）
+         */
+        if(!s_ai_autoframed && s_real_valid && s_real_peak_hz > 0.0f
+           && S.ai && wf_can_reconstruct()
+           && (s_zoom_span <= 0 || s_zoom_span >= PLOT_MAX_PTS * 2)) {
+            S.auto_fit = true;
+            s_ai_autoframed = true;
+        }
+
         if(s_real_valid && s_full_n >= 2) {
             /* 上：两个通道的原始点直接连直线 —— 故意不加重建，
              * 让你看清「一周期只有 2 个点」长什么样。 */
@@ -2491,6 +2523,8 @@ void ui_set_page(int page)
         nav_selected(s_nav[i], i == page);
     }
     ctrl_set_page(page);
+
+    if(page == UI_PAGE_AI) s_ai_autoframed = false;   /* 进页先允许一次自动框窗 */
 
     /* 切过去立刻补一帧，别让新页面空着等下一个 tick */
     if(page == UI_PAGE_SYSTEM) { s_fps_t0 = 0; tick_system(); }
