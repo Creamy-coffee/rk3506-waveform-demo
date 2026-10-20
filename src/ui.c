@@ -79,7 +79,6 @@ static const char  FREQ_OPTS[]     = "1 MHz\n5 MHz\n10 MHz\n20 MHz\n30 MHz";
 static const int   FREQ_DEF        = 2;    /* 10 MHz */
 
 static const float TIMEBASE_US[5]  = { 0.5f, 1.f, 2.f, 5.f, 10.f };
-static const char  FFTCH_OPTS[] = "自动\nCH1\nCH2";
 static const char  TIMEBASE_OPTS[] = "0.5 µs/格\n1 µs/格\n2 µs/格\n5 µs/格\n10 µs/格";
 static const int   TIMEBASE_DEF    = 2;    /* 2 µs/div */
 
@@ -133,7 +132,8 @@ static lv_obj_t *s_lbl_den_title;
 static lv_obj_t *s_lbl_recon_badge;      /* 示波器页右上角「重建」牌 */
 static lv_obj_t *s_lbl_fft_cur;
 static lv_obj_t *s_lbl_fft_title;
-static lv_obj_t *s_dd_win;               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
+static lv_obj_t *s_dd_win;
+static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
 static bool      s_fft_cur_on;       /* 重建页下方图标题，随能否重建变化 */
 static lv_obj_t *s_lbl_wave;           /* 重建页右上角：波形类型 */
@@ -1760,11 +1760,25 @@ static void cb_timebase(lv_event_t *e)
     ui_tick();
 }
 
-static void cb_fft_ch(lv_event_t *e)
+/*
+ * 频谱通道用**三个常显芯片**，不用下拉框。
+ *
+ * 理由有两条：
+ *   1. 下拉框平时是收起来的，录视频/看一眼根本不知道当前选的是哪一路；
+ *      芯片像别的控件一样一直亮着，选中的有高亮。
+ *   2. 下拉框的点击实测不可靠（点 CH1 有时仍是"自动"），
+ *      而 chip 的点击在整个界面里都是好的。
+ */
+static void fft_ch_set(int v)
 {
-    S.fft_ch = (int)lv_dropdown_get_selected(lv_event_get_target(e));
+    S.fft_ch = v;
+    for(int i = 0; i < 3; i++)
+        if(s_chip_fch[i]) chip_selected(s_chip_fch[i], i == v);
     ui_tick();
 }
+static void cb_fch_auto(lv_event_t *e) { LV_UNUSED(e); fft_ch_set(0); }
+static void cb_fch_ch1 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(1); }
+static void cb_fch_ch2 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(2); }
 
 static void cb_window(lv_event_t *e)
 {
@@ -1894,9 +1908,8 @@ static void cb_reset(lv_event_t *e)
         lv_obj_t *dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_SCOPE], 1);
         if(dd) lv_dropdown_set_selected(dd, (uint32_t)TIMEBASE_DEF);
         if(s_dd_win) lv_dropdown_set_selected(s_dd_win, (uint32_t)WIN_DEF);
-        /* 频谱通道也回「自动」：UI_PAGE_FFT 那个组现在是通道下拉，不是窗函数 */
-        dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_FFT], 1);
-        if(dd) lv_dropdown_set_selected(dd, 0);
+        /* 频谱通道回「自动」 */
+        fft_ch_set(0);
         dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_LOCK], 1);
         if(dd) lv_dropdown_set_selected(dd, (uint32_t)TAU_DEF);
     }
@@ -1980,9 +1993,18 @@ static void build_controls(lv_obj_t *root)
     lv_obj_set_style_max_width(dd_tb, V32_SEL_MAX_W, LV_PART_MAIN);
     s_ctrl_grp[UI_PAGE_SCOPE] = gs;
 
-    lv_obj_t *gc = mk_group(cp, "通道");
-    lv_obj_t *dd_c = mk_dropdown(gc, FFTCH_OPTS, 0, cb_fft_ch);
-    lv_obj_set_style_max_width(dd_c, V32_SEL_MAX_W, LV_PART_MAIN);
+    lv_obj_t *gc = mk_group(cp, "频谱通道");
+    {
+        lv_obj_t *rowc = mk(gc, 0, 0, LV_SIZE_CONTENT, V32_CHIP_H);
+        lv_obj_set_flex_flow(rowc, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(rowc, 6, LV_PART_MAIN);
+        s_chip_fch[0] = mk_chip(rowc, "自动", cb_fch_auto);
+        s_chip_fch[1] = mk_chip(rowc, "CH1",  cb_fch_ch1);
+        s_chip_fch[2] = mk_chip(rowc, "CH2",  cb_fch_ch2);
+        chip_selected(s_chip_fch[0], S.fft_ch == 0);
+        chip_selected(s_chip_fch[1], S.fft_ch == 1);
+        chip_selected(s_chip_fch[2], S.fft_ch == 2);
+    }
     s_ctrl_grp[UI_PAGE_FFT] = gc;
 
     lv_obj_t *gf2 = mk_group(cp, "窗函数");
