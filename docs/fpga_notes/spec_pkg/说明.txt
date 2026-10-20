@@ -1,0 +1,19 @@
+AB5 频谱帧 + 窗函数命令 + 2 Mbaud —— 交接包
+
+打开顺序：
+  1. 频谱帧与窗函数命令.html   （双击浏览器打开，排版最好）
+  2. 频谱帧与窗函数命令.md
+  3. sample_4_group.bin        （一组完整数据：波形+锁相+频谱，8412 B）
+  4. check_v32_frame.py        （抓包校验，一条命令看三帧对不对）
+
+要做四件事：
+  ① 波特率 921600 -> 2 Mbaud
+  ② 新增频谱帧 V32SPEC!（8192 点 FFT / 4096 bin / 每 bin 1 字节）
+  ③ 新增窗函数命令 A6 w（w: 0=Hann 1=Blackman 2=FlatTop）
+  ④ 发送顺序固定：波形 -> 锁相 -> 频谱
+
+波形帧和锁相帧格式完全不动。
+
+自检：
+  python check_v32_frame.py 抓包.bin
+  应打印三行：V32CAP3! / V32MEAS! / V32SPEC! 全部 CRC OK

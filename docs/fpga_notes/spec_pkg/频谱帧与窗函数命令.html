@@ -1,0 +1,129 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>频谱帧与窗函数命令</title>
+<style>
+body{max-width:900px;margin:32px auto;padding:0 24px;font:16px/1.75 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#1a2733}
+h1{font-size:26px;border-bottom:3px solid #1f6feb;padding-bottom:10px}
+h2{font-size:21px;margin-top:34px;border-left:5px solid #1f6feb;padding-left:12px}
+code{background:#f2f5f8;padding:1px 5px;border-radius:3px;font-family:Consolas,monospace;color:#b03060}
+pre{background:#f6f8fa;border:1px solid #e1e8ef;border-radius:6px;padding:14px;overflow-x:auto;font-size:13.5px;line-height:1.5}
+pre code{background:none;color:#1a2733}
+table{border-collapse:collapse;width:100%;margin:16px 0;font-size:15px}
+th,td{border:1px solid #dde5ec;padding:7px 11px;text-align:left}
+th{background:#eef4fb}
+tr:nth-child(even) td{background:#fafcfe}
+blockquote{border-left:4px solid #cbd5e0;margin:14px 0;padding:6px 16px;color:#4a5568;background:#f8fafc}
+hr{border:none;border-top:1px solid #e1e8ef;margin:26px 0}
+</style></head><body>
+<h1>AB5 第三帧：频谱帧 V32SPEC! + 窗函数命令 + 2 Mbaud</h1>
+<blockquote>面向：FPGA 采集板</blockquote>
+<blockquote>目标：把 <strong>8192 点 FFT 的频谱结果</strong>发给主机显示；窗函数可由主机远程切换；波特率提到 2 Mbaud</blockquote>
+<blockquote>现有两帧（波形 V32CAP3! / 锁相 V32MEAS!）<strong>格式完全不动</strong></blockquote>
+<hr>
+<h2>一、本次要做四件事</h2>
+<table><thead><tr><th>#</th><th>改动</th><th>谁做</th></tr></thead><tbody>
+<tr><td>1</td><td>串口 <strong>921600 → 2 Mbaud</strong></td><td>FPGA + 主机</td></tr>
+<tr><td>2</td><td>新增 <strong>频谱帧 <code>V32SPEC!</code></strong>（8192 点 FFT，4096 bin，每 bin 1 字节）</td><td>FPGA 发 / 主机收</td></tr>
+<tr><td>3</td><td>新增 <strong>窗函数命令</strong>（主机 → FPGA，<code>0xA6 w</code>）</td><td>主机发 / FPGA 收</td></tr>
+<tr><td>4</td><td>发送顺序固定为 <strong>波形 → 锁相 → 频谱</strong></td><td>FPGA</td></tr>
+</tbody></table>
+<hr>
+<h2>二、为什么必须把波特率提到 2 Mbaud</h2>
+<p>三帧一组，频谱帧 4096 bin 时整组 <strong>8412 字节</strong>：</p>
+<table><thead><tr><th>波特率</th><th>一组字节</th><th>组/秒</th><th>说明</th></tr></thead><tbody>
+<tr><td>921600（现在）</td><td>8412</td><td><strong>11.0</strong></td><td>波形都卡了，不可接受</td></tr>
+<tr><td><strong>2 Mbaud</strong></td><td>8412</td><td><strong>23.8</strong></td><td>波形和频谱都流畅</td></tr>
+<tr><td>2 Mbaud（bins=2048）</td><td>6364</td><td>31.4</td><td>更省，但频谱分辨率减半</td></tr>
+</tbody></table>
+<p><strong>2 Mbaud 8N1 = 200,000 B/s</strong>，是这个方案的最低要求。</p>
+<hr>
+<h2>三、一组数据的结构</h2>
+<pre>
+┌────────────────┬──────────────┬────────────────┐
+│ 波形帧 4140 B  │ 锁相帧 128 B │ 频谱帧 4144 B  │  共 8412 B
+│  V32CAP3!      │  V32MEAS!    │  V32SPEC!      │
+└────────────────┴──────────────┴────────────────┘
+</pre>
+<p>三帧<strong>各自独立 CRC32</strong>，任一 CRC 错则该帧作废，不影响其它两帧。</p>
+<p>频谱帧用 <code>wave_frame_id</code> 关联到同组的波形帧（和锁相帧的做法一样）。</p>
+<blockquote>⚠️ 频谱帧对应的 FFT <strong>应当与分析窗口是同一段采集</strong>（至少紧邻），</blockquote>
+<blockquote>否则屏幕上「波形」和「频谱」对不上，用户会以为仪器坏了。</blockquote>
+<hr>
+<h2>四、频谱帧 V32SPEC! 格式</h2>
+<table><thead><tr><th>偏移</th><th>长度</th><th>字段</th><th>类型</th><th>取值 / 说明</th></tr></thead><tbody>
+<tr><td>0</td><td>8</td><td><code>magic</code></td><td>char[8]</td><td><code>V32SPEC!</code>（<code>56 33 32 53 50 45 43 21</code>）</td></tr>
+<tr><td>8</td><td>4</td><td><code>version</code></td><td>u32</td><td><strong>1</strong></td></tr>
+<tr><td>12</td><td>4</td><td><code>length</code></td><td>u32</td><td>整帧字节数 = <code>44 + bins + 4</code></td></tr>
+<tr><td>16</td><td>4</td><td><code>wave_frame_id</code></td><td>u32</td><td>关联的波形帧 <code>frame_id</code></td></tr>
+<tr><td>20</td><td>4</td><td><code>result_id</code></td><td>u32</td><td>结果序号，每帧 +1</td></tr>
+<tr><td>24</td><td>4</td><td><code>nfft</code></td><td>u32</td><td>FFT 点数，<strong>8192</strong></td></tr>
+<tr><td>28</td><td>4</td><td><code>bins</code></td><td>u32</td><td>本帧携带的 bin 数，<strong>4096</strong>（正频率半边）</td></tr>
+<tr><td>32</td><td>4</td><td><code>fs_eff_hz</code></td><td>u32</td><td>等效采样率 = <code>65000000 / decimation</code></td></tr>
+<tr><td>36</td><td>4</td><td><code>window</code></td><td>u32</td><td>0=Hann 1=Blackman 2=Flat Top（实际用的窗，回报给主机）</td></tr>
+<tr><td>40</td><td>4</td><td><code>scale_dbfs</code></td><td>u32</td><td>幅度标度，<strong>120</strong>（见第五节）</td></tr>
+<tr><td>44</td><td><code>bins</code></td><td><code>spectrum</code></td><td>u8[bins]</td><td>bin 0..bins-1，<strong>每 bin 1 字节</strong></td></tr>
+<tr><td>44+<code>bins</code></td><td>4</td><td><code>crc32</code></td><td>u32</td><td>覆盖前面全部字节（不含自己）</td></tr>
+</tbody></table>
+<p><strong>bins = 4096 时整帧 4144 字节。</strong></p>
+<h3>bin 序号与频率的对应</h3>
+<pre>
+f(k) = k × fs_eff_hz / nfft        （k = bin 序号）
+</pre>
+<p>例：fs_eff = 65 MHz、nfft = 8192 → 每个 bin = <strong>7.9346 kHz</strong>，</p>
+<p>bin 3781 ≈ <strong>30.00 MHz</strong>。</p>
+<hr>
+<h2>五、幅度编码（每 bin 1 字节）</h2>
+<pre>
+byte = round( (dBFS + scale_dbfs) / scale_dbfs × 255 )      钳位到 0..255
+dBFS = byte / 255 × scale_dbfs - scale_dbfs
+</pre>
+<ul><li><code>scale_dbfs = 120</code> → 0 = <strong>−120 dBFS</strong>，255 = <strong>0 dBFS</strong>，分辨率 <strong>0.47 dB</strong></li><li>dBFS 参考与现有实现一致：<strong>满刻度 2048 码（peak）= 0 dBFS</strong></li></ul>
+<p>  ```</p>
+<p>  dBFS = 20 × log10( 幅度码 / 2048 )</p>
+<p>  ```</p>
+<blockquote>为什么只用 1 字节：屏幕一格才几个像素，0.47 dB 已经远超显示需要；</blockquote>
+<blockquote>用 2 字节会让整组变成 12460 B、帧率掉到 16 组/秒。</blockquote>
+<hr>
+<h2>六、窗函数命令（主机 → FPGA）</h2>
+<p>复用现有的<strong>反向通道</strong>（主机 TX → FPGA RX）。命令固定 2 字节：</p>
+<table><thead><tr><th>命令</th><th>含义</th></tr></thead><tbody>
+<tr><td><code>0xA5, k</code></td><td>抽取倍数 = 2^k（k=0..8）——<strong>已有</strong></td></tr>
+<tr><td><code>0xA6, w</code></td><td><strong>窗函数 w</strong>：0=Hann，1=Blackman，2=Flat Top ——<strong>新增</strong></td></tr>
+</tbody></table>
+<p>FPGA 收到 <code>0xA6</code> 后，把下一次 FFT 的窗换掉，并在后续频谱帧的</p>
+<p><code>window</code> 字段里填<strong>实际使用的窗</strong>（主机靠这个字段确认生效）。</p>
+<p>默认上电用 <strong>Hann</strong>（与现有片上找频一致）。</p>
+<hr>
+<h2>七、验收标准</h2>
+<ol><li><strong>回归</strong>：波形帧、锁相帧格式和现在<strong>完全一致</strong>（偏移、长度、CRC 都不变）。</li><li><strong>帧率</strong>：2 Mbaud 下三帧连续发送，主机实测 <strong>≥ 22 组/秒</strong>。</li><li><strong>频谱正确性</strong>：输入 30 MHz、1 Vpp 正弦，</li></ol>
+<ul><li>频谱帧里 <strong>bin 3781</strong> 应是最大值</li><li>该 bin 的 dBFS 与主机示波器读到的幅度能对上（±1 dB 内）</li></ul>
+<ol><li><strong>窗函数</strong>：主机发 <code>A6 01</code>（Blackman）后，</li></ol>
+<p>   后续频谱帧 <code>window</code> 字段应变成 1，且主瓣明显变宽（这是窗生效的证据）。</p>
+<ol><li><strong>关联</strong>：频谱帧的 <code>wave_frame_id</code> 必须等于同组波形帧的 <code>frame_id</code>。</li></ol>
+<hr>
+<h2>八、示例文件（可直接逐字节对照）</h2>
+<table><thead><tr><th>文件</th><th>内容</th></tr></thead><tbody>
+<tr><td><code>sample_1_wave.bin</code></td><td>波形帧 4140 B（30 MHz 正弦，1024 点）</td></tr>
+<tr><td><code>sample_2_meas.bin</code></td><td>锁相帧 128 B（<code>usable=1</code>，30.000 MHz，相位差 21.97°）</td></tr>
+<tr><td><code>sample_3_spec.bin</code></td><td><strong>频谱帧 4144 B</strong>（8192 点 FFT 的结果，峰值在 bin 3781）</td></tr>
+<tr><td><code>sample_4_group.bin</code></td><td>上面三帧按顺序拼成的一组，<strong>8412 B</strong></td></tr>
+</tbody></table>
+<h3><code>sample_3_spec.bin</code> 前 48 字节</h3>
+<pre>
+00000000  56 33 32 53 50 45 43 21 01 00 00 00 30 10 00 00  V32SPEC!....0...
+00000010  e9 03 00 00 f4 01 00 00 00 20 00 00 00 10 00 00  ......... ......
+00000020  40 d2 df 03 01 00 00 00 78 00 00 00 35 35 35 35  @.......x...5555
+</pre>
+<p>第 16 字节起的 <code>01 03 00 00</code> 是 <code>wave_frame_id</code>（这里 = 1001），</p>
+<p>第 36 字节 <code>01 00 00 00</code> 就是<strong>窗函数 = Blackman</strong>。</p>
+<hr>
+<h2>九、自检</h2>
+<pre>
+python check_v32_frame.py 抓包.bin
+</pre>
+<p>会逐帧打印类型、关键字段、CRC 和频谱峰值位置：</p>
+<pre>
+[V32CAP3!] fid=1001 pts=1024 CRC OK
+[V32MEAS!] wid=1001 usable=1 amp1=300.0 counts pdiff=21.97° CRC OK
+[V32SPEC!] wid=1001 nfft=8192 bins=4096 win=Blackman 峰值 bin 3781 = 30.00 MHz CRC OK
+</pre>
+<p><strong>跑不出这三行，就说明还有问题。</strong></p>
+</body></html>
