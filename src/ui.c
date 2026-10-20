@@ -748,7 +748,23 @@ static void classify_wave(void)
     const int   b1 = (int)((double)s_real_peak_hz * (double)REAL_FFT_N / (double)fs + 0.5);
     if(b1 < 2 || b1 >= s_real_bins - 2) return;
 
-    const float a1 = mag_near_bin(b1, 2);
+    /*
+     * 主瓣半宽（在 REAL_FFT_N 的 bin 网格上）。
+     *
+     * ⚠️ 必须跟着**零填充倍数**走：FFT 是 n_real 点补零到 REAL_FFT_N，
+     *    Hann 窗主瓣在真实分辨率下约 ±2 bin，补零后网格变密，
+     *    主瓣在网格上就被摊宽成 ±2×(REAL_FFT_N/n_real) bin。
+     *
+     *    4096 点补零到 8192：主瓣 ±4 bin，用旧的 ±7 刚好够；
+     *    1024 点补零到 8192：主瓣 ±16 bin，还用 ±7 就会把**基波自己的裙边**
+     *    当成杂散（实测 bin 3789 距峰仅 8 bin、比值 -5.9 dB），
+     *    于是干净的正弦被判成"未知"、不重建 —— 用户看到的"点数少了重建出问题"。
+     */
+    const int pad  = (s_real_n > 0) ? (int)((double)REAL_FFT_N / (double)s_real_n + 0.5) : 1;
+    int half = 2 * pad + 2;
+    if(half < 7) half = 7;              /* 4096 点时保持原来的 7，行为不变 */
+
+    const float a1 = mag_near_bin(b1, half < 2 ? 2 : half);
     if(a1 <= 0.0f) return;
 
     const int   b2 = 2 * b1, b3 = 3 * b1;
@@ -765,10 +781,10 @@ static void classify_wave(void)
          * 未知就不重建 —— 在不知道是什么的情况下画一条漂亮的曲线，那是造假。
          */
         s_wf_alias = 1;
-        const float a_ref = mag_near_bin(b1, 6);
+        const float a_ref = mag_near_bin(b1, half);
         float spur = 0.0f;
         for(int i = 4; i < s_real_bins; i++) {          /* 跳过 DC 附近的泄漏 */
-            if(i >= b1 - 7 && i <= b1 + 7) continue;      /* 跳过基波主瓣 */
+            if(i >= b1 - half && i <= b1 + half) continue;   /* 跳过基波主瓣（含裙边） */
             if(s_real_mag[i] > spur) spur = s_real_mag[i];
         }
         s_wf_kind = (spur < a_ref * 0.0316f) ? WF_SINE : WF_UNKNOWN;  /* -30 dB */
@@ -2316,6 +2332,11 @@ static void tick_ai(void)
              * **认不出是什么波形就不重建** —— 不知道是什么还画光滑曲线是造假。
              * 波形类型是按交流成分大的那一路判的，两路共用同一套判定。 */
             const bool bl_on = S.ai && wf_can_reconstruct();
+            if(dbg_on())
+                fprintf(stderr, "[ai] ai=%d kind=%d can=%d bl=%d full_n=%d span=%d peak_dbfs=%.1f floor_dbfs=%.1f\n",
+                        (int)S.ai, s_wf_kind, (int)wf_can_reconstruct(), (int)bl_on,
+                        s_full_n, s_zoom_span,
+                        (double)s_real_peak_dbfs, (double)s_real_floor_dbfs);
             map_window(s_full0, s_full_n, y, n, bl_on);
             plot_set_trace(s_plot_den, 0, y, n, V32_C_CH1, 2);
             map_window(s_full1, s_full_n, y, n, bl_on);
