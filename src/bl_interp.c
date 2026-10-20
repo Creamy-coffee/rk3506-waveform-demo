@@ -27,15 +27,40 @@ void bl_resample(const float *x, int n, float *y, int nout, float t0, float dt,
         /* 换到「滤波器中心」坐标，再拆成整数位置 + 相位 */
         const float u = t + (float)BL_DELAY;
         int         n0 = (int)floorf(u);
-        int         p  = (int)((u - (float)n0) * (float)BL_PHASES + 0.5f);
-        if (p >= BL_PHASES) { p -= BL_PHASES; n0++; }
 
-        if (n0 - (BL_TAPS - 1) >= 0 && n0 < n) {
+        /*
+         * 相位**线性插值**，不再直接取最近的一相。
+         *
+         * 20 个相位意味着分数延迟被量化到 1/20 = 0.05 个采样点，
+         * 最大误差 0.025 个采样点。听起来很小，但 25 MHz @65 MSPS 每个周期
+         * 只有 2.57 个采样点、斜率极陡（斜率 ≈ 2.44·A／采样点），
+         * 于是 0.025 × 2.44 ≈ **6% 的幅度误差**，画出来就是一条抖动的正弦
+         * —— 比原始点直连还"毛"，用户看到的就是这个。
+         *
+         * 在 p0 / p0+1 两组系数之间按小数部分线性混合，等效相位数上千，
+         * 误差降到 0.1% 量级。代价只是内层循环跑两遍（129 抽头 ×2，仍然便宜）。
+         */
+        const float fr = (u - (float)n0) * (float)BL_PHASES;
+        int   p0 = (int)fr;
+        float w  = fr - (float)p0;
+        if (p0 < 0)            { p0 = 0; w = 0.0f; }
+        if (p0 >= BL_PHASES)   { p0 = 0; n0++; w = 0.0f; }
+        int   p1 = p0 + 1;
+        int   n1 = n0;
+        if (p1 >= BL_PHASES) { p1 = 0; n1 = n0 + 1; }
+
+        if (n0 - (BL_TAPS - 1) >= 0 && n1 < n) {
             /* 正常区：系数和时间顺序同向，内层循环两边都顺着读 */
-            const float *c  = s_bl_coef + p * BL_TAPS;
-            const float *xp = x + (n0 - (BL_TAPS - 1));
-            float acc = 0.0f;
-            for (int j = 0; j < BL_TAPS; j++) acc += xp[j] * c[j];
+            const float *c0  = s_bl_coef + p0 * BL_TAPS;
+            const float *c1  = s_bl_coef + p1 * BL_TAPS;
+            const float *xp0 = x + (n0 - (BL_TAPS - 1));
+            const float *xp1 = x + (n1 - (BL_TAPS - 1));
+            float a0 = 0.0f, a1 = 0.0f;
+            for (int j = 0; j < BL_TAPS; j++) {
+                a0 += xp0[j] * c0[j];
+                a1 += xp1[j] * c1[j];
+            }
+            float acc = a0 + w * (a1 - a0);
             y[i] = acc;
 
             if (limit_overshoot) {
