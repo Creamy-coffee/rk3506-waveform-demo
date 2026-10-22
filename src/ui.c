@@ -475,6 +475,10 @@ static float    s_real_peak_hz;
 static float    s_real_peak_dbfs;
 static float    s_real_floor_dbfs;
 static float    s_real_phase_deg;           /* CH1 相对 CH0 的相位差 */
+/* FPGA 端频谱（V32SPEC!）的状态 —— 频谱页优先用它 */
+static int      s_spec_in_use;              /* 1 = 当前画的是 FPGA 的谱 */
+static float    s_spec_peak_hz;
+static int      s_spec_win, s_spec_bins, s_spec_nfft;
 
 /*
  * 断链判定。
@@ -1240,6 +1244,55 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
      * 纵轴是**绝对** dBFS（满刻度 2048 码 = 0 dBFS），不是相对峰值归一化 ——
      * 这样 PEAK LEVEL / NOISE FLOOR 两个读数才有物理意义。
      */
+    /*
+     * **优先用 FPGA 端算好的频谱**（V32SPEC!）。
+     *
+     * 为什么换：FPGA 用 4096 点 FFT + 片上抽取，分辨率比主机拿 1024 点算的高 4 倍；
+     * 而且频谱数据和波形来自同一次采集，上下对得上。
+     * 收不到频谱帧（旧位流 / 切到调制模式）时才退回本地 FFT —— 不能因为没谱就不显示。
+     */
+    {
+        v32_spec_view_t sp;
+        if(S.use_real && v32_get_spec(&sp) && sp.got > 2 && sp.nfft > 0 && sp.fs_eff_hz > 0) {
+            int   bi = 2;
+            float bv = -1e30f;
+            const uint32_t bins = sp.got;
+            for(int i = 0; i < n; i++) {
+                /* 每点覆盖 [s0,s1) 这一段 bin，取组内最大值 —— 窄谱线不会被抽点漏掉 */
+                int s0 = (int)((long)i * (long)(bins - 1) / (long)(n > 1 ? n - 1 : 1));
+                int s1 = (int)((long)(i + 1) * (long)(bins - 1) / (long)(n > 1 ? n - 1 : 1));
+                if(s1 <= s0) s1 = s0 + 1;
+                if(s1 > (int)bins) s1 = (int)bins;
+
+                int mx = 0;
+                for(int k = s0; k < s1; k++) if(sp.data[k] > mx) mx = sp.data[k];
+
+                const float db = (float)v32_spec_dbfs_centi(mx, sp.scale_dbfs) / 100.0f;
+                float y = (db + V32_DEMO_DB_FULLSCALE) / V32_DEMO_DB_FULLSCALE;
+                if(y < 0.f) y = 0.f;
+                if(y > 1.f) y = 1.f;
+                y01[i] = y;
+                if(i >= 2 && y > bv) { bv = y; bi = i; }
+            }
+            /* 峰值频率直接按 bin 算：k × fs_eff / nfft */
+            int pkb = 0;
+            for(uint32_t k = 1; k < bins; k++) if(sp.data[k] > sp.data[pkb]) pkb = (int)k;
+            s_spec_peak_hz = (float)((double)pkb * (double)sp.fs_eff_hz / (double)sp.nfft);
+            s_spec_in_use  = 1;
+            s_spec_win     = (int)sp.window;
+            s_spec_bins    = (int)bins;
+            s_spec_nfft    = (int)sp.nfft;
+
+            if(peak_x)   *peak_x   = (float)bi / (float)(n - 1);
+            if(peak_y01) *peak_y01 = bv;
+            if(dbg_on())
+                fprintf(stderr, "[spec] FPGA 谱 bins=%u nfft=%u 峰值 bin %d = %.3f MHz\n",
+                        (unsigned)bins, (unsigned)sp.nfft, pkb, (double)s_spec_peak_hz / 1e6);
+            return;
+        }
+        s_spec_in_use = 0;
+    }
+
     if(S.use_real && s_real_valid && s_real_bins > 2) {
         int   bi = 2;
         float bv = -1e30f;
@@ -2349,12 +2402,18 @@ static void tick_fft(void)
     const bool real = (S.use_real && s_real_valid);
 
     if(real) {
-        /* 峰值/底噪都是**算出来的**绝对 dBFS（满刻度 2048 码 = 0 dBFS），
-         * 不再是参考稿里那两个写死的 -12.8 / -79.4 */
-        snprintf(peak_txt, sizeof(peak_txt), "▼ %.3f MHz %s", (double)s_real_peak_hz / 1e6,
-                 s_real_fft_ch ? "CH2" : "CH1");
-        lv_label_set_text_fmt(s_lbl_fft_peakf, "%.3f MHz", (double)s_real_peak_hz / 1e6);
-        lv_label_set_text_fmt(s_lbl_fft_peakl, "%.1f dBFS", (double)s_real_peak_dbfs);
+        /*
+         * 画的是 FPGA 的谱还是本地算的谱，读数必须跟着走 ——
+         * 混用会出现"曲线峰在这个频率、读数写另一个频率"的自相矛盾。
+         */
+        const float pf  = s_spec_in_use ? s_spec_peak_hz : s_real_peak_hz;
+        const float pdb = s_spec_in_use
+                        ? (py * V32_DEMO_DB_FULLSCALE - V32_DEMO_DB_FULLSCALE)
+                        : s_real_peak_dbfs;
+        snprintf(peak_txt, sizeof(peak_txt), "▼ %.3f MHz %s", (double)pf / 1e6,
+                 s_spec_in_use ? "FPGA" : (s_real_fft_ch ? "CH2" : "CH1"));
+        lv_label_set_text_fmt(s_lbl_fft_peakf, "%.3f MHz", (double)pf / 1e6);
+        lv_label_set_text_fmt(s_lbl_fft_peakl, "%.1f dBFS", (double)pdb);
         lv_label_set_text_fmt(s_lbl_fft_floor, "%.1f dBFS", (double)s_real_floor_dbfs);
     } else if(S.use_real) {
         /* 没数据：读数归零，不要留着上一帧的数字 */
@@ -2370,13 +2429,24 @@ static void tick_fft(void)
     }
 
     plot_set_peak(s_plot_fft, true, px, peak_txt);
-    lv_label_set_text(s_lbl_fft_win, WIN_NAME[S.win_idx]);
 
-    /* 标题上写明这条谱取自哪一路 —— 两路都接了时必须一眼看得出来 */
+    /*
+     * 窗函数读数：画的是 FPGA 的谱就报 FPGA 实际用的窗（协议里窗函数不可远程改，
+     * 只有 Hann），画本地谱才报本地选的那个 —— 两者不能混。
+     */
+    if(s_spec_in_use) {
+        char wb[24];
+        snprintf(wb, sizeof wb, "%s·FPGA", WIN_NAME[(s_spec_win >= 0 && s_spec_win <= 2) ? s_spec_win : 0]);
+        lv_label_set_text(s_lbl_fft_win, wb);
+    } else {
+        lv_label_set_text(s_lbl_fft_win, WIN_NAME[S.win_idx]);
+    }
+
+    /* 标题写明这条谱是谁算的、多少点 */
     if(S.use_real) {
-        char tt[32];
-        snprintf(tt, sizeof tt, "FFT 频谱 · %s",
-                 s_real_fft_ch ? "CH2" : "CH1");
+        char tt[40];
+        if(s_spec_in_use) snprintf(tt, sizeof tt, "FFT 频谱 · FPGA %d 点", s_spec_nfft);
+        else              snprintf(tt, sizeof tt, "FFT 频谱 · 本地 %d 点", s_real_n);
         lv_label_set_text(s_lbl_fft_title, tt);
     } else {
         lv_label_set_text(s_lbl_fft_title, "FFT 频谱 · 8192 点");

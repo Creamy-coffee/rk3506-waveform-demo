@@ -153,6 +153,123 @@ static void handle_meas(const uint8_t *p)
     }
 }
 
+/* ---------------- 频谱帧 / IQ 帧 ---------------- */
+static const char       s_magic_spec[] = V32_SPEC_MAGIC;
+static const char       s_magic_iq[]   = V32_IQ_MAGIC;
+static v32_spec_view_t  s_spec;
+static uint32_t         s_spec_ms;
+static v32_iq_view_t    s_iq;
+static uint32_t         s_iq_ms;
+
+/*
+ * 处理一帧 V32SPEC!（FPGA 端 FFT 的结果）。
+ * 长度 = 44 + bins + 4，bins 从帧头取 —— 不能写死，固件以后可能改点数。
+ */
+static void handle_spec(const uint8_t *p, int len)
+{
+    if(len < V32_SPEC_HDR + 4) return;
+    if(rd32(p + 8) != 1u) return;                   /* version */
+    const uint32_t length = rd32(p + 12);
+    const uint32_t bins   = rd32(p + 28);
+    if((int)length != V32_SPEC_HDR + (int)bins + 4) return;
+    if((int)length > len || bins == 0) return;
+    if(crc32_calc(p, (int)length - 4) != rd32(p + (int)length - 4)) return;
+
+    v32_spec_view_t v;
+    memset(&v, 0, sizeof v);
+    v.seq           = s_spec.seq + 1u;
+    v.wave_frame_id = rd32(p + 16);
+    v.nfft          = rd32(p + 24);
+    v.bins          = bins;
+    v.fs_eff_hz     = rd32(p + 32);
+    v.window        = rd32(p + 36);
+    v.scale_dbfs    = rd32(p + 40);
+    v.got           = (bins > V32_SPEC_MAX_BINS) ? V32_SPEC_MAX_BINS : bins;
+    memcpy(v.data, p + V32_SPEC_HDR, v.got);
+    v.valid = 1;
+
+    s_spec    = v;
+    s_spec_ms = mono_ms();
+    {
+        static int dbg = -1;
+        if(dbg < 0) dbg = getenv("WAVE_MEASDBG") ? 1 : 0;
+        if(dbg) {
+            int pk = 0;
+            for(uint32_t k = 1; k < v.got; k++) if(v.data[k] > v.data[pk]) pk = (int)k;
+            const double fpk = v.nfft ? (double)pk * (double)v.fs_eff_hz / (double)v.nfft : 0.0;
+            fprintf(stderr, "[spec] wid=%u nfft=%u bins=%u win=%u 峰值 bin %d = %.3f MHz (%.1f dBFS)\n",
+                    (unsigned)v.wave_frame_id, (unsigned)v.nfft, (unsigned)v.bins, (unsigned)v.window,
+                    pk, fpk / 1e6, v32_spec_dbfs_centi(v.data[pk], v.scale_dbfs) / 100.0);
+        }
+    }
+}
+
+int v32_get_spec(v32_spec_view_t *out)
+{
+    if(!out) return 0;
+    *out = s_spec;
+    if(s_spec.seq == 0u) return 0;
+    out->valid = ((mono_ms() - s_spec_ms) <= 1500u) ? 1 : 0;
+    return out->valid;
+}
+
+int v32_spec_dbfs_centi(int byte, uint32_t scale_dbfs)
+{
+    if(scale_dbfs == 0u) scale_dbfs = 120u;
+    if(byte < 0) byte = 0;
+    if(byte > 255) byte = 255;
+    return (int)((long)byte * (long)scale_dbfs * 100 / 255) - (int)(scale_dbfs * 100);
+}
+
+/* 处理一帧 V32IQ01!（调制模式的解调 I/Q） */
+static void handle_iq(const uint8_t *p, int len)
+{
+    if(len < V32_IQ_HDR + 4) return;
+    if(rd32(p + 8) != 1u) return;
+    const uint32_t points = rd32(p + 24);
+    if(points == 0u || points > 4096u) return;
+    const uint32_t need = V32_IQ_HDR + points * 4u + 4u;
+    if((int)need > len) return;
+    if(rd32(p + 36) != 0u) return;                  /* reserved */
+    if(crc32_calc(p, (int)need - 4) != rd32(p + (int)need - 4)) return;
+
+    v32_iq_view_t v;
+    memset(&v, 0, sizeof v);
+    v.seq      = s_iq.seq + 1u;
+    v.frame_id = rd32(p + 12);
+    v.fs_hz    = rd32(p + 16);
+    v.decim    = rd32(p + 20);
+    v.points   = points;
+    v.flags    = rd32(p + 28);
+    v.cfg_id   = rd32(p + 32);
+    const uint32_t n = (points > V32_IQ_MAX_POINTS) ? V32_IQ_MAX_POINTS : points;
+    for(uint32_t k = 0; k < n; k++) {
+        const uint8_t *q = p + V32_IQ_HDR + k * 4u;
+        v.i[k] = (int16_t)((uint16_t)q[0] | ((uint16_t)q[1] << 8));
+        v.q[k] = (int16_t)((uint16_t)q[2] | ((uint16_t)q[3] << 8));
+    }
+    v.valid = 1;
+    s_iq    = v;
+    s_iq_ms = mono_ms();
+    {
+        static int dbg = -1;
+        if(dbg < 0) dbg = getenv("WAVE_MEASDBG") ? 1 : 0;
+        if(dbg && (v.seq % 4u) == 1u)
+            fprintf(stderr, "[iq] fid=%u pts=%u decim=%u cfg=%u flags=%u  I0=%d Q0=%d\n",
+                    (unsigned)v.frame_id, (unsigned)v.points, (unsigned)v.decim,
+                    (unsigned)v.cfg_id, (unsigned)v.flags, (int)v.i[0], (int)v.q[0]);
+    }
+}
+
+int v32_get_iq(v32_iq_view_t *out)
+{
+    if(!out) return 0;
+    *out = s_iq;
+    if(s_iq.seq == 0u) return 0;
+    out->valid = ((mono_ms() - s_iq_ms) <= 1500u) ? 1 : 0;
+    return out->valid;
+}
+
 int v32_get_meas(v32_meas_view_t *out)
 {
     if(!out) return 0;
@@ -272,10 +389,12 @@ static void v32_feed(const uint8_t *data, int n)
     for (;;) {
         /* ---- 找魔数 ---- */
         int at = -1;
-        int is_meas = 0;
+        int is_meas = 0;              /* 0=波形 1=锁相 2=频谱 3=IQ */
         for (int i = 0; i + V32_MAGIC_LEN <= s_len; i++) {
-            if (memcmp(s_buf + i, s_magic, V32_MAGIC_LEN) == 0) { at = i; is_meas = 0; break; }
+            if (memcmp(s_buf + i, s_magic, V32_MAGIC_LEN) == 0)      { at = i; is_meas = 0; break; }
             if (memcmp(s_buf + i, s_magic_meas, V32_MAGIC_LEN) == 0) { at = i; is_meas = 1; break; }
+            if (memcmp(s_buf + i, s_magic_spec, V32_MAGIC_LEN) == 0) { at = i; is_meas = 2; break; }
+            if (memcmp(s_buf + i, s_magic_iq, V32_MAGIC_LEN) == 0)   { at = i; is_meas = 3; break; }
         }
         if (at < 0) {
             /* 保留可能是「被拆开的魔数前缀」的尾巴，其余丢弃 */
@@ -293,7 +412,28 @@ static void v32_feed(const uint8_t *data, int n)
             s_st.discarded_bytes += (uint32_t)at;
         }
 
-        if (is_meas) {
+        if (is_meas == 2) {                              /* V32SPEC! 频谱帧 */
+            if (s_len < V32_SPEC_HDR + 4) break;
+            const int len = (int)rd32(s_buf + 12);
+            if (len < V32_SPEC_HDR + 4 || len > 8192) break;   /* 长度不可信，等更多数据 */
+            if (s_len < len) break;
+            handle_spec(s_buf, s_len);
+            memmove(s_buf, s_buf + len, (size_t)(s_len - len));
+            s_len -= len;
+            continue;
+        }
+        if (is_meas == 3) {                              /* V32IQ01! 解调 I/Q */
+            if (s_len < V32_IQ_HDR + 4) break;
+            const uint32_t pts = rd32(s_buf + 24);
+            if (pts == 0u || pts > 4096u) break;
+            const int len = (int)(V32_IQ_HDR + pts * 4u + 4u);
+            if (s_len < len) break;
+            handle_iq(s_buf, s_len);
+            memmove(s_buf, s_buf + len, (size_t)(s_len - len));
+            s_len -= len;
+            continue;
+        }
+        if (is_meas == 1) {
             if (s_len < (int)V32_MEAS_BYTES) break;      /* 还没收全 */
             handle_meas(s_buf);
             memmove(s_buf, s_buf + V32_MEAS_BYTES, (size_t)(s_len - (int)V32_MEAS_BYTES));
@@ -696,6 +836,69 @@ int v32_send_decimation(int dec)
     cmd[0] = 0xA5;            /* 命令头 */
     cmd[1] = (uint8_t)k;      /* dec = 2^k */
     return (write(s_fd, cmd, 2) == 2) ? 0 : -1;
+}
+
+/* 原始命令发送（命令之间必须连续发，FPGA 对不完整命令会超时丢弃） */
+static int send_raw(const uint8_t *p, int n)
+{
+    if(s_fd < 0 || !s_live || n <= 0) return -1;
+    return (write(s_fd, p, (size_t)n) == (ssize_t)n) ? 0 : -1;
+}
+
+int v32_cmd_mode(int mode)
+{
+    if(mode < 0 || mode > 7) return -1;
+    const uint8_t c[3] = { 0xA5, 0xE0, (uint8_t)mode };
+    return send_raw(c, 3);
+}
+
+int v32_cmd_channel(int ch)
+{
+    if(ch != 0 && ch != 1) return -1;
+    const uint8_t c[3] = { 0xA5, 0xE3, (uint8_t)ch };
+    return send_raw(c, 3);
+}
+
+int v32_cmd_rate(int rr)
+{
+    if(rr < 0 || rr > 2) return -1;
+    const uint8_t c[3] = { 0xA5, 0xE4, (uint8_t)rr };
+    return send_raw(c, 3);
+}
+
+int v32_cmd_dec(int k)
+{
+    if(k < 0 || k > 8) return -1;
+    const uint8_t c[2] = { 0xA5, (uint8_t)k };
+    return send_raw(c, 2);
+}
+
+int v32_cmd_auto_dec(void)
+{
+    const uint8_t c[2] = { 0xA5, 0xFF };
+    return send_raw(c, 2);
+}
+
+uint32_t v32_fcw_from_hz(double hz)
+{
+    /* round(hz * 2^32 / 65e6)，2^32/65e6 = 66.0764 左右，用 double 足够 */
+    if(hz <= 0.0) return 0u;
+    const double f = hz * 4294967296.0 / 65000000.0;
+    return (uint32_t)(f + 0.5);
+}
+
+/*
+ * 设中心频率。协议要求**分两帧**：先 E1 存高 16 位，再 E2 提交低 16 位
+ * 并合并生效 —— 少了 E2 不会动，这是最容易只发一半就"没反应"的地方。
+ */
+int v32_cmd_fcw(uint32_t fcw)
+{
+    const uint8_t hi[4] = { 0xA5, 0xE1, (uint8_t)((fcw >> 16) & 0xFF),
+                            (uint8_t)((fcw >> 24) & 0xFF) };
+    const uint8_t lo[4] = { 0xA5, 0xE2, (uint8_t)(fcw & 0xFF),
+                            (uint8_t)((fcw >> 8) & 0xFF) };
+    if(send_raw(hi, 4) != 0) return -1;
+    return send_raw(lo, 4);
 }
 
 const v32_stats_t *v32_get_stats(void) { return &s_st; }

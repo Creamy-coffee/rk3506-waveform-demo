@@ -197,4 +197,71 @@ typedef struct {
 /* 取锁相读数。返回 1 = 有新鲜数据（能不能显示还要看 usable）。 */
 int v32_get_meas(v32_meas_view_t *out);
 
+/* ============ 频谱帧 V32SPEC!（FPGA 端 FFT 结果，三帧组里的第三帧）============
+ * 44 B 头 + bins×u8 + 4 B CRC。频点 k 的频率 = k × fs_eff_hz / nfft，
+ * 幅度 dBFS ≈ byte × scale_dbfs / 255 − scale_dbfs（满刻度 2048 码 = 0 dBFS）。
+ * 当前固件：nfft=4096、bins=2048、window=0(Hann)、scale_dbfs=120、整帧 2096 B。
+ */
+#define V32_SPEC_MAGIC    "V32SPEC!"
+#define V32_SPEC_HDR      44
+#define V32_SPEC_MAX_BINS 2048
+
+typedef struct {
+    int      valid;              /* 新鲜（1.5 s 内收到过） */
+    uint32_t seq;
+    uint32_t wave_frame_id;
+    uint32_t nfft;
+    uint32_t bins;
+    uint32_t fs_eff_hz;
+    uint32_t window;             /* 0=Hann 1=Blackman 2=FlatTop（FPGA 实际用的） */
+    uint32_t scale_dbfs;
+    uint32_t got;                /* 实际存下来的 bin 数 */
+    uint8_t  data[V32_SPEC_MAX_BINS];
+} v32_spec_view_t;
+
+int v32_get_spec(v32_spec_view_t *out);
+/* dBFS 换算（整数运算，返回 -12000..0 的"百分之一 dB"） */
+int v32_spec_dbfs_centi(int byte, uint32_t scale_dbfs);
+
+/* ============ 解调 I/Q 帧 V32IQ01!（模式 1..7）============ */
+#define V32_IQ_MAGIC      "V32IQ01!"
+#define V32_IQ_HDR        40
+#define V32_IQ_MAX_POINTS 256
+
+typedef struct {
+    int      valid;
+    uint32_t seq;
+    uint32_t frame_id;
+    uint32_t fs_hz;
+    uint32_t decim;
+    uint32_t points;
+    uint32_t flags;              /* bit0 = FIFO 丢样 */
+    uint32_t cfg_id;
+    int16_t  i[V32_IQ_MAX_POINTS];
+    int16_t  q[V32_IQ_MAX_POINTS];
+} v32_iq_view_t;
+
+int v32_get_iq(v32_iq_view_t *out);
+
+/* ============ 控制命令（Linux → FPGA，原始十六进制字节）============
+ * 全部无 CRC / 无 ACK。命令之间保持连续发送，FPGA 对不完整命令会超时丢弃。
+ * 详见交付包 PROTOCOL.md。
+ */
+#define V32_CMD_MODE_SCOPE  0
+#define V32_CMD_MODE_AM     1
+#define V32_CMD_MODE_FM     2
+#define V32_CMD_MODE_2FSK   3
+#define V32_CMD_MODE_QPSK   4
+#define V32_CMD_MODE_OOK    5
+#define V32_CMD_MODE_BPSK   6
+#define V32_CMD_MODE_PM     7
+
+int v32_cmd_mode(int mode);            /* A5 E0 mm  0=示波 1..7=调制 */
+int v32_cmd_channel(int ch);           /* A5 E3 cc  cc=0/1 */
+int v32_cmd_rate(int rr);              /* A5 E4 rr  rr=0/1/2 -> 8192/4096/2048 */
+int v32_cmd_dec(int k);                /* A5 kk     k=0..8，普通波形抽取 2^k */
+int v32_cmd_auto_dec(void);            /* A5 FF     恢复普通波形自动抽取 */
+int v32_cmd_fcw(uint32_t fcw);         /* A5 E1 hi16 + A5 E2 lo16（分两帧发） */
+uint32_t v32_fcw_from_hz(double hz);   /* round(hz * 2^32 / 65e6) */
+
 #endif /* V32CAP3_H */
