@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FPGA 模拟器（网页上位机）· AB5 协议</title>
+<style>
+:root{--bg:#0b0f0b;--pnl:#121812;--line:#22301f;--grn:#3cff6e;--txt:#cfe0cf;--dim:#6b8a72;--amb:#ffb340}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.55 "Consolas","Microsoft YaHei",monospace}
+.wrap{display:flex;gap:14px;padding:14px;align-items:flex-start}
+.card{background:var(--pnl);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+h2{margin:0 0 10px;font-size:13px;letter-spacing:.12em;color:#57d08a;text-transform:uppercase}
+.row{display:flex;align-items:center;gap:8px;margin:7px 0}
+.row label{width:76px;color:var(--dim);font-size:12px;flex:none}
+select,input[type=number],input[type=text],button{font:inherit}
+select,input[type=number],input[type=text]{background:#0a120b;color:var(--txt);border:1px solid #23331f;
+  border-radius:5px;padding:4px 6px;outline:none;flex:1;min-width:0}
+button{background:#0d2a14;color:var(--grn);border:1px solid #2e6b3c;border-radius:6px;
+  padding:6px 10px;cursor:pointer}
+button:disabled{background:#0a110b;color:#3d4a3d;border-color:#1c2a1c;cursor:not-allowed}
+button.hot{background:#2a1010;color:#ff8080;border-color:#7a3030}
+#left{width:330px;flex:none}
+#mid{width:330px;flex:none}
+#right{flex:1;min-width:320px}
+pre{background:#060a06;border:1px solid var(--line);border-radius:6px;padding:8px;
+  height:300px;overflow:auto;font-size:12px;margin:0;color:#9ec7a8}
+.k{color:var(--dim)} .v{color:var(--grn)} .e{color:#ff7070}
+.tip{color:#4f6d56;font-size:11.5px;margin-top:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card" id="left">
+    <h2>连接（代替 FPGA）</h2>
+    <div class="row"><label>串口</label>
+      <select id="baud">
+        <option value="2000000">2000000（新固件）</option>
+        <option value="921600">921600（旧固件）</option>
+        <option value="115200">115200（调试）</option>
+      </select></div>
+    <div class="row"><label>速率</label>
+      <input id="rate" type="number" value="20" min="1" max="60"> <span class="k">组/秒</span></div>
+    <div class="row" style="gap:6px">
+      <button id="btnOpen" style="flex:1">连接串口</button>
+      <button id="btnRun" style="flex:1" disabled>开始发送</button>
+    </div>
+    <div class="row"><span id="status" class="k">未连接</span></div>
+    <div class="tip">WebSerial 需要 <b>localhost / https</b>：<br>
+      在本目录跑 <code>python -m http.server 8000</code><br>
+      然后打开 <code>http://localhost:8000/fpga_sim.html</code></div>
+  </div>
+
+  <div class="card" id="mid">
+    <h2>信号参数</h2>
+    <div class="row"><label>波形</label>
+      <select id="wave">
+        <option value="sine">正弦</option>
+        <option value="square">方波</option>
+        <option value="tri">三角</option>
+        <option value="saw">锯齿</option>
+      </select></div>
+    <div class="row"><label>频率 Hz</label><input id="freq" type="number" value="10000" step="100"></div>
+    <div class="row"><label>CH1 Vpp</label><input id="amp" type="number" value="5" step="0.1"></div>
+    <div class="row"><label>CH2 Vpp</label><input id="amp2" type="number" value="4" step="0.1"></div>
+    <div class="row"><label>相位 °</label><input id="phase2" type="number" value="90" step="5"></div>
+    <div class="row"><label>偏置 V</label><input id="ofs" type="number" value="0" step="0.1"></div>
+    <div class="row"><label>噪声 mV</label><input id="noise" type="number" value="6" step="1"></div>
+    <div class="row"><label>抽取 dec</label><input id="dec" type="number" value="1" step="1" min="1"></div>
+    <div class="row"><label>点数</label><input id="pts" type="number" value="1024" step="1"></div>
+    <div class="tip">改完立刻生效，下一组帧就带上新参数。</div>
+  </div>
+
+  <div class="card" id="right">
+    <h2>运行状态</h2>
+    <div class="row"><label>组/秒</label><span class="v" id="stG">0</span>
+      <label style="width:60px">字节/秒</label><span class="v" id="stB">0</span></div>
+    <div class="row"><label>帧号</label><span class="v" id="stF">0</span>
+      <label style="width:60px">收到的命令</label><span class="v" id="stC">0</span></div>
+    <h2 style="margin-top:14px">日志</h2>
+    <pre id="log"></pre>
+    <div class="tip" style="margin-top:8px">
+      外部控制 API：<code>fpga.set({freq:5000, wave:'square'})</code> ·
+      <code>fpga.start()</code> · <code>fpga.stats()</code> ·
+      也可以用 URL 参数：<code>?freq=1000&amp;wave=sine&amp;autostart=1</code>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+ * FPGA 模拟器：按 AB5 协议向板子发送【波形帧 + 锁相帧 + 频谱帧】，
+ * 同时接收板子发来的控制命令（A5 …）并据此改参数。
+ * 目的是在没有 FPGA 的时候把整条链路跑起来。
+ * ===================================================================== */
+
+/* ---------------- CRC32（= zlib.crc32）---------------- */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+/* ---------------- 配置 ---------------- */
+const cfg = {
+  wave: 'sine', freq: 10000,
+  amp: 5, amp2: 4, phase2: 90, ofs: 0, noise: 0.006,
+  dec: 1, pts: 1024,
+  rate: 20,            /* 组/秒 */
+  /* 板子命令改过的项（mode/channel/rate 只记录，模拟器不还原真实 DDC） */
+  mode: 0, ch: 0, rateIdx: 1, autoDec: true,
+};
+
+const FS = 65000000;          /* ADC 时钟 */
+const MV_PER_LSB = 2.441;
+const BINS = 2048;            /* 频谱帧携带的 bin 数 */
+const NFFT = 4096;
+
+let port = null, writer = null, reader = null, running = false;
+let fid = 1, startIdx = 0;
+let stat = { groups: 0, bytes: 0, cmds: 0, t0: performance.now() };
+let timer = null;
+
+/* ---------------- 组帧 ---------------- */
+function u32(b, o, v) { new DataView(b.buffer, b.byteOffset).setUint32(o, v >>> 0, true); }
+function i16(b, o, v) { new DataView(b.buffer, b.byteOffset).setInt16(o, v, true); }
+
+function sampleAt(i, amp, phase) {
+  const t = i / (FS / cfg.dec);              /* 抽取后的等效采样 */
+  const w = 2 * Math.PI * cfg.freq * t + phase;
+  let v;
+  switch (cfg.wave) {
+    case 'square': v = Math.sin(w) >= 0 ? amp : -amp; break;
+    case 'tri':    v = amp * (2 / Math.PI) * Math.asin(Math.sin(w)); break;
+    case 'saw': { const u = (cfg.freq * t + phase / (2 * Math.PI)) % 1; v = amp * (2 * u - 1); break; }
+    default:       v = amp * Math.sin(w);
+  }
+  return v + cfg.ofs + (Math.random() * 2 - 1) * cfg.noise;
+}
+function quant(v) {
+  let c = Math.round(v * 1000 / MV_PER_LSB);
+  if (c > 2047) c = 2047;
+  if (c < -2048) c = -2048;
+  return c;
+}
+
+/* 波形帧 V32CAP3!：40 + pts*4 + 4 */
+function buildWave() {
+  const pts = cfg.pts;
+  const b = new Uint8Array(40 + pts * 4 + 4);
+  b.set([0x56,0x33,0x32,0x43,0x41,0x50,0x33,0x21], 0);   /* "V32CAP3!" */
+  u32(b, 8, 3); u32(b, 12, fid); u32(b, 16, FS);
+  u32(b, 20, cfg.dec); u32(b, 24, pts); u32(b, 28, 0);
+  u32(b, 32, startIdx % 4294967296); u32(b, 36, Math.floor(startIdx / 4294967296));
+  const ph2 = cfg.phase2 * Math.PI / 180;
+  for (let i = 0; i < pts; i++) {
+    i16(b, 40 + i*4,     quant(sampleAt(i, cfg.amp/2, 0)));
+    i16(b, 40 + i*4 + 2, quant(sampleAt(i, cfg.amp2/2, ph2)));
+  }
+  u32(b, 40 + pts*4, crc32(b.subarray(0, 40 + pts*4)));
+  return b;
+}
+
+/* 锁相帧 V32MEAS!：128 B（字段与 linux/v32_format.h 一致） */
+function buildMeas() {
+  const b = new Uint8Array(128);
+  b.set([...('V32MEAS!')].map(c => c.charCodeAt(0)), 0);
+  u32(b, 8, 1); u32(b, 12, 128);
+  u32(b, 16, fid); u32(b, 20, fid);
+  /* snapshot_tick = 本帧 start_index（u64） */
+  u32(b, 24, startIdx % 4294967296); u32(b, 28, Math.floor(startIdx / 4294967296));
+  u32(b, 32, FS); u32(b, 36, 650);                 /* age = 10 µs */
+  /* tracked_fcw = round(f × 2^32 / fs) */
+  u32(b, 40, Math.round(cfg.freq * 4294967296 / FS) >>> 0);
+  /* 幅度单位是 ADC 码值，Q12 表示：amp_q12 = 码值 × 4096。
+     码值 = V / (MV_PER_LSB/1000) = (V*1000)/MV_PER_LSB —— 别把 1000 多除一次。 */
+  const amp0 = Math.round((cfg.amp  / 2) * 1000 / MV_PER_LSB * 4096);
+  const amp1 = Math.round((cfg.amp2 / 2) * 1000 / MV_PER_LSB * 4096);
+  u32(b, 44, amp0); u32(b, 48, amp1);
+  u32(b, 52, amp0 ? Math.round(amp1 / amp0 * 65536) : 0);
+  new DataView(b.buffer).setInt16(56, 0, true);
+  new DataView(b.buffer).setInt16(58, Math.round(cfg.phase2/360*65536), true);
+  new DataView(b.buffer).setInt16(60, Math.round(cfg.phase2/360*65536), true);
+  b[62] = 3; b[63] = 3;                            /* qual=3, detected=3 */
+  u32(b, 64, 0x1F);                                /* 低5位全 1，无禁止位 */
+  b[68] = 0; b[69] = 2; b[70] = 0; b[71] = 1; b[72] = 0; b[73] = 0;
+  b[74] = 8; b[75] = 12;
+  u32(b, 84, Math.round(cfg.freq)); u32(b, 88, Math.round(cfg.freq));
+  b[92] = 3; b[93] = 8; b[94] = 8;
+  u32(b, 96, 650); u32(b, 100, 650);
+  new DataView(b.buffer).setInt32(104, 0, true);
+  new DataView(b.buffer).setInt32(108, 0, true);
+  u32(b, 112, 20261023); u32(b, 116, 12);
+  u32(b, 120, 0);
+  u32(b, 124, crc32(b.subarray(0, 124)));
+  return b;
+}
+
+/* 频谱帧 V32SPEC!：44 + bins + 4 */
+function buildSpec() {
+  const b = new Uint8Array(44 + BINS + 4);
+  b.set([...('V32SPEC!')].map(c => c.charCodeAt(0)), 0);
+  const fse = FS / cfg.dec;
+  u32(b, 8, 1); u32(b, 12, 44 + BINS + 4);
+  u32(b, 16, fid); u32(b, 20, fid);
+  u32(b, 24, NFFT); u32(b, 28, BINS); u32(b, 32, fse);
+  u32(b, 36, 0);            /* window = Hann */
+  u32(b, 40, 120);          /* scale_dbfs */
+  /* 谱：在信号频率处放主瓣，其余为底噪；dBFS 按幅度换算 */
+  const ampDb = 20 * Math.log10(Math.max(cfg.amp / 2 * 1000 / MV_PER_LSB, 0.5) / 2048);
+  const pk = Math.round(cfg.freq * NFFT / fse);
+  for (let k = 0; k < BINS; k++) {
+    let db = -95 + (Math.random() - 0.5) * 4;
+    const d = Math.abs(k - pk);
+    if (d <= 3) db = ampDb;
+    else if (d <= 14) db = ampDb - 28;
+    b[44 + k] = Math.max(0, Math.min(255, Math.round((db + 120) / 120 * 255)));
+  }
+  u32(b, 44 + BINS, crc32(b.subarray(0, 44 + BINS)));
+  return b;
+}
+
+/* ---------------- 发送 ---------------- */
+async function sendGroup() {
+  if (!writer) return;
+  const w = buildWave(), m = buildMeas(), s = buildSpec();
+  const g = new Uint8Array(w.length + m.length + s.length);
+  g.set(w, 0); g.set(m, w.length); g.set(s, w.length + m.length);
+  try {
+    await writer.write(g);
+    stat.groups++; stat.bytes += g.length;
+    fid++; startIdx += cfg.pts * cfg.dec;
+    if (fid > 0xFFFFFFF0) fid = 1;
+  } catch (e) {
+    log('写串口失败: ' + e.message, 'e');
+    stop();
+  }
+}
+
+function start() {
+  if (!writer) return;
+  running = true;
+  document.getElementById('btnRun').textContent = '停止发送';
+  document.getElementById('btnRun').classList.add('hot');
+  const period = 1000 / Math.max(1, cfg.rate);
+  let next = performance.now();
+  const tick = async () => {
+    if (!running) return;
+    await sendGroup();
+    next += period;
+    const wait = Math.max(0, next - performance.now());
+    timer = setTimeout(tick, wait);
+  };
+  tick();
+  log('开始发送：' + cfg.rate + ' 组/秒');
+}
+function stop() {
+  running = false;
+  clearTimeout(timer); timer = null;
+  const b = document.getElementById('btnRun');
+  if (b) { b.textContent = '开始发送'; b.classList.remove('hot'); }
+}
+
+/* ---------------- 接收命令（板子 → 这里）---------------- */
+let rxBuf = new Uint8Array(0);
+function feedRx(chunk) {
+  const n = new Uint8Array(rxBuf.length + chunk.length);
+  n.set(rxBuf); n.set(chunk, rxBuf.length);
+  rxBuf = n;
+  /* 命令都是 A5 开头、2~4 字节，按 A5 同步 */
+  let i = 0;
+  while (i < rxBuf.length) {
+    if (rxBuf[i] !== 0xA5) { i++; continue; }
+    if (i + 1 >= rxBuf.length) break;
+    const op = rxBuf[i+1];
+    let need = 0;
+    if (op === 0xE0 || op === 0xE3 || op === 0xE4) need = 3;
+    else if (op === 0xE1 || op === 0xE2) need = 4;
+    else if (op <= 0x08 || op === 0xFF) need = 2;
+    else { i += 2; continue; }
+    if (i + need > rxBuf.length) break;
+    applyCmd(op, rxBuf.subarray(i, i + need));
+    i += need;
+  }
+  rxBuf = rxBuf.subarray(i);
+}
+function applyCmd(op, c) {
+  stat.cmds++;
+  if (op === 0xE0)      { cfg.mode = c[2];   log(`命令: 模式 = ${['示波','AM','FM','2FSK','QPSK','OOK','BPSK','PM'][cfg.mode] ?? cfg.mode}`); }
+  else if (op === 0xE1) { cfg._fcwHi = c[2] | (c[3] << 8); }
+  else if (op === 0xE2) {
+    const fcw = ((cfg._fcwHi || 0) << 16 | (c[2] | (c[3] << 8))) >>> 0;
+    cfg.freq = fcw * FS / 4294967296;
+    log('命令: 中心频率 = ' + cfg.freq.toFixed(1) + ' Hz');
+    syncUI();
+  }
+  else if (op === 0xE3) { cfg.ch = c[2]; log('命令: 通道 = CH' + (cfg.ch + 1)); }
+  else if (op === 0xE4) { cfg.rateIdx = c[2]; log('命令: 总抽取档 = ' + [8192,4096,2048][cfg.rateIdx]); }
+  else if (op <= 0x08)  { cfg.dec = Math.pow(2, op); cfg.autoDec = false; log('命令: 抽取 2^' + op + ' = ' + cfg.dec); syncUI(); }
+  else if (op === 0xFF) { cfg.autoDec = true; log('命令: 恢复自动抽取'); }
+}
+
+/* ---------------- 连接 ---------------- */
+async function openPort() {
+  if (!('serial' in navigator)) {
+    log('这个浏览器不支持 WebSerial（要用 Chrome / Edge）', 'e'); return;
+  }
+  const baud = parseInt(document.getElementById('baud').value, 10);
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: baud, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+    writer = port.writable.getWriter();
+    reader = port.readable.getReader();
+    document.getElementById('btnOpen').textContent = '断开';
+    document.getElementById('btnRun').disabled = false;
+    setStatus('已连接 @ ' + baud);
+    log('串口已连接 @ ' + baud + ' 8N1');
+    (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) feedRx(value);
+        }
+      } catch (e) { /* 断开时正常抛错 */ }
+    })();
+  } catch (e) {
+    log('打开失败: ' + e.message, 'e');
+  }
+}
+async function closePort() {
+  stop();
+  try { if (reader) { await reader.cancel(); reader.releaseLock(); } } catch (e) {}
+  try { if (writer) { writer.releaseLock(); } } catch (e) {}
+  try { if (port) await port.close(); } catch (e) {}
+  reader = writer = port = null;
+  document.getElementById('btnOpen').textContent = '连接串口';
+  document.getElementById('btnRun').disabled = true;
+  setStatus('未连接');
+  log('串口已断开');
+}
+
+/* ---------------- UI ---------------- */
+function log(msg, cls) {
+  const el = document.getElementById('log');
+  const t = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  el.innerHTML += `<span class="${cls||'k'}">[${t}]</span> ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+function setStatus(s) { document.getElementById('status').textContent = s; }
+function syncUI() {
+  document.getElementById('wave').value = cfg.wave;
+  document.getElementById('freq').value = Math.round(cfg.freq);
+  document.getElementById('amp').value = cfg.amp;
+  document.getElementById('amp2').value = cfg.amp2;
+  document.getElementById('phase2').value = cfg.phase2;
+  document.getElementById('ofs').value = cfg.ofs;
+  document.getElementById('noise').value = cfg.noise * 1000;
+  document.getElementById('dec').value = cfg.dec;
+  document.getElementById('pts').value = cfg.pts;
+  document.getElementById('rate').value = cfg.rate;
+}
+
+[['wave','wave',v=>v],['freq','freq',Number],['amp','amp',Number],['amp2','amp2',Number],
+ ['phase2','phase2',Number],['ofs','ofs',Number],['noise','noise',v=>Number(v)/1000],
+ ['dec','dec',Number],['pts','pts',Number],['rate','rate',Number]].forEach(([id,key,conv])=>{
+  const el = document.getElementById(id);
+  el.addEventListener('input', ()=>{ cfg[key] = conv(el.value); });
+  el.addEventListener('change', ()=>{ cfg[key] = conv(el.value); });
+});
+
+document.getElementById('btnOpen').addEventListener('click', ()=> port ? closePort() : openPort());
+document.getElementById('btnRun').addEventListener('click', ()=> running ? stop() : start());
+
+/* 每秒刷新状态 */
+setInterval(()=>{
+  const dt = (performance.now() - stat.t0) / 1000;
+  document.getElementById('stG').textContent = (stat.groups / dt).toFixed(1);
+  document.getElementById('stB').textContent = Math.round(stat.bytes / dt);
+  document.getElementById('stF').textContent = fid;
+  document.getElementById('stC').textContent = stat.cmds;
+}, 500);
+
+/* ---------------- 对外 API（给外部脚本/自动化用）---------------- */
+window.fpga = {
+  cfg,
+  set(o) { Object.assign(cfg, o); syncUI(); log('API set: ' + JSON.stringify(o)); },
+  start, stop,
+  stats() { const dt=(performance.now()-stat.t0)/1000;
+            return { groups: stat.groups, bps: Math.round(stat.bytes/dt), cmds: stat.cmds, fid, running,
+                     config: {...cfg} }; },
+  log
+};
+
+/* ---------------- URL 参数 ------------- */
+(function fromQuery(){
+  const q = new URLSearchParams(location.search);
+  if (q.has('wave'))  cfg.wave  = q.get('wave');
+  if (q.has('freq'))  cfg.freq  = Number(q.get('freq'));
+  if (q.has('amp'))   cfg.amp   = Number(q.get('amp'));
+  if (q.has('amp2'))  cfg.amp2  = Number(q.get('amp2'));
+  if (q.has('phase2'))cfg.phase2= Number(q.get('phase2'));
+  if (q.has('noise')) cfg.noise = Number(q.get('noise')) / 1000;
+  if (q.has('dec'))   cfg.dec   = Number(q.get('dec'));
+  if (q.has('rate'))  cfg.rate  = Number(q.get('rate'));
+  if (q.has('baud'))  document.getElementById('baud').value = q.get('baud');
+  syncUI();
+  if (q.has('autostart')) log('URL 指定了 autostart，连接后会自动开始发送');
+})();
+
+syncUI();
+log('页面就绪。先「连接串口」，再「开始发送」。');
+log('接法：本机 COM 的 TX → JP4-10（板子 RX），GND → JP4-9，RX ← JP4-8（命令通道）。');
+</script>
+</body>
+</html>
