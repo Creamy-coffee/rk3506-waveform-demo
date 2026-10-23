@@ -65,7 +65,7 @@
  * 差在浏览器 normal line-height 与实际字体度量的出入上 —— 所以以实测为准。
  * 我们改行高之后，第一条分隔线落在 y=129，参考稿 130，只差 1px。
  */
-#define METRIC_H  32   /* 原来是 39；示波器页要放 9 行读数（Vpp..占空比），压缩到 32 */
+#define METRIC_H  28   /* 原 39；示波器页 9 行读数（Vpp..占空比），28 才刚好放得下 */
 /* .kv 一行：13px 字体行高 15 + 上下各 6 + 1px 下边框 */
 #define KV_H      28
 /* .panel-title 那一行 + margin-bottom */
