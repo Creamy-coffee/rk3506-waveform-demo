@@ -488,6 +488,8 @@ static float    s_real_phase_deg;           /* CH1 相对 CH0 的相位差 */
 static int      s_spec_in_use;              /* 1 = 当前画的是 FPGA 的谱 */
 static float    s_spec_peak_hz;
 static int      s_spec_win, s_spec_bins, s_spec_nfft;
+static float    s_spec_fs_eff;
+static int      s_spec_stale;        /* 有帧但已过期 */      /* 本帧频谱的等效采样率（逐帧变化！） */
 
 /*
  * 断链判定。
@@ -1512,8 +1514,11 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
          * 所以用户选 CH2 时必须走本地 FFT —— 否则选了通道画面一点变化都没有，
          * 看起来就像"通道选择是坏的"。
          */
-        if(S.use_real && s_real_fft_ch == 0
-           && v32_get_spec(&sp) && sp.got > 2 && sp.nfft > 0 && sp.fs_eff_hz > 0) {
+        /* sp.valid 只管"新不新"，不代表"有没有"：
+           过期时按交付说明应当**保留曲线并标注陈旧**，而不是退回本地 FFT
+           （本地 FFT 依赖波形帧，只有频谱帧时会算出空数据）。 */
+        if(S.use_real && s_real_fft_ch == 0 && sp.seq > 0
+           && sp.got > 2 && sp.nfft > 0 && sp.fs_eff_hz > 0) {
             int   bi = 2;
             float bv = -1e30f;
             const uint32_t bins = sp.got;
@@ -1542,6 +1547,8 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
             s_spec_win     = (int)sp.window;
             s_spec_bins    = (int)bins;
             s_spec_nfft    = (int)sp.nfft;
+            s_spec_fs_eff  = (float)sp.fs_eff_hz;
+            s_spec_stale   = sp.valid ? 0 : 1;
 
             if(peak_x)   *peak_x   = (float)bi / (float)(n - 1);
             if(peak_y01) *peak_y01 = bv;
@@ -1763,7 +1770,20 @@ static void build_fft(lv_obj_t *pg)
     s_plot_fft = plot_create(pg, PLOT_FFT);
     lv_obj_set_flex_grow(s_plot_fft, 1);
     lv_obj_set_height(s_plot_fft, MAIN_H);
-    plot_set_axis_labels(s_plot_fft, "0 MHz", "32.5 MHz");
+    /*
+     * 横轴必须跟着**本帧的 fs_eff_hz** 走。
+     * FPGA 现在按信号自动选抽取档，采样率逐帧在 65 MHz ~ 4 kHz 之间跳；
+     * 写死 32.5 MHz 的话，低档位下整条谱只占最左边几个像素，读数全错。
+     */
+    {
+        const wave_source_t *fs2 = wave_source_get();
+        const float nyq = s_spec_in_use ? (s_spec_fs_eff * 0.5f)
+                                        : (((fs2 && fs2->sample_rate > 0) ? (float)fs2->sample_rate : 65000000.0f) * 0.5f);
+        char al[16], ar[16];
+        if(nyq >= 1e6f) { snprintf(al, sizeof al, "0 MHz"); snprintf(ar, sizeof ar, "%.2f MHz", (double)(nyq/1e6f)); }
+        else            { snprintf(al, sizeof al, "0 kHz"); snprintf(ar, sizeof ar, "%.1f kHz", (double)(nyq/1e3f)); }
+        plot_set_axis_labels(s_plot_fft, al, ar);
+    }
 
     lv_obj_t *tr = mk_title_row(s_plot_fft, V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
     lv_obj_t *t0 = mk_label(tr, 0, 0, "FFT 频谱 · CH1",
@@ -3024,7 +3044,7 @@ static void tick_fft(void)
     /* 标题写明这条谱是谁算的、多少点 */
     if(S.use_real) {
         char tt[40];
-        if(s_spec_in_use) snprintf(tt, sizeof tt, "FFT 频谱 · FPGA %d 点", s_spec_nfft);
+        if(s_spec_in_use) snprintf(tt, sizeof tt, "FFT 频谱 · FPGA %d 点%s", s_spec_nfft, s_spec_stale ? " · 陈旧" : "");
         else              snprintf(tt, sizeof tt, "FFT 频谱 · 本地 %d 点", s_real_n);
         lv_label_set_text(s_lbl_fft_title, tt);
     } else {
