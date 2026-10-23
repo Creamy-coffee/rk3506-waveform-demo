@@ -140,8 +140,9 @@ static lv_obj_t *s_lbl_den_title;
 static lv_obj_t *s_lbl_recon_badge;      /* 示波器页右上角「重建」牌 */
 static lv_obj_t *s_lbl_fft_cur;
 static lv_obj_t *s_lbl_fft_title;
+static lv_obj_t *s_chip_tb, *s_chip_vg;   /* 时基 / 档位 的值芯片 */
 static lv_obj_t *s_chip_cur;    /* 光标开关芯片 */
-static lv_obj_t *s_chip_trig;   /* 触发选择芯片 */
+static lv_obj_t *s_chip_trig, *s_chip_edge, *s_chip_lev;   /* 触发选择芯片 */
 static lv_obj_t *s_chip_math;   /* Math 选择芯片 */
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
@@ -533,6 +534,7 @@ static int      s_full_n;
  * 横向捏放改「看多长一段」，纵向捏放改「一格多少毫伏」，两件事互不影响。
  */
 static int      s_zoom_span;
+static int      s_tb_idx = 4;      /* 当前时基档位下标 */
 static int      s_zoom_start;
 
 #define ZOOM_GAIN_MIN   0.05f
@@ -968,6 +970,10 @@ static meas_t s_m1;      /* CH1 的测量结果 */
  * 设备上这块屏没有位置再放一个档位，先做加法/减法这两个真正实用的）。 */
 /* 触发：0=关 1=自动 2=正常；边沿 0=升 1=降；电平按帧内 min..max 归一化 */
 /* 测量光标：2 竖（T1/T2）+ 2 横（V1/V2），都是 0..1 的相对位置 */
+/* 垂直增益（手动档位）：1× / 2× / 4× / 0.5× / 0.25×，乘在归一化后的 y 上 */
+static int   s_vgain;
+static const float VGAINS[5] = { 1.0f, 2.0f, 4.0f, 0.5f, 0.25f };
+
 static int   s_cur_on;
 static float s_cur_x[2] = { 0.30f, 0.70f };
 static float s_cur_y[2] = { 0.35f, 0.65f };
@@ -1298,9 +1304,9 @@ static void update_axis_label(void)
                                        : ((src && src->frame_len > 0) ? src->frame_len : V32_POINTS);
     const float us_div = (float)span / fs * 1e6f / (float)V32_GRID_X;
 
-    static char last[96];
-    char core[64];
-    char buf[96];
+    static char last[160];
+    char core[112];
+    char buf[160];
 
     if(S.use_real && s_real_sc > 0.f) {
         /* 满屏码值 = 1/sc，除纵向格数、再除增益 = 每格多少码 -> 换 mV */
@@ -1311,6 +1317,15 @@ static void update_axis_label(void)
     } else {
         snprintf(core, sizeof core, "%.3f µs/格 · 触发 自动", (double)us_div);
     }
+    if(s_cur_on && s_real_sc > 0.f) {
+        /* 光标读数：ΔT 用时间轴换算，ΔV 用当前纵向满屏码值换算 */
+        const float dts = fabsf(s_cur_x[1] - s_cur_x[0]) * (float)span / fs;
+        const float dvm = fabsf(s_cur_y[1] - s_cur_y[0]) * (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;
+        char cur[64];
+        if(dts < 1e-3f) snprintf(cur, sizeof cur, "  ΔT %.2f µs · ΔV %.1f mV", (double)(dts*1e6f), (double)dvm);
+        else            snprintf(cur, sizeof cur, "  ΔT %.2f ms · ΔV %.1f mV", (double)(dts*1e3f), (double)dvm);
+        strncat(core, cur, sizeof core - strlen(core) - 1);
+    }
     snprintf(buf, sizeof buf, "%s%s", S.running ? "" : "⏸ 已冻结 · ", core);
 
     if(strcmp(buf, last) != 0) {
@@ -1318,6 +1333,13 @@ static void update_axis_label(void)
         snprintf(last, sizeof last, "%s", buf);
     }
 
+    if(s_chip_tb) {
+        char tb[16];
+        if(us_div < 1.f)       snprintf(tb, sizeof tb, "%.2fµs", (double)us_div);
+        else if(us_div < 1000.f) snprintf(tb, sizeof tb, "%.0fµs", (double)us_div);
+        else                   snprintf(tb, sizeof tb, "%.1fms", (double)(us_div / 1000.f));
+        lv_label_set_text(lv_obj_get_child(s_chip_tb, 0), tb);
+    }
     sync_timebase_dd(us_div);
 }
 
@@ -2141,6 +2163,47 @@ static void cb_scope_touch(lv_event_t *e)
     ui_tick();
 }
 
+/* 时基档位表（跟 HTML 原型一致） */
+static const float TB_US[12] = { 0.5f,1.f,2.f,5.f,10.f,20.f,50.f,100.f,200.f,500.f,1000.f,5000.f };
+static void tb_default(int *idx)
+{
+    const wave_source_t *src = wave_source_get();
+    const float fs = (src && src->sample_rate > 0) ? (float)src->sample_rate : 65000000.0f;
+    const int   fn = (src && src->frame_len > 0) ? src->frame_len : V32_POINTS;
+    /* 一屏 10 格、整帧放满：us/格 = 帧长/fs*1e6/10 */
+    const float want = (float)fn / fs * 1e6f / (float)V32_GRID_X;
+    int best = 0; float bd = 1e9f;
+    for(int i = 0; i < 12; i++) { float d = fabsf(TB_US[i] - want); if(d < bd) { bd = d; best = i; } }
+    *idx = best;
+}
+static void tb_apply(int idx)
+{
+    const wave_source_t *src = wave_source_get();
+    const float fs = (src && src->sample_rate > 0) ? (float)src->sample_rate : 65000000.0f;
+    const int   fn = (src && src->frame_len > 0) ? src->frame_len : V32_POINTS;
+    if(idx < 0) idx = 0;
+    if(idx > 11) idx = 11;
+    s_tb_idx = idx;
+    int span = (int)(TB_US[idx] * 1e-6f * (float)V32_GRID_X * fs + 0.5f);
+    if(span < 8) span = 8;
+    if(span > fn) span = fn;
+    s_zoom_span  = span;
+    s_zoom_start = (fn - span) / 2;
+    update_axis_label();
+}
+static void cb_tb_dec(lv_event_t *e) { LV_UNUSED(e); tb_apply(s_tb_idx - 1); }
+static void cb_tb_inc(lv_event_t *e) { LV_UNUSED(e); tb_apply(s_tb_idx + 1); }
+static void cb_tb_auto(lv_event_t *e){ LV_UNUSED(e); int d; tb_default(&d); tb_apply(d); }
+
+static void vg_label(void)
+{
+    if(s_chip_vg) { chip_set_text(s_chip_vg, s_vgain == 0 ? "自动" : (s_vgain == 3 ? "1/2" : (s_vgain == 4 ? "1/4" : (s_vgain == 2 ? "4x" : "2x"))));
+                    chip_selected(s_chip_vg, s_vgain != 0); }
+}
+static void cb_vg_dec(lv_event_t *e) { LV_UNUSED(e); if(s_vgain > 0) s_vgain--; vg_label(); }
+static void cb_vg_inc(lv_event_t *e) { LV_UNUSED(e); if(s_vgain < 4) s_vgain++; vg_label(); }
+static void cb_vg_auto(lv_event_t *e){ LV_UNUSED(e); s_vgain = 0; vg_label(); }
+
 static void cb_cur_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
@@ -2150,18 +2213,20 @@ static void cb_cur_cycle(lv_event_t *e)
     ui_tick();
 }
 
-static void cb_trig_cycle(lv_event_t *e)
+static void trig_refresh(void)
 {
-    LV_UNUSED(e);
-    static int step;
-    step = (step + 1) % 5;
-    s_trig_mode = (step == 0) ? 0 : (step <= 2 ? 1 : 2);   /* 关/自动/正常 */
-    s_trig_edge = (step == 3 || step == 2) ? 1 : 0;         /* 3=正常↓ 2=自动↓ */
-    static const char *nm[5] = { "关", "自动↑", "自动↓", "正常↑", "正常↓" };
-    if(s_chip_trig) { chip_set_text(s_chip_trig, nm[step]);
-                      chip_selected(s_chip_trig, step != 0); }
-    ui_tick();
+    static const char *nm[3] = { "关", "自动", "正常" };
+    if(s_chip_trig) { chip_set_text(s_chip_trig, nm[s_trig_mode]);
+                      chip_selected(s_chip_trig, s_trig_mode != 0); }
+    if(s_chip_edge) chip_set_text(s_chip_edge, s_trig_edge ? "↓" : "↑");
+    if(s_chip_lev)  lv_label_set_text_fmt(lv_obj_get_child(s_chip_lev, 0), "%.0f%%",
+                                          (double)(s_trig_lev * 100.0f));
 }
+static void cb_trig_mode(lv_event_t *e) { LV_UNUSED(e); s_trig_mode = (s_trig_mode + 1) % 3; trig_refresh(); ui_tick(); }
+static void cb_trig_edge(lv_event_t *e) { LV_UNUSED(e); s_trig_edge = !s_trig_edge; trig_refresh(); ui_tick(); }
+static void cb_trig_lev_dec(lv_event_t *e){ LV_UNUSED(e); s_trig_lev -= 0.05f; if(s_trig_lev < 0.f) s_trig_lev = 0.f; trig_refresh(); }
+static void cb_trig_lev_inc(lv_event_t *e){ LV_UNUSED(e); s_trig_lev += 0.05f; if(s_trig_lev > 1.f) s_trig_lev = 1.f; trig_refresh(); }
+static void cb_trig_lev_auto(lv_event_t *e){ LV_UNUSED(e); s_trig_lev = 0.5f; trig_refresh(); }
 
 static void cb_math_cycle(lv_event_t *e)
 {
@@ -2365,6 +2430,8 @@ static void build_controls(lv_obj_t *root)
 
     /* ---- 信号频率 ---- */
     lv_obj_t *g1 = mk_group(bar, "信号频率");
+    /* 真实数据下这个下拉框改不动任何东西（频率是量出来的），藏掉腾地方给触发 */
+    if(S.use_real) lv_obj_add_flag(g1, LV_OBJ_FLAG_HIDDEN);
     s_dd_freq = mk_dropdown(g1, FREQ_OPTS, FREQ_DEF, cb_freq);
     lv_obj_set_style_max_width(s_dd_freq, V32_SEL_MAX_W, LV_PART_MAIN);
     /*
@@ -2393,6 +2460,22 @@ static void build_controls(lv_obj_t *root)
         chip_selected(s_chip_math, true);
     }
 
+    /* 时基：◀ 值 ▶（点中间 = 自动） */
+    {
+        lv_obj_t *gs3 = mk_group(cp, "时基");
+        mk_chip(gs3, "◀", cb_tb_dec);
+        s_chip_tb = mk_chip(gs3, "2us", cb_tb_auto);
+        mk_chip(gs3, "▶", cb_tb_inc);
+    }
+
+    /* 垂直档位：◀ 值 ▶（点中间 = 自动 1×） */
+    {
+        lv_obj_t *gv = mk_group(cp, "档位");
+        mk_chip(gv, "◀", cb_vg_dec);
+        s_chip_vg = mk_chip(gv, "自动", cb_vg_auto);
+        mk_chip(gv, "▶", cb_vg_inc);
+    }
+
     /* 光标开/关 */
     {
         lv_obj_t *gcu = mk_group(cp, "光标");
@@ -2400,18 +2483,21 @@ static void build_controls(lv_obj_t *root)
         chip_selected(s_chip_cur, false);
     }
 
-    /* 触发：关 -> 自动↑ -> 自动↓ -> 正常↑ -> 正常↓ */
+    /* 触发：模式 / 边沿 / 电平◀值▶ 各管一件事，别塞成一个 */
     {
         lv_obj_t *gt = mk_group(cp, "触发");
-        s_chip_trig = mk_chip(gt, "关", cb_trig_cycle);
+        s_chip_trig = mk_chip(gt, "关", cb_trig_mode);
+        s_chip_edge = mk_chip(gt, "↑", cb_trig_edge);
+        mk_chip(gt, "◀", cb_trig_lev_dec);
+        s_chip_lev  = mk_chip(gt, "50%", cb_trig_lev_auto);
+        mk_chip(gt, "▶", cb_trig_lev_inc);
         chip_selected(s_chip_trig, false);
     }
 
-    lv_obj_t *gs = mk_group(cp, "时基");
-    lv_obj_t *dd_tb = mk_dropdown(gs, TIMEBASE_OPTS, TIMEBASE_DEF, cb_timebase);
-    s_dd_tb = dd_tb;
-    lv_obj_set_style_max_width(dd_tb, V32_SEL_MAX_W, LV_PART_MAIN);
-    s_ctrl_grp[UI_PAGE_SCOPE] = gs;
+    /* 旧的时基下拉框不再创建：已被上面的 ◀ 值 ▶ 三段式取代。
+       （原来这里还兼职当 s_ctrl_grp[UI_PAGE_SCOPE]，所以只 hide 会被
+        ctrl_set_page 又显示回来 —— 必须整个不创建。） */
+    s_ctrl_grp[UI_PAGE_SCOPE] = NULL;
 
     lv_obj_t *gc = mk_group(cp, "频谱通道");
     {
@@ -2552,6 +2638,16 @@ static void tick_scope(void)
 
     fetch_scope(0, ch1, n);
     fetch_scope(1, ch2, n);
+
+    /* 手动垂直档位：在 0..1 归一化之后按倍数放大/缩小，围绕中心线缩放。
+       超出 0..1 的部分被裁掉 —— 真示波器超出屏幕也是这样，不会偷偷重新缩放。 */
+    if(s_vgain != 0) {
+        const float g = VGAINS[s_vgain];
+        for(int i = 0; i < n; i++) {
+            float v = 0.5f + (ch1[i] - 0.5f) * g; if(v < 0.f) v = 0.f; if(v > 1.f) v = 1.f; ch1[i] = v;
+            float w = 0.5f + (ch2[i] - 0.5f) * g; if(w < 0.f) w = 0.f; if(w > 1.f) w = 1.f; ch2[i] = w;
+        }
+    }
 
     if(S.ch1) plot_set_trace(s_plot_scope, 0, ch1, n, V32_C_CH1, 2);
     else      plot_hide_trace(s_plot_scope, 0);

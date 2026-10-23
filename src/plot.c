@@ -464,7 +464,7 @@ static void draw_cursors(lv_layer_t *layer, plot_t *p,
                 line(layer, &ld, x, y, x, (y + 4 < y0 + h - 1) ? y + 4 : y0 + h - 1);
             text(layer, x + 3, y0 + 6, (i == 0) ? "T1" : "T2", V32_C_TRIGGER, V32_FONT_SMALL);
         } else {                                 /* 横线：电压光标 */
-            const int32_t y = y0 + (int32_t)(p->cur_y[i] * (float)(h - 1));
+            const int32_t y = y0 + (int32_t)(p->cur_y[i - 2] * (float)(h - 1));   /* i-2：cur_y[] 只有 2 个 */
             for(int32_t x = x0; x < x0 + w - 1; x += 8)
                 line(layer, &ld, x, y, (x + 4 < x0 + w - 1) ? x + 4 : x0 + w - 1, y);
             text(layer, x0 + 4, y - 16, (i == 2) ? "V1" : "V2", V32_C_TRIGGER, V32_FONT_SMALL);
