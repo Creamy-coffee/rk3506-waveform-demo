@@ -30,7 +30,7 @@
  * 演示源只发 512 点、V32CAP3 一帧 4096 点会先被压到 1024。 */
 #define PLOT_MAX_PTS   1024
 /* 一个波形区最多几条曲线（参考稿里 SCOPE/LOCK-IN 是两条，其余一条） */
-#define PLOT_MAX_TRACE 2
+#define PLOT_MAX_TRACE 3   /* 2 路 + 1 条 Math */
 
 typedef enum {
     PLOT_SCOPE = 0,   /* 双通道折线 + 触发线 + 中心虚线，10×8 网格 */

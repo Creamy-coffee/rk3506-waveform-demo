@@ -140,6 +140,7 @@ static lv_obj_t *s_lbl_den_title;
 static lv_obj_t *s_lbl_recon_badge;      /* 示波器页右上角「重建」牌 */
 static lv_obj_t *s_lbl_fft_cur;
 static lv_obj_t *s_lbl_fft_title;
+static lv_obj_t *s_chip_math;   /* Math 选择芯片 */
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
@@ -959,6 +960,13 @@ static void measure_buf(const float *x, int n, float fs, meas_t *m)
 
 static meas_t s_m1;      /* CH1 的测量结果 */
 
+/* ===== Math：A+B / A-B（第三条迹线）=====
+ * 只做加减：乘除的量纲是 V²/无量纲，跟同一套纵轴放不下（原型里靠独立档位，
+ * 设备上这块屏没有位置再放一个档位，先做加法/减法这两个真正实用的）。 */
+static int   s_math_mode = 2;    /* 0=关 1=A+B 2=A-B（先默认 A-B，界面上能直接看到） */
+static float s_math[PLOT_MAX_PTS];
+static float s_math_y[PLOT_MAX_PTS];
+
 static void real_update(void)
 {
     /*
@@ -1032,6 +1040,13 @@ static void real_update(void)
         const wave_source_t *ms = wave_source_get();
         const float fse = (ms && ms->sample_rate > 0) ? (float)ms->sample_rate : 65000000.0f;
         measure_buf(s_full0, fn, fse, &s_m1);
+    }
+
+    /* Math 迹线：算完直接用 CH1 的纵向映射归一化，保证跟着同一套刻度走 */
+    if(s_math_mode) {
+        for(int i = 0; i < fn; i++)
+            s_math[i] = (s_math_mode == 1) ? (s_full0[i] + s_full1[i])
+                                           : (s_full0[i] - s_full1[i]);
     }
 
     s_real_vpp0_mv = (a_hi - a_lo) * V32_ADC_MV_PER_LSB;
@@ -2043,6 +2058,16 @@ static void cb_fch_auto(lv_event_t *e) { LV_UNUSED(e); fft_ch_set(0); }
 static void cb_fch_ch1 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(1); }
 static void cb_fch_ch2 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(2); }
 
+static void cb_math_cycle(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    s_math_mode = (s_math_mode + 1) % 3;
+    static const char *nm[3] = { "关", "A+B", "A-B" };
+    if(s_chip_math) { chip_set_text(s_chip_math, nm[s_math_mode]);
+                      chip_selected(s_chip_math, s_math_mode != 0); }
+    ui_tick();
+}
+
 static void cb_win_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
@@ -2406,6 +2431,14 @@ static void tick_scope(void)
     else      plot_hide_trace(s_plot_scope, 0);
     if(S.ch2) plot_set_trace(s_plot_scope, 1, ch2, n, V32_C_CH2, 2);
     else      plot_hide_trace(s_plot_scope, 1);
+
+    /* Math 迹线（亮绿）：A+B / A-B。用自己的量程画，纵向不会被 CH1 压扁。 */
+    if(s_math_mode && s_real_valid && s_full_n >= 2) {
+        map_window(s_math, s_full_n, s_math_y, n, false);
+        plot_set_trace(s_plot_scope, 2, s_math_y, n, V32_C_GREEN, 2);
+    } else {
+        plot_hide_trace(s_plot_scope, 2);
+    }
 
     plot_set_trigger(s_plot_scope, true, 0.46f);
 
