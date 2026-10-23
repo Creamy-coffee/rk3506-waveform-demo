@@ -58,6 +58,9 @@ typedef struct {
     float cur_y[4];          /* 横线位置 0..1 */
 
     char info[80];           /* 顶部信息行 */
+    int  tk_nx, tk_ny;       /* 刻度文字个数（0 = 不画刻度边距） */
+    char tk_x[6][12];
+    char tk_y[5][12];
     char axis_l[16];
     char axis_r[16];
     char leg0[10];
@@ -208,6 +211,20 @@ void plot_set_iq(lv_obj_t *plot, float phase_deg)
     if(p == NULL) return;
     p->iq_phase = phase_deg;
     lv_obj_invalidate(plot);
+}
+
+void plot_set_ticks(lv_obj_t *plot, const char *const *xl, int nx,
+                    const char *const *yl, int ny)
+{
+    if(plot == NULL) return;
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    int changed = (p->tk_nx != nx || p->tk_ny != ny);
+    p->tk_nx = (nx > 6) ? 6 : nx;
+    p->tk_ny = (ny > 5) ? 5 : ny;
+    for(int i = 0; i < p->tk_nx; i++) { snprintf(p->tk_x[i], sizeof p->tk_x[i], "%s", xl[i] ? xl[i] : ""); }
+    for(int j = 0; j < p->tk_ny; j++) { snprintf(p->tk_y[j], sizeof p->tk_y[j], "%s", yl[j] ? yl[j] : ""); }
+    if(changed) lv_obj_invalidate(plot);
 }
 
 void plot_set_info(lv_obj_t *plot, const char *line)
@@ -475,13 +492,29 @@ static void draw_iq(lv_layer_t *layer, plot_t *p,
 
 /* 测量光标：洋红虚线。用短线段拼虚线（这版 LVGL 的 dash 支持不稳）。 */
 /* 顶部信息行：照原型的 A1=… A2=… Time/Div=… Trig=… 一行绿字 */
-static void draw_info(lv_layer_t *layer, plot_t *p, int32_t x0, int32_t y0, int32_t w)
+/* 刻度文字：x 在底部留白居中，y 在左侧留白右对齐 */
+static void draw_ticks(lv_layer_t *layer, plot_t *p,
+                       int32_t ox, int32_t oy, int32_t ow, int32_t oh,
+                       int32_t gx, int32_t gy, int32_t gw, int32_t gh)
 {
-    if(!p->info[0]) return;
-    /* 放底部左侧、占满整行宽度：顶部已经被标题/图例占了，挤在一起没法看 */
-    text_w(layer, x0 + 8, y0 + (p->obj ? (lv_obj_get_height(p->obj) - 34) : 0),
-           w - 16, p->info, V32_C_CHIP_ON_FG, V32_FONT_SMALL);
+    (void)oy;
+    if(p->tk_nx > 0) {
+        for(int i = 0; i < p->tk_nx && i < 6; i++) {
+            const int32_t cx = gx + (int32_t)((long)i * 2 * gw / (long)p->divx);
+            text_w(layer, cx - 28, gy + gh + 2, 56, p->tk_x[i], V32_C_CHIP_ON_FG, V32_FONT_SMALL);
+        }
+    }
+    if(p->tk_ny > 0) {
+        for(int j = 0; j < p->tk_ny && j < 5; j++) {
+            const int32_t cy = gy + (int32_t)((long)j * 2 * gh / (long)p->divy);
+            text_w(layer, ox, cy - 8, 50, p->tk_y[j], V32_C_CHIP_ON_FG, V32_FONT_SMALL);
+        }
+    }
+    (void)ow;
 }
+
+static void draw_info_dummy(lv_layer_t *layer, plot_t *p, int32_t x0, int32_t y0, int32_t w)
+{ (void)layer; (void)p; (void)x0; (void)y0; (void)w; }
 
 static void draw_cursors(lv_layer_t *layer, plot_t *p,
                          int32_t x0, int32_t y0, int32_t w, int32_t h)
@@ -594,11 +627,16 @@ static void plot_draw_cb(lv_event_t *e)
 
     /* .plot 的 canvas 在 1px border 里面（box-sizing:border-box） */
     const int32_t bw = (int32_t)lv_obj_get_style_border_width(p->obj, LV_PART_MAIN);
-    const int32_t x0 = c.x1 + bw;
-    const int32_t y0 = c.y1 + bw;
-    const int32_t w  = full_w - bw * 2;
-    const int32_t h  = full_h - bw * 2;
+    int32_t x0 = c.x1 + bw;
+    int32_t y0 = c.y1 + bw;
+    int32_t w  = full_w - bw * 2;
+    int32_t h  = full_h - bw * 2;
     if(w < 6 || h < 6) return;
+
+    /* 有刻度文字时，网格往里收：左 42px 给电压刻度，下 18px 给时间刻度 */
+    int32_t ox = x0, oy = y0, ow = w, oh = h;
+    if(p->tk_ny > 0) { x0 += 54; w -= 54; }
+    if(p->tk_nx > 0) { h -= 18; }
 
     draw_grid(layer, p, x0, y0, w, h);
 
@@ -615,6 +653,9 @@ static void plot_draw_cb(lv_event_t *e)
            plot 里这套先关掉，否则同一行字会画两遍。 */
         if(p->mode == PLOT_FFT)   draw_peak(layer, p, x0, y0, w, h);
     }
+
+    if(p->tk_nx > 0 || p->tk_ny > 0)
+        draw_ticks(layer, p, ox, oy, ow, oh, x0, y0, w, h);
 
     /* 角落坐标文字（参考稿 FFT 页画在画布左下角）。
      * 用 text_plated：这两处会被曲线穿过，白底上不垫底板就读不清。 */

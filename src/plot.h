@@ -84,6 +84,11 @@ void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, b
 /* 绘图区顶部那行示波器信息：A1=1.00V/格  A2=GND  Time/Div=202µs  Trig=A1::Auto
  * 照 HTML 原型 scope_proto_1024.html 的版式。 */
 void plot_set_info(lv_obj_t *plot, const char *line);
+
+/* 刻度文字：x 轴 6 个（0,2,4,6,8,10 格）、y 轴 5 个（0,2,4,6,8 格）。
+ * 传入后绘图区会自动留出左 42px / 下 18px 的边距画刻度，跟 HTML 原型一致。 */
+void plot_set_ticks(lv_obj_t *plot, const char *const *xl, int nx,
+                    const char *const *yl, int ny);
 /* 两条曲线右端的小图例（可选，写 NULL 不画） */
 void plot_set_legends(lv_obj_t *plot, const char *l0, const char *l1);
 

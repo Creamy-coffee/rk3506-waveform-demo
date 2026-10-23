@@ -1333,6 +1333,28 @@ static void update_axis_label(void)
         snprintf(last, sizeof last, "%s", buf);
     }
 
+    /* 绘图区刻度文字（照 HTML 原型）：底部 6 个时间刻度、左侧 5 个电压刻度 */
+    if(s_plot_scope && S.use_real && s_real_sc > 0.f) {
+        const float mvdiv = (1.0f / s_real_sc) / (float)V32_GRID_Y / s_gain * V32_ADC_MV_PER_LSB;
+        static char xb[6][12], yb[5][12];
+        const char *xp[6], *yp[5];
+        for(int i = 0; i < 6; i++) {
+            const float t = (float)(i * 2 - V32_GRID_X / 2) * us_div;      /* µs */
+            if(fabsf(t) < 0.5f)        snprintf(xb[i], 12, "0");
+            else if(fabsf(t) < 1000.f) snprintf(xb[i], 12, "%.0fµs", (double)t);
+            else                       snprintf(xb[i], 12, "%.1fms", (double)(t / 1000.f));
+            xp[i] = xb[i];
+        }
+        for(int j = 0; j < 5; j++) {
+            const float v = (float)(V32_GRID_Y / 2 - j * 2) * mvdiv;       /* mV */
+            if(fabsf(v) < 0.5f)         snprintf(yb[j], 12, "0");
+            else if(fabsf(v) < 1000.f)  snprintf(yb[j], 12, "%.0fmV", (double)v);
+            else                        snprintf(yb[j], 12, "%.2fV", (double)(v / 1000.f));
+            yp[j] = yb[j];
+        }
+        plot_set_ticks(s_plot_scope, xp, 6, yp, 5);
+    }
+
     /* 顶部信息行（照 HTML 原型）：A1=… A2=… Time/Div=… Trig=… */
     if(s_plot_scope && S.use_real) {
         char info[96], a1[16], a2[16], td[16];
@@ -1588,7 +1610,7 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_set_style_radius(s_lbl_scope_axis, 3, LV_PART_MAIN);
     lv_obj_set_style_pad_hor(s_lbl_scope_axis, 4, LV_PART_MAIN);
     lv_obj_set_style_pad_ver(s_lbl_scope_axis, 1, LV_PART_MAIN);
-    lv_obj_align(s_lbl_scope_axis, LV_ALIGN_BOTTOM_LEFT, V32_PLOT_FOOT_X, -V32_PLOT_FOOT_Y);
+    lv_obj_align(s_lbl_scope_axis, LV_ALIGN_BOTTOM_LEFT, 56, -22);   /* 抬到时间刻度带上方 */
 
     /* ---- 右侧读数栏 ---- */
     lv_obj_t *aside = mk(pg, 0, 0, ASIDE_W, MAIN_H);
