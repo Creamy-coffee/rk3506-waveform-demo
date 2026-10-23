@@ -70,13 +70,16 @@ const S = {
   running:true,
 };
 
-let ch1 = new Float32Array(N_PTS);
+let acq1 = new Float32Array(N_PTS);   /* 本次采到的 */
+let acq2 = new Float32Array(N_PTS);
+let ch1 = new Float32Array(N_PTS);    /* 正在显示的（触发后才提交，单次触发就靠它锁住） */
 let chM = new Float32Array(N_PTS);   /* 数学运算结果 */
 let mathVdiv = 1;                  /* 数学迹线自己的垂直档位（V² 等量纲不一样，必须独立） */
 let ch2 = new Float32Array(N_PTS);
 let fsEff = N_PTS / (DX * S.tdiv);
 let trigIdx = 0, trigFound = false;
 let dragTarget = null;
+let singleLatched = false;   /* 单次触发已捕获 -> 冻结画面 */
 let phaseT = 0, fps = 60, lastT = 0, fc = 0;
 
 /* =====================================================================
@@ -106,8 +109,8 @@ function genFrame(t0){
     const t = t0 + i*dt;
     let v1 = wave(S.wavetype, t, A1, 0) + S.offset + (Math.random()*2-1)*S.noise;
     let v2 = wave(S.wavetype, t, A2, ph2) + S.offset + (Math.random()*2-1)*S.noise;
-    ch1[i] = quant(v1);
-    ch2[i] = S.ch2En ? quant(v2) : 0;
+    acq1[i] = quant(v1);
+    acq2[i] = S.ch2En ? quant(v2) : 0;
   }
 }
 
@@ -138,9 +141,14 @@ function trigLevelV(){
 }
 function findTrigger(){
   const lv = trigLevelV(), up = S.tredge==='rise';
+  /* 迟滞：必须从电平另一侧穿过来才算，否则噪声在阈值上下抖，
+     每帧落在不同样本上，画面就会持续"闪" —— 真示波器也靠这个压抖动 */
+  let mn=1e9,mx=-1e9;
+  for(let i=0;i<N_PTS;i++){ if(acq1[i]<mn)mn=acq1[i]; if(acq1[i]>mx)mx=acq1[i]; }
+  const hys = Math.max((mx-mn)*0.02, 1e-4);
   for(let i=Math.floor(N_PTS*0.25); i<N_PTS-1; i++){
-    const a=ch1[i-1], b=ch1[i];
-    if(up ? (a<lv && b>=lv) : (a>lv && b<=lv)) return i;
+    const a=acq1[i-1], b=acq1[i];
+    if(up ? (a < lv-hys && b >= lv+hys) : (a > lv+hys && b <= lv-hys)) return i;
   }
   return -1;
 }
@@ -507,7 +515,8 @@ function drawControlBar(){
   btn(26, '▶', false, null, ()=>cycleVdiv(1));
 
   btn(74, S.trmode==='auto'?'触发 自动':S.trmode==='normal'?'触发 正常':'触发 单次', true, C.trig,
-      ()=>{ S.trmode = S.trmode==='auto'?'normal':S.trmode==='normal'?'single':'auto'; });
+      ()=>{ S.trmode = S.trmode==='auto'?'normal':S.trmode==='normal'?'single':'auto';
+            if(S.trmode==='single'){ singleLatched=false; S.running=true; } });
   btn(62, S.tredge==='rise'?'边沿 ↑':'边沿 ↓', true, C.trig,
       ()=>{ S.tredge = S.tredge==='rise'?'fall':'rise'; });
 
@@ -522,7 +531,7 @@ function drawControlBar(){
 
   /* 运行 / 暂停：原来叫「运行中」，很多人找不到，这里直接写「暂停」 */
   if (S.running) btn(78, '⏸ 暂停', true, C.accent, ()=>{ S.running=false; });
-  else           btn(78, '▶ 运行', false, C.accent, ()=>{ S.running=true; });
+  else           btn(78, '▶ 运行', false, C.accent, ()=>{ singleLatched=false; S.running=true; });
 }
 
 function setTrlev(v){
@@ -650,11 +659,26 @@ function loop(ts){
   if(S.running){
     phaseT += (1/Math.max(fps,30))*0.012;
     fsEff = N_PTS/(DX*S.tdiv);
-    genFrame(phaseT);
-    computeMath();
+    genFrame(phaseT);                       /* -> acq1/acq2 */
     const ti = findTrigger();
-    trigFound = ti>=0;
-    if(trigFound) trigIdx=ti;
+
+    /*
+     * 三种模式的区别就在这里 —— 不是"采到就画"：
+     *   自动：没触发也画（自由运行），有触发就对准
+     *   正常：只有触发到才更新画面，没触发保持上一帧（不能装作在跑）
+     *   单次：捕获一次触发后**锁存**，画面彻底冻结，直到重新按运行
+     */
+    let commit = false;
+    if(S.trmode==='auto')       commit = true;
+    else if(S.trmode==='normal')commit = (ti>=0);
+    else if(S.trmode==='single'){
+      if(!singleLatched && ti>=0){ commit = true; singleLatched = true; S.running = false; }
+    }
+    if(commit){
+      ch1.set(acq1); ch2.set(acq2);
+      if(ti>=0){ trigIdx = ti; trigFound = true; } else { trigFound = false; }
+      computeMath();                        /* 数学迹线跟着显示数据一起更新 */
+    }
   }
 
   if (S.page === 0) {
@@ -698,6 +722,7 @@ function drawXYCursors(){}
 
 /* 调试用：文件名后加 #xy / #nocursor 直接进对应模式 */
 if (location.hash.indexOf('xy') >= 0) S.math = 5;
+if (location.hash.indexOf('single') >= 0) { S.trmode='single'; singleLatched=false; }
 const ph = location.hash.match(/page=(\d)/);
 if (ph) S.page = Math.min(4, Math.max(0, parseInt(ph[1], 10)));
 const mh = location.hash.match(/math=(\d)/);
