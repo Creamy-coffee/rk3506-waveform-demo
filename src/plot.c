@@ -525,7 +525,8 @@ static void draw_ticks(lv_layer_t *layer, plot_t *p,
     }
     if(p->tk_ny > 0) {
         for(int j = 0; j < p->tk_ny && j < 5; j++) {
-            const int32_t cy = gy + (int32_t)((long)j * 2 * gh / (long)p->divy);
+            int32_t cy = gy + (int32_t)((long)j * 2 * gh / (long)p->divy);
+            if(j == 0) cy += 10;      /* 第一个刻度往下挪，别压在顶部信息行上 */
             text_w(layer, ox + 2, cy - 8, 60, p->tk_y[j], V32_C_CHIP_ON_FG, V32_FONT_SMALL);
         }
     }

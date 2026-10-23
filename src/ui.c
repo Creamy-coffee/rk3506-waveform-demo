@@ -1373,7 +1373,8 @@ static void update_axis_label(void)
         const char *xp[6], *yp[5];
         for(int i = 0; i < 6; i++) {
             const float t = (float)(i * 2 - V32_GRID_X / 2) * us_div;      /* µs */
-            if(fabsf(t) < 0.5f)        snprintf(xb[i], 12, "0");
+            if(fabsf(t) < 0.005f)      snprintf(xb[i], 12, "0");
+            else if(fabsf(t) < 1.f)    snprintf(xb[i], 12, "%.0fns", (double)(t * 1000.f));
             else if(fabsf(t) < 1000.f) snprintf(xb[i], 12, "%.0fµs", (double)t);
             else                       snprintf(xb[i], 12, "%.1fms", (double)(t / 1000.f));
             xp[i] = xb[i];
@@ -1397,8 +1398,9 @@ static void update_axis_label(void)
             else            snprintf(a1, sizeof a1, "%.1fV", (double)(mv / 1000.f));
         } else snprintf(a1, sizeof a1, "--");
         snprintf(a2, sizeof a2, "%s", S.ch2 ? a1 : "GND");
-        if(us_div < 1000.f) snprintf(td, sizeof td, "%.0fµs", (double)us_div);
-        else                snprintf(td, sizeof td, "%.1fms", (double)(us_div / 1000.f));
+        if(us_div < 1.f)         snprintf(td, sizeof td, "%.0fns", (double)(us_div * 1000.f));
+        else if(us_div < 1000.f) snprintf(td, sizeof td, "%.0fµs", (double)us_div);
+        else                     snprintf(td, sizeof td, "%.1fms", (double)(us_div / 1000.f));
         char curv[40] = "";
         if(s_cur_on && s_real_sc > 0.f) {
             const float dts = fabsf(s_cur_x[1] - s_cur_x[0]) * (float)span / fs;
