@@ -52,6 +52,11 @@ typedef struct {
 
     float iq_phase;          /* 度，数学约定：0°=+I 向右，逆时针为正 */
 
+    bool  cur_vis;           /* 测量光标 */
+    int   cur_n;
+    float cur_x[4];          /* 竖线位置 0..1 */
+    float cur_y[4];          /* 横线位置 0..1 */
+
     char axis_l[16];
     char axis_r[16];
     char leg0[10];
@@ -201,6 +206,22 @@ void plot_set_iq(lv_obj_t *plot, float phase_deg)
     plot_t *p = PLOT_OF(plot);
     if(p == NULL) return;
     p->iq_phase = phase_deg;
+    lv_obj_invalidate(plot);
+}
+
+void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, bool show)
+{
+    if(plot == NULL) return;
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    if(n < 0) n = 0;
+    if(n > 4) n = 4;
+    p->cur_n   = n;
+    p->cur_vis = show && n > 0;
+    for(int i = 0; i < n; i++) {
+        p->cur_x[i] = xs ? xs[i] : 0.5f;
+        p->cur_y[i] = ys ? ys[i] : 0.5f;
+    }
     lv_obj_invalidate(plot);
 }
 
@@ -424,6 +445,33 @@ static void draw_iq(lv_layer_t *layer, plot_t *p,
     text(layer, x0 + w - 20, cy - 16, "I", V32_C_CH1, V32_FONT_SMALL);
 }
 
+/* 测量光标：洋红虚线。用短线段拼虚线（这版 LVGL 的 dash 支持不稳）。 */
+static void draw_cursors(lv_layer_t *layer, plot_t *p,
+                         int32_t x0, int32_t y0, int32_t w, int32_t h)
+{
+    if(!p->cur_vis) return;
+
+    lv_draw_line_dsc_t ld;
+    lv_draw_line_dsc_init(&ld);
+    ld.color = V32_C_TRIGGER;
+    ld.width = 1;
+    ld.opa   = LV_OPA_COVER;
+
+    for(int i = 0; i < p->cur_n && i < 4; i++) {
+        if(i < 2) {                              /* 竖线：时间光标 */
+            const int32_t x = x0 + (int32_t)(p->cur_x[i] * (float)(w - 1));
+            for(int32_t y = y0; y < y0 + h - 1; y += 8)
+                line(layer, &ld, x, y, x, (y + 4 < y0 + h - 1) ? y + 4 : y0 + h - 1);
+            text(layer, x + 3, y0 + 6, (i == 0) ? "T1" : "T2", V32_C_TRIGGER, V32_FONT_SMALL);
+        } else {                                 /* 横线：电压光标 */
+            const int32_t y = y0 + (int32_t)(p->cur_y[i] * (float)(h - 1));
+            for(int32_t x = x0; x < x0 + w - 1; x += 8)
+                line(layer, &ld, x, y, (x + 4 < x0 + w - 1) ? x + 4 : x0 + w - 1, y);
+            text(layer, x0 + 4, y - 16, (i == 2) ? "V1" : "V2", V32_C_TRIGGER, V32_FONT_SMALL);
+        }
+    }
+}
+
 static void draw_trigger(lv_layer_t *layer, plot_t *p,
                          int32_t x0, int32_t y0, int32_t w, int32_t h)
 {
@@ -525,6 +573,7 @@ static void plot_draw_cb(lv_event_t *e)
         draw_one_trace(layer, p, 1, x0, y0, w, h);
         /* PLOT_FFT 也画游标线：频谱页要用手指点选频率（cb_fft_cursor） */
         if(p->mode == PLOT_SCOPE || p->mode == PLOT_FFT) draw_trigger(layer, p, x0, y0, w, h);
+        if(p->mode == PLOT_SCOPE) draw_cursors(layer, p, x0, y0, w, h);
         if(p->mode == PLOT_FFT)   draw_peak(layer, p, x0, y0, w, h);
     }
 

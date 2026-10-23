@@ -140,6 +140,7 @@ static lv_obj_t *s_lbl_den_title;
 static lv_obj_t *s_lbl_recon_badge;      /* 示波器页右上角「重建」牌 */
 static lv_obj_t *s_lbl_fft_cur;
 static lv_obj_t *s_lbl_fft_title;
+static lv_obj_t *s_chip_cur;    /* 光标开关芯片 */
 static lv_obj_t *s_chip_trig;   /* 触发选择芯片 */
 static lv_obj_t *s_chip_math;   /* Math 选择芯片 */
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
@@ -609,6 +610,7 @@ static float phase_diff_deg(const float *x0, const float *x1, int n,
 }
 
 static void update_axis_label(void);
+static void cb_scope_touch(lv_event_t *e);   /* 光标拖动：build_scope 里注册，定义在后面 */
 static void sync_timebase_dd(float us_div);
 
 /*
@@ -965,6 +967,11 @@ static meas_t s_m1;      /* CH1 的测量结果 */
  * 只做加减：乘除的量纲是 V²/无量纲，跟同一套纵轴放不下（原型里靠独立档位，
  * 设备上这块屏没有位置再放一个档位，先做加法/减法这两个真正实用的）。 */
 /* 触发：0=关 1=自动 2=正常；边沿 0=升 1=降；电平按帧内 min..max 归一化 */
+/* 测量光标：2 竖（T1/T2）+ 2 横（V1/V2），都是 0..1 的相对位置 */
+static int   s_cur_on;
+static float s_cur_x[2] = { 0.30f, 0.70f };
+static float s_cur_y[2] = { 0.35f, 0.65f };
+
 static int   s_trig_mode, s_trig_edge;
 static float s_trig_lev = 0.5f;
 
@@ -1503,6 +1510,8 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_set_style_pad_column(pg, V32_PAGE_GAP, LV_PART_MAIN);
 
     s_plot_scope = plot_create(pg, PLOT_SCOPE);
+    /* 光标拖动：按下和移动都抓最近那条线 */
+    lv_obj_add_event_cb(s_plot_scope, cb_scope_touch, LV_EVENT_PRESSING, NULL);
     lv_obj_set_flex_grow(s_plot_scope, 1);
     lv_obj_set_height(s_plot_scope, MAIN_H);
 
@@ -2097,6 +2106,50 @@ static void cb_fch_auto(lv_event_t *e) { LV_UNUSED(e); fft_ch_set(0); }
 static void cb_fch_ch1 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(1); }
 static void cb_fch_ch2 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(2); }
 
+/*
+ * 光标拖动：按下/移动时抓**最近**的那条线（±0.08 归一化，约 ±55 px），
+ * 只允许在够近时抓，否则手指一点就把线吸过去 —— 用起来会很难受。
+ */
+static void cb_scope_touch(lv_event_t *e)
+{
+    if(!s_cur_on || s_plot_scope == NULL) return;
+    lv_indev_t *ind = lv_event_get_indev(e);
+    if(ind == NULL) return;
+
+    lv_point_t pt;
+    lv_indev_get_point(ind, &pt);
+
+    lv_area_t a;
+    lv_obj_get_coords(s_plot_scope, &a);
+    const int w = a.x2 - a.x1, h = a.y2 - a.y1;
+    if(w < 10 || h < 10) return;
+
+    float rx = (float)(pt.x - a.x1) / (float)w;
+    float ry = (float)(pt.y - a.y1) / (float)h;
+    if(rx < 0.f) rx = 0.f;
+    if(rx > 1.f) rx = 1.f;
+    if(ry < 0.f) ry = 0.f;
+    if(ry > 1.f) ry = 1.f;
+
+    int best = -1; float bd = 0.08f;
+    for(int i = 0; i < 2; i++) { float d = fabsf(rx - s_cur_x[i]); if(d < bd) { bd = d; best = i; } }
+    for(int i = 0; i < 2; i++) { float d = fabsf(ry - s_cur_y[i]); if(d < bd) { bd = d; best = 2 + i; } }
+    if(best < 0) return;
+
+    if(best < 2) s_cur_x[best] = rx;
+    else         s_cur_y[best - 2] = ry;
+    ui_tick();
+}
+
+static void cb_cur_cycle(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    s_cur_on = !s_cur_on;
+    if(s_chip_cur) { chip_set_text(s_chip_cur, s_cur_on ? "开" : "关");
+                     chip_selected(s_chip_cur, s_cur_on != 0); }
+    ui_tick();
+}
+
 static void cb_trig_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
@@ -2340,6 +2393,13 @@ static void build_controls(lv_obj_t *root)
         chip_selected(s_chip_math, true);
     }
 
+    /* 光标开/关 */
+    {
+        lv_obj_t *gcu = mk_group(cp, "光标");
+        s_chip_cur = mk_chip(gcu, "关", cb_cur_cycle);
+        chip_selected(s_chip_cur, false);
+    }
+
     /* 触发：关 -> 自动↑ -> 自动↓ -> 正常↑ -> 正常↓ */
     {
         lv_obj_t *gt = mk_group(cp, "触发");
@@ -2497,6 +2557,13 @@ static void tick_scope(void)
     else      plot_hide_trace(s_plot_scope, 0);
     if(S.ch2) plot_set_trace(s_plot_scope, 1, ch2, n, V32_C_CH2, 2);
     else      plot_hide_trace(s_plot_scope, 1);
+
+    /* 测量光标（2 竖 + 2 横） */
+    {
+        const float xs[2] = { s_cur_x[0], s_cur_x[1] };
+        const float ys[2] = { s_cur_y[0], s_cur_y[1] };
+        plot_set_cursors(s_plot_scope, 4, xs, ys, s_cur_on != 0);
+    }
 
     /* Math 迹线（亮绿）：A+B / A-B。用自己的量程画，纵向不会被 CH1 压扁。 */
     if(s_math_mode && s_real_valid && s_full_n >= 2) {
