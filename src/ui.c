@@ -616,7 +616,8 @@ static float phase_diff_deg(const float *x0, const float *x1, int n,
 }
 
 static void update_axis_label(void);
-static void cb_scope_touch(lv_event_t *e);   /* 光标拖动：build_scope 里注册，定义在后面 */
+static void cb_scope_touch(lv_event_t *e);
+static void trig_refresh(void);   /* 光标拖动：build_scope 里注册，定义在后面 */
 static void sync_timebase_dd(float us_div);
 
 /*
@@ -2868,6 +2869,8 @@ static void tick_scope(void)
             }
         }
     }
+
+    trig_refresh();
 
     /* 相位差：只有锁相可用时才显示，否则「—」 */
     if(real) {

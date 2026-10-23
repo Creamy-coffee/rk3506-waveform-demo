@@ -354,6 +354,24 @@ static void draw_grid(lv_layer_t *layer, plot_t *p,
     ld.width = 1;
     ld.opa = LV_OPA_COVER;
 
+    /*
+     * 细网格：每大格再分 5 小格（照 HTML 原型的点阵感）。
+     * 先画细的（透明度低），再画大格，层次才对 —— 反过来细线会盖住粗线。
+     */
+    ld.opa = (lv_opa_t)(LV_OPA_COVER / 3);
+    int k;
+    for(k = 1; k < p->divx * 5; k++) {
+        if(k % 5 == 0) continue;                  /* 大格位置留空 */
+        int32_t x = x0 + (int32_t)((int64_t)w * k / (p->divx * 5));
+        line(layer, &ld, x, y0, x, y0 + h - 1);
+    }
+    for(k = 1; k < p->divy * 5; k++) {
+        if(k % 5 == 0) continue;
+        int32_t y = y0 + (int32_t)((int64_t)h * k / (p->divy * 5));
+        line(layer, &ld, x0, y, x0 + w - 1, y);
+    }
+    ld.opa = LV_OPA_COVER;
+
     int i;
     for(i = 1; i < p->divx; i++) {
         int32_t x = x0 + (int32_t)((int64_t)w * i / p->divx);
@@ -364,13 +382,14 @@ static void draw_grid(lv_layer_t *layer, plot_t *p,
         line(layer, &ld, x0, y, x0 + w - 1, y);
     }
 
-    if(p->center_dash) {
-        ld.color = p->center_color;
-        ld.dash_width = 4;
-        ld.dash_gap   = 6;
-        const int32_t yc = y0 + h / 2;
-        line(layer, &ld, x0, yc, x0 + w - 1, yc);
-    }
+    /* 中心十字的短刻度（照 HTML：沿中心线每 8px 一个小刻） */
+    ld.color = p->center_color;
+    const int32_t yc = y0 + h / 2;
+    const int32_t xc = x0 + w / 2;
+    for(int32_t x = x0 + 6; x < x0 + w - 6; x += 8)
+        line(layer, &ld, x, yc - 3, x, yc + 3);
+    for(int32_t y = y0 + 6; y < y0 + h - 6; y += 8)
+        line(layer, &ld, xc - 3, y, xc + 3, y);
 }
 
 static void draw_one_trace(lv_layer_t *layer, plot_t *p, int ti,
