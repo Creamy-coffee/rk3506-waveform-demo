@@ -65,7 +65,7 @@
  * 差在浏览器 normal line-height 与实际字体度量的出入上 —— 所以以实测为准。
  * 我们改行高之后，第一条分隔线落在 y=129，参考稿 130，只差 1px。
  */
-#define METRIC_H  39
+#define METRIC_H  32   /* 原来是 39；示波器页要放 9 行读数（Vpp..占空比），压缩到 32 */
 /* .kv 一行：13px 字体行高 15 + 上下各 6 + 1px 下边框 */
 #define KV_H      28
 /* .panel-title 那一行 + margin-bottom */
@@ -124,6 +124,7 @@ static lv_obj_t *s_plot_scope, *s_plot_fft, *s_plot_iq, *s_plot_lock;
 static lv_obj_t *s_plot_raw, *s_plot_den;
 
 static lv_obj_t *s_lbl_scope_freq, *s_lbl_v1, *s_lbl_v2, *s_lbl_phase;
+static lv_obj_t *s_lbl_m_vmax, *s_lbl_m_vmin, *s_lbl_m_vrms, *s_lbl_m_per, *s_lbl_m_duty;
 static lv_obj_t *s_lbl_scope_axis;
 static lv_obj_t *s_lbl_fft_peakf, *s_lbl_fft_peakl, *s_lbl_fft_floor, *s_lbl_fft_win;
 static lv_obj_t *s_lbl_lock_ref, *s_lbl_lock_amp, *s_lbl_lock_phase, *s_lbl_lock_tau;
@@ -875,6 +876,89 @@ static void auto_decimation(void)
     if(v32_send_decimation(want) == 0) s_tries++;
 }
 
+/* ===== 自动测量（与 tools/scope_proto_1024.html 里同一套算法）=====
+ * 输入是 ADC 码值（s_full 系列就是这个单位），显示时再乘 mV/码。
+ * 数值一律按**整数个周期**统计 —— 整帧平均会把首尾半个周期算进去，
+ * 对称方波会凭空多出几十 mV 的直流，那是假数。
+ */
+typedef struct {
+    float vmax, vmin, vpp, vamp, vrms, vavg;   /* ADC 码 */
+    float period_s, freq_hz, duty, rise_s;
+    int   cycles;
+    int   ok;                                   /* 找到周期 = 1 */
+} meas_t;
+
+static void measure_buf(const float *x, int n, float fs, meas_t *m)
+{
+    memset(m, 0, sizeof *m);
+    if (!x || n < 8 || fs <= 0.0f) return;
+
+    float mn = x[0], mx = x[0];
+    for (int i = 1; i < n; i++) { if (x[i] < mn) mn = x[i]; if (x[i] > mx) mx = x[i]; }
+    m->vmin = mn; m->vmax = mx; m->vpp = mx - mn; m->vamp = (mx - mn) * 0.5f;
+
+    const float mid = (mn + mx) * 0.5f;
+    if (m->vpp < 1.0f) return;                  /* 信号太小，周期/占空比没意义 */
+
+    /* 过零计数求周期（中点 + 滞回，避免噪声在阈值上反复触发） */
+    int rise[256]; int nr = 0;
+    int hi = (x[0] > mid);
+    for (int i = 1; i < n && nr < 256; i++) {
+        const int now = (x[i] > mid);
+        if (!hi && now) rise[nr++] = i;
+        hi = now;
+    }
+
+    /* 先给个整帧的兜底值 */
+    float su = 0.0f, sq = 0.0f;
+    for (int i = 0; i < n; i++) { su += x[i]; sq += x[i] * x[i]; }
+    m->vavg = su / (float)n;
+    m->vrms = sqrtf(sq / (float)n);
+
+    if (nr < 2) return;
+    float acc = 0.0f;
+    for (int i = 1; i < nr; i++) acc += (float)(rise[i] - rise[i-1]);
+    const float avg = acc / (float)(nr - 1);
+    m->period_s = avg / fs;
+    m->freq_hz  = 1.0f / m->period_s;
+    m->ok = 1;
+
+    /* 占空比：中点以上的样点数 / 周期 */
+    int hiAcc = 0, seg = 0;
+    for (int i = 1; i < nr; i++) {
+        int w = 0;
+        for (int j = rise[i-1]; j < rise[i]; j++) if (x[j] > mid) w++;
+        hiAcc += w; seg++;
+    }
+    if (seg > 0) m->duty = (float)hiAcc / (float)seg / avg;
+
+    /* 有效值/平均值：整数个周期 */
+    const int per = (int)(avg + 0.5f);
+    if (per > 2) {
+        const int st = rise[0];
+        const int en = st + per * ((n - st - 1) / per);
+        float s2 = 0.0f, q2 = 0.0f; int c = 0;
+        for (int i = st; i < en; i++) { s2 += x[i]; q2 += x[i] * x[i]; c++; }
+        if (c > 0) {
+            m->vavg = s2 / (float)c;
+            m->vrms = sqrtf(q2 / (float)c);
+            m->cycles = c / per;
+        }
+    }
+
+    /* 上升时间 10%→90%（第一个完整边沿） */
+    const float lo = mn + m->vpp * 0.1f, hiL = mn + m->vpp * 0.9f;
+    for (int i = 1; i < n; i++) {
+        if (x[i-1] < lo && x[i] >= lo) {
+            for (int j = i; j < n; j++)
+                if (x[j] >= hiL) { m->rise_s = (float)(j - (i-1)) / fs; break; }
+            break;
+        }
+    }
+}
+
+static meas_t s_m1;      /* CH1 的测量结果 */
+
 static void real_update(void)
 {
     /*
@@ -941,6 +1025,13 @@ static void real_update(void)
         if(d0[i] > a_hi) a_hi = d0[i];
         if(d1[i] < b_lo) b_lo = d1[i];
         if(d1[i] > b_hi) b_hi = d1[i];
+    }
+
+    /* 有了样点就算全套测量（跟绘图共用同一帧，读数不会跟波形对不上） */
+    {
+        const wave_source_t *ms = wave_source_get();
+        const float fse = (ms && ms->sample_rate > 0) ? (float)ms->sample_rate : 65000000.0f;
+        measure_buf(s_full0, fn, fse, &s_m1);
     }
 
     s_real_vpp0_mv = (a_hi - a_lo) * V32_ADC_MV_PER_LSB;
@@ -1401,7 +1492,11 @@ static void build_scope(lv_obj_t *pg)
     s_lbl_v2         = mk_metric(p1, TITLE_H + METRIC_H * 1, "CH2 峰峰值",  "18.7 mV",    V32_C_CH2);
     s_lbl_scope_freq = mk_metric(p1, TITLE_H + METRIC_H * 2, "频率",       "10.000 MHz", V32_C_METRIC_VALUE);
     s_lbl_phase      = mk_metric(p1, TITLE_H + METRIC_H * 3, "相位差",     "43.7°",      V32_C_METRIC_VALUE);
-    mk_metric(p1, TITLE_H + METRIC_H * 4, "触发", "自动", V32_C_GREEN);
+    s_lbl_m_vmax     = mk_metric(p1, TITLE_H + METRIC_H * 4, "最大值",     "2.10 V",     V32_C_METRIC_VALUE);
+    s_lbl_m_vmin     = mk_metric(p1, TITLE_H + METRIC_H * 5, "最小值",     "-2.10 V",    V32_C_METRIC_VALUE);
+    s_lbl_m_vrms     = mk_metric(p1, TITLE_H + METRIC_H * 6, "有效值",     "1.77 V",     V32_C_METRIC_VALUE);
+    s_lbl_m_per      = mk_metric(p1, TITLE_H + METRIC_H * 7, "周期",       "100.0 µs",   V32_C_METRIC_VALUE);
+    s_lbl_m_duty     = mk_metric(p1, TITLE_H + METRIC_H * 8, "占空比",     "50.0 %",     V32_C_METRIC_VALUE);
 
     /*
      * ⚠️ 这里必须把面板自己的 2px 边框算进去（V32_PANEL_BW * 2）。
@@ -2346,6 +2441,34 @@ static void tick_scope(void)
         lv_label_set_text(s_lbl_scope_freq, "0.000 MHz");
     } else {
         lv_label_set_text_fmt(s_lbl_scope_freq, "%.3f MHz", (double)FREQ_MHZ[S.freq_idx]);
+    }
+
+    /* 自动测量：单位换算统一在这里，面板只管排版 */
+    {
+        const bool mv = (S.use_real && s_real_valid && s_m1.vpp > 0.5f);
+        char tbuf[24];
+        const float k = V32_ADC_MV_PER_LSB / 1000.0f;   /* 码 -> 伏 */
+        if (!mv) {
+            lv_label_set_text(s_lbl_m_vmax, "—");
+            lv_label_set_text(s_lbl_m_vmin, "—");
+            lv_label_set_text(s_lbl_m_vrms, "—");
+            lv_label_set_text(s_lbl_m_per,  "—");
+            lv_label_set_text(s_lbl_m_duty, "—");
+        } else {
+            lv_label_set_text_fmt(s_lbl_m_vmax, "%.3f V", (double)(s_m1.vmax * k));
+            lv_label_set_text_fmt(s_lbl_m_vmin, "%.3f V", (double)(s_m1.vmin * k));
+            lv_label_set_text_fmt(s_lbl_m_vrms, "%.3f V", (double)(s_m1.vrms * k));
+            if (s_m1.ok) {
+                const double T = (double)s_m1.period_s;
+                if (T < 1e-3) snprintf(tbuf, sizeof tbuf, "%.2f µs", T * 1e6);
+                else          snprintf(tbuf, sizeof tbuf, "%.2f ms", T * 1e3);
+                lv_label_set_text(s_lbl_m_per, tbuf);
+                lv_label_set_text_fmt(s_lbl_m_duty, "%.1f %%", (double)(s_m1.duty * 100.0f));
+            } else {
+                lv_label_set_text(s_lbl_m_per,  "—");
+                lv_label_set_text(s_lbl_m_duty, "—");
+            }
+        }
     }
 
     /* 相位差：只有锁相可用时才显示，否则「—」 */
