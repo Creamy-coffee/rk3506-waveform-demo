@@ -1291,7 +1291,7 @@ static void fetch_scope(int ch, float *y01, int n)
          */
         if(!s_ai_autoframed && s_real_valid && s_real_peak_hz > 0.0f
            && S.ai && wf_can_reconstruct()
-           && (s_zoom_span <= 0 || s_zoom_span >= PLOT_MAX_PTS * 2)) {
+           && (s_zoom_span <= 0 || s_zoom_span > 128)) {
             S.auto_fit = true;
             s_ai_autoframed = true;
         }
@@ -3129,7 +3129,7 @@ static void tick_ai(void)
          */
         if(!s_ai_autoframed && s_real_valid && s_real_peak_hz > 0.0f
            && S.ai && wf_can_reconstruct()
-           && (s_zoom_span <= 0 || s_zoom_span >= PLOT_MAX_PTS * 2)) {
+           && (s_zoom_span <= 0 || s_zoom_span > 128)) {
             S.auto_fit = true;
             s_ai_autoframed = true;
         }
