@@ -1076,7 +1076,13 @@ static void real_update(void)
      * （**不要**写成"相邻两点必须跨过 lv±hys"——采样率低时一个周期内
      *  样点跳不过 2×hys，那会变成一次也触发不到，之前踩过这个坑。）
      */
-    if(s_trig_mode && fn > 8) {
+    /*
+     * 触发只挪**示波器页**的窗口。
+     * 重建页有它自己的 auto-fit 取窗（框到 10 个周期），频谱页也各有各的窗口；
+     * 两处同时写 s_zoom_start 会互相把对方的窗口拉回去 —— 表现就是
+     * "一开触发，重建页的重建就没了"（其实每帧都在重算，窗口在跳）。
+     */
+    if(s_trig_mode && S.page == UI_PAGE_SCOPE && fn > 8) {
         float lo = s_full0[0], hi = s_full0[0];
         for (int i = 1; i < fn; i++) {
             if (s_full0[i] < lo) lo = s_full0[i];
