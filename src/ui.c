@@ -49,9 +49,9 @@
  *   x: .main 内容 13..1010（998），右栏 776..1010（235），绘图区 13..766（754）
  * ========================================================= */
 #define MAIN_X0   V32_MAIN_PAD_X                                            /* +1 = 13 */
-#define MAIN_Y0   (V32_ROW_TOP + V32_MAIN_PAD_T)                            /* +1 = 58 */
+#define MAIN_Y0   (V32_MAIN_PAD_T)                                          /* 顶栏隐藏后贴顶，原 58 */
 #define MAIN_W    (V32_SHELL_W - 2 * V32_MAIN_PAD_X)                        /* 998 */
-#define MAIN_H    (V32_ROW_MAIN - V32_MAIN_PAD_T - V32_MAIN_PAD_B)          /* 385 */
+#define MAIN_H    (V32_ROW_MAIN + V32_ROW_TOP - V32_MAIN_PAD_T - V32_MAIN_PAD_B)  /* 顶栏让出的 48px 全给绘图区 */
 #define CTRL_Y0   (V32_ROW_TOP + V32_ROW_MAIN)                              /* +1 = 451 */
 #define NAV_Y0    (CTRL_Y0 + V32_ROW_CTRL)                                  /* +1 = 543 */
 
