@@ -538,6 +538,7 @@ static int      s_full_n;
  * 横向捏放改「看多长一段」，纵向捏放改「一格多少毫伏」，两件事互不影响。
  */
 static int      s_zoom_span;
+static float    s_vdiv_mv;       /* 手动垂直档位 mV/格；0 = 自动 */
 static int      s_tb_idx = 4;      /* 当前时基档位下标 */
 static int      s_zoom_start;
 
@@ -665,8 +666,17 @@ static void auto_fit_apply(int fn)
         }
         float span = mx - mn;
         if(span < 1e-3f) span = 1e-3f;
-        s_real_lo = mn - span * 0.05f;
-        s_real_sc = 1.0f / (span * 1.10f);
+        if(s_vdiv_mv > 0.f) {
+            /* 手动档位：满屏 = 档位 × 格数，以信号中点为中心。
+               这才是示波器的 V/div —— 用户调的是"每格多少伏"。 */
+            const float full = s_vdiv_mv / V32_ADC_MV_PER_LSB * (float)V32_GRID_Y;
+            const float mid  = (mn + mx) * 0.5f;
+            s_real_lo = mid - full * 0.5f;
+            s_real_sc = 1.0f / full;
+        } else {
+            s_real_lo = mn - span * 0.05f;
+            s_real_sc = 1.0f / (span * 1.10f);
+        }
     }
 
     s_gain = 1.0f;
@@ -976,8 +986,10 @@ static meas_t s_m1;      /* CH1 的测量结果 */
 /* 触发：0=关 1=自动 2=正常；边沿 0=升 1=降；电平按帧内 min..max 归一化 */
 /* 测量光标：2 竖（T1/T2）+ 2 横（V1/V2），都是 0..1 的相对位置 */
 /* 垂直增益（手动档位）：1× / 2× / 4× / 0.5× / 0.25×，乘在归一化后的 y 上 */
-static int   s_vgain;
-static const float VGAINS[5] = { 1.0f, 2.0f, 4.0f, 0.5f, 0.25f };
+/* 垂直档位：直接给"每格多少伏"（示波器的 V/div），不是倍率。
+   0 = 自动（按信号幅度自适应）。范围 10mV/格 ~ 5V/格。 */
+static int   s_vdiv_idx;
+static const float VDIVS_MV[10] = { 0.f, 5000.f, 2000.f, 1000.f, 500.f, 200.f, 100.f, 50.f, 20.f, 10.f };
 
 static int   s_cur_on;
 static float s_cur_x[2] = { 0.30f, 0.70f };
@@ -1115,8 +1127,16 @@ static void real_update(void)
         const float mx = (a_hi > b_hi) ? a_hi : b_hi;
         float span = mx - mn;
         if(span < 1e-3f) span = 1e-3f;
-        s_real_lo = mn - span * 0.05f;
-        s_real_sc = 1.0f / (span * 1.10f);
+        if(s_vdiv_mv > 0.f) {
+            /* 手动档位（真正的显示路径）：满屏 = 档位 × 格数，以信号中点为中心 */
+            const float full = s_vdiv_mv / V32_ADC_MV_PER_LSB * (float)V32_GRID_Y;
+            const float mid2 = (mn + mx) * 0.5f;
+            s_real_lo = mid2 - full * 0.5f;
+            s_real_sc = 1.0f / full;
+        } else {
+            s_real_lo = mn - span * 0.05f;
+            s_real_sc = 1.0f / (span * 1.10f);
+        }
     }
 
     memcpy(s_real_d0, d0, (size_t)dn * sizeof(float));
@@ -2269,12 +2289,17 @@ static void cb_tb_auto(lv_event_t *e){ LV_UNUSED(e); int d; tb_default(&d); tb_a
 
 static void vg_label(void)
 {
-    if(s_chip_vg) { chip_set_text(s_chip_vg, s_vgain == 0 ? "自动" : (s_vgain == 3 ? "1/2" : (s_vgain == 4 ? "1/4" : (s_vgain == 2 ? "4x" : "2x"))));
-                    chip_selected(s_chip_vg, s_vgain != 0); }
+    if(!s_chip_vg) return;
+    if(s_vdiv_idx == 0) { chip_set_text(s_chip_vg, "自动"); chip_selected(s_chip_vg, false); return; }
+    char b[12];
+    if(VDIVS_MV[s_vdiv_idx] >= 1000.f) snprintf(b, sizeof b, "%.1fV", (double)(VDIVS_MV[s_vdiv_idx] / 1000.f));
+    else                               snprintf(b, sizeof b, "%.0fmV", (double)VDIVS_MV[s_vdiv_idx]);
+    chip_set_text(s_chip_vg, b);
+    chip_selected(s_chip_vg, true);
 }
-static void cb_vg_dec(lv_event_t *e) { LV_UNUSED(e); if(s_vgain > 0) s_vgain--; vg_label(); }
-static void cb_vg_inc(lv_event_t *e) { LV_UNUSED(e); if(s_vgain < 4) s_vgain++; vg_label(); }
-static void cb_vg_auto(lv_event_t *e){ LV_UNUSED(e); s_vgain = 0; vg_label(); }
+static void cb_vg_dec(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx > 0) s_vdiv_idx--; s_vdiv_mv = VDIVS_MV[s_vdiv_idx]; vg_label(); }
+static void cb_vg_inc(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx < 9) s_vdiv_idx++; s_vdiv_mv = VDIVS_MV[s_vdiv_idx]; vg_label(); }
+static void cb_vg_auto(lv_event_t *e){ LV_UNUSED(e); s_vdiv_idx = 0; s_vdiv_mv = 0.f; vg_label(); }
 
 static void cb_cur_cycle(lv_event_t *e)
 {
@@ -2741,8 +2766,8 @@ static void tick_scope(void)
 
     /* 手动垂直档位：在 0..1 归一化之后按倍数放大/缩小，围绕中心线缩放。
        超出 0..1 的部分被裁掉 —— 真示波器超出屏幕也是这样，不会偷偷重新缩放。 */
-    if(s_vgain != 0) {
-        const float g = VGAINS[s_vgain];
+    if(0) {   /* 旧的倍率缩放已废弃：档位现在直接改纵向标定（见 s_vdiv_mv） */
+        const float g = 1.0f;
         for(int i = 0; i < n; i++) {
             float v = 0.5f + (ch1[i] - 0.5f) * g; if(v < 0.f) v = 0.f; if(v > 1.f) v = 1.f; ch1[i] = v;
             float w = 0.5f + (ch2[i] - 0.5f) * g; if(w < 0.f) w = 0.f; if(w > 1.f) w = 1.f; ch2[i] = w;
