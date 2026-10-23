@@ -39,7 +39,8 @@ const C = {
   gridMinor:'#072a0e',
   frame:'#1f7a2a',         /* 外框亮绿 */
   trace1:'#cfe6f5',        /* 浅蓝白迹线 */
-  trace2:'#ffd24a',        /* 第二通道琥珀色 */
+  trace2:'#ffd24a',
+  math:'#7cff9a',          /* 数学迹线：亮绿 */        /* 第二通道琥珀色 */
   label:'#35cc45',         /* 标签绿 */
   value:'#e8f2e8',         /* 数值白 */
   trig:'#ff45ff',          /* 触发/光标洋红 */
@@ -62,12 +63,15 @@ const S = {
   /* 触发 */
   trmode:'auto', tredge:'rise', trlev:0,
   /* 显示 */
-  xyMode:false, curOn:true,
+  math:0,                    /* 0=关 1=A+B 2=A-B 3=A×B 4=A÷B 5=XY */
+  curOn:true,
   cur:{ t1:0.28, t2:0.62, v1:0.36, v2:0.68 },
   running:true,
 };
 
 let ch1 = new Float32Array(N_PTS);
+let chM = new Float32Array(N_PTS);   /* 数学运算结果 */
+let mathVdiv = 1;                  /* 数学迹线自己的垂直档位（V² 等量纲不一样，必须独立） */
 let ch2 = new Float32Array(N_PTS);
 let fsEff = N_PTS / (DX * S.tdiv);
 let trigIdx = 0, trigFound = false;
@@ -105,6 +109,26 @@ function genFrame(t0){
     ch2[i] = S.ch2En ? quant(v2) : 0;
   }
 }
+
+/* ---- 数学：点对点运算（和真示波器一样）---- */
+const MATH_NAMES = ['关', 'A+B', 'A−B', 'A×B', 'A÷B', 'XY'];
+const MATH_UNIT  = ['',   'V',   'V',   'V²',  '×',   ''];
+function computeMath() {
+  const m = S.math;
+  if (m < 1 || m > 4) return;
+  for (let i = 0; i < N_PTS; i++) {
+    const a = ch1[i], b = ch2[i];
+    chM[i] = m === 1 ? a + b
+           : m === 2 ? a - b
+           : m === 3 ? a * b
+           : (Math.abs(b) > 0.02 ? a / b : 0);   /* 除零要挡，否则一条竖线把整屏糊掉 */
+  }
+  /* 数学迹线量纲不同（A×B 是 V²），必须按它自己的幅度选档位 */
+  let mn = 1e9, mx = -1e9;
+  for (let i = 0; i < N_PTS; i++) { if (chM[i] < mn) mn = chM[i]; if (chM[i] > mx) mx = chM[i]; }
+  mathVdiv = niceStep(Math.max(mx - mn, 1e-6) / (DY * 0.8));
+}
+const isXY = () => S.math === 5;
 
 /* ---- 触发 ---- */
 function trigLevelV(){
@@ -201,8 +225,10 @@ function drawInfoBar(){
   put('A1=', fmtV(vdiv)+'/格', C.value);
   put('A2=', S.ch2En?fmtV(vscale2().vdiv)+'/格':'GND', S.ch2En?C.trace2:C.label);
   put('Time/Div=', fmtT(S.tdiv), C.value);
-  put('Trig=', (S.xyMode?'XY':('A1::'+(S.trmode==='auto'?'Auto':S.trmode==='normal'?'Norm':'Single'))),
+  put('Trig=', (isXY() ? 'XY' : ('A1::' + (S.trmode==='auto'?'Auto':S.trmode==='normal'?'Norm':'Single'))),
       C.trig);
+  if (S.math >= 1 && S.math <= 4)
+    put('Math=', MATH_NAMES[S.math] + ' ' + fmtV(mathVdiv) + MATH_UNIT[S.math] + '/格', C.math);
 
   /* 右上：帧率 / 点数（设备状态） */
   G.textAlign='right'; G.fillStyle=C.dim; G.font='12px Consolas,monospace';
@@ -217,7 +243,7 @@ function drawTraces(){
   G.save();
   G.beginPath(); G.rect(PL.x,PL.y,PL.w,PL.h); G.clip();
 
-  if(S.xyMode){
+  if(isXY()){
     /* ---------- XY：CH1 作 X 轴、CH2 作 Y 轴（李萨如） ---------- */
     const {vdiv:vd2, vmid:vm2} = {vdiv: vscale().vdiv, vmid: vscale().vmid};
     G.strokeStyle=C.trace1; G.lineWidth=1.6;
@@ -252,11 +278,24 @@ function drawTraces(){
     };
     if(S.ch2En) draw(ch2, C.trace2, 1.5);
     draw(ch1, C.trace1, 1.8);
+
+    /* 数学迹线：用自己的档位单独画（量纲可能不一样） */
+    if(S.math >= 1 && S.math <= 4){
+      G.strokeStyle = C.math; G.lineWidth = 1.6;
+      G.shadowColor = 'rgba(124,255,154,.35)'; G.shadowBlur = 4;
+      G.beginPath();
+      for(let i=0;i<N_PTS;i++){
+        const x = PL.x + (i/N_PTS + shift)*PL.w;
+        const y = PL.y + PL.h/2 - chM[i]/mathVdiv*(PL.h/DY);
+        if(i===0) G.moveTo(x,y); else G.lineTo(x,y);
+      }
+      G.stroke();
+    }
     G.shadowBlur=0;
   }
   G.restore();
 
-  if(!S.xyMode && trigFound && S.running) drawTrigMark();
+  if(!isXY() && trigFound && S.running) drawTrigMark();
 }
 
 function drawTrigMark(){
@@ -367,7 +406,7 @@ function drawAside(){
   G.fillStyle=C.label; G.font='bold 13px Consolas,monospace';
   G.fillText('CH1 测量', AS.x, AS.y+10);
 
-  const rows = S.xyMode ? [
+  const rows = isXY() ? [
     ['X 峰峰值', fmtV(m1.vpp)],
     ['X 最大值', fmtV(m1.mx)],
     ['X 最小值', fmtV(m1.mn)],
@@ -462,7 +501,8 @@ function drawControlBar(){
   add(72, S.tredge==='rise'?'边沿 ↑':'边沿 ↓', true, C.trig,
       ()=>{ S.tredge = S.tredge==='rise'?'fall':'rise'; });
   add(74, S.curOn?'光标 开':'光标 关', S.curOn, C.cur, ()=>{ S.curOn=!S.curOn; });
-  add(66, S.xyMode?'XY':'YT', S.xyMode, C.trace2, ()=>{ S.xyMode=!S.xyMode; });
+  add(92, '数学 '+MATH_NAMES[S.math], S.math>0, C.math,
+      ()=>{ S.math = (S.math+1) % MATH_NAMES.length; });
   add(86, '自动设置', false, null, autoSet);
   add(76, S.running?'运行中':'已停止', S.running, C.accent, ()=>{ S.running=!S.running; });
 }
@@ -558,6 +598,7 @@ function loop(ts){
     phaseT += (1/Math.max(fps,30))*0.012;
     fsEff = N_PTS/(DX*S.tdiv);
     genFrame(phaseT);
+    computeMath();
     const ti = findTrigger();
     trigFound = ti>=0;
     if(trigFound) trigIdx=ti;
@@ -565,7 +606,7 @@ function loop(ts){
 
   drawGrid();
   drawTraces();
-  if(!S.xyMode) drawCursors(); else drawXYCursors();
+  if(!isXY()) drawCursors();
   drawInfoBar();
   drawScaleText();
   drawAside();
@@ -578,7 +619,9 @@ function loop(ts){
 function drawXYCursors(){}
 
 /* 调试用：文件名后加 #xy / #nocursor 直接进对应模式 */
-if (location.hash.indexOf('xy') >= 0) S.xyMode = true;
+if (location.hash.indexOf('xy') >= 0) S.math = 5;
+const mh = location.hash.match(/math=(\d)/);
+if (mh) S.math = Math.min(5, Math.max(0, parseInt(mh[1], 10)));
 
 requestAnimationFrame(loop);
 </script>
