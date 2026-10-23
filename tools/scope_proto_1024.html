@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>示波器 · 1024x600 设备原型</title>
+<style>
+html,body{margin:0;background:#000;height:100%;overflow:hidden}
+#wrap{width:1024px;height:600px;margin:0 auto;position:relative}
+canvas{display:block;width:1024px;height:600px;cursor:default}
+.tip{position:absolute;left:0;bottom:-22px;color:#2f5a38;font:12px/1 Consolas,monospace;width:100%;text-align:center}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv" width="1024" height="600"></canvas></div>
+
+<script>
+"use strict";
+/* =====================================================================
+ * 老式数字示波器风格 · 1024×600（7 寸屏）
+ * 布局：绘图区 10×8 格 + 右侧测量栏 + 底部控制条 + 底部导航
+ * 数据：模拟 FPGA 每帧 1024 点（双通道），量化 12bit / 2.441 mV per LSB
+ * ===================================================================== */
+
+const CV = document.getElementById('cv');
+const G  = CV.getContext('2d', { alpha:false });
+const W = 1024, H = 600;
+
+/* ---- 分区 ---- */
+const PL = { x: 64, y: 44, w: 696, h: 414 };   /* 绘图区：10x8 格（左边留刻度，下边留时间轴） */
+const DX = 10, DY = 8;
+const AS = { x: 772, y: 44, w: 236, h: 414 };  /* 右侧测量栏 */
+const CB = { x: 0, y: 486, w: W, h: 52 };      /* 控制条 */
+const NAV= { x: 0, y: 542, w: W, h: 58 };      /* 导航条 */
+
+/* ---- 经典配色（照参考图）---- */
+const C = {
+  bg:'#000000',
+  grid:'#0b3d14',          /* 暗绿网格 */
+  gridMinor:'#072a0e',
+  frame:'#1f7a2a',         /* 外框亮绿 */
+  trace1:'#cfe6f5',        /* 浅蓝白迹线 */
+  trace2:'#ffd24a',        /* 第二通道琥珀色 */
+  label:'#35cc45',         /* 标签绿 */
+  value:'#e8f2e8',         /* 数值白 */
+  trig:'#ff45ff',          /* 触发/光标洋红 */
+  dim:'#1d6b2a',
+  cur:'#ff45ff',
+  accent:'#35cc45',
+};
+
+const N_PTS = 1024;
+const MV_PER_LSB = 2.441;
+
+/* ---- 状态（全部保留上一版的能力）---- */
+const S = {
+  /* 信号源 */
+  wavetype:'sine', freq:10000, ampVpp:5, noise:0.006, offset:0,
+  phase2:90,                 /* CH2 相对 CH1 的相位（XY 模式看李萨如） */
+  ch2En:true, amp2Vpp:4,
+  /* 水平 / 垂直 */
+  tdiv:100e-6, hpos:0, vdiv:'auto', vpos:0,
+  /* 触发 */
+  trmode:'auto', tredge:'rise', trlev:0,
+  /* 显示 */
+  xyMode:false, curOn:true,
+  cur:{ t1:0.28, t2:0.62, v1:0.36, v2:0.68 },
+  running:true,
+};
+
+let ch1 = new Float32Array(N_PTS);
+let ch2 = new Float32Array(N_PTS);
+let fsEff = N_PTS / (DX * S.tdiv);
+let trigIdx = 0, trigFound = false;
+let dragTarget = null;
+let phaseT = 0, fps = 60, lastT = 0, fc = 0;
+
+/* =====================================================================
+ * 数据
+ * ===================================================================*/
+function wave(type, t, A, ph) {
+  const w = 2*Math.PI*S.freq*t + ph;
+  switch(type){
+    case 'sine':   return A*Math.sin(w);
+    case 'square': return Math.sin(w) >= 0 ? A : -A;
+    case 'tri':    return A*(2/Math.PI)*Math.asin(Math.sin(w));
+    case 'saw':    { const u=(S.freq*t + ph/(2*Math.PI))%1; return A*(2*(u<0?u+1:u)-1); }
+    case 'am':     return A*(1+0.6*Math.sin(2*Math.PI*S.freq*0.05*t))*Math.sin(w);
+    default: return 0;
+  }
+}
+function quant(v){
+  let c = Math.round(v*1000/MV_PER_LSB);
+  if(c>2047)c=2047; if(c<-2048)c=-2048;
+  return c*MV_PER_LSB/1000;
+}
+function genFrame(t0){
+  const dt = 1/fsEff;
+  const A1 = S.ampVpp/2, A2 = S.amp2Vpp/2;
+  const ph2 = S.phase2*Math.PI/180;
+  for(let i=0;i<N_PTS;i++){
+    const t = t0 + i*dt;
+    let v1 = wave(S.wavetype, t, A1, 0) + S.offset + (Math.random()*2-1)*S.noise;
+    let v2 = wave(S.wavetype, t, A2, ph2) + S.offset + (Math.random()*2-1)*S.noise;
+    ch1[i] = quant(v1);
+    ch2[i] = S.ch2En ? quant(v2) : 0;
+  }
+}
+
+/* ---- 触发 ---- */
+function trigLevelV(){
+  const {vmid, vspan} = vscale();
+  return vmid + S.trlev/100*(vspan/2)*0.95;
+}
+function findTrigger(){
+  const lv = trigLevelV(), up = S.tredge==='rise';
+  for(let i=Math.floor(N_PTS*0.25); i<N_PTS-1; i++){
+    const a=ch1[i-1], b=ch1[i];
+    if(up ? (a<lv && b>=lv) : (a>lv && b<=lv)) return i;
+  }
+  return -1;
+}
+
+/* ---- 垂直标定 ---- */
+function niceStep(x){
+  const p=Math.pow(10,Math.floor(Math.log10(x))), m=x/p;
+  return (m<1.5?1:m<3.5?2:m<7.5?5:10)*p;
+}
+function vscale(){
+  let vdiv;
+  if(S.vdiv==='auto'){
+    let mn=1e9,mx=-1e9;
+    for(let i=0;i<N_PTS;i++){
+      const a=ch1[i], b=S.ch2En?ch2[i]:a;
+      mn=Math.min(mn,a,b); mx=Math.max(mx,a,b);
+    }
+    vdiv = niceStep(Math.max(mx-mn,1e-3)/(DY*0.8));
+  } else vdiv = parseFloat(S.vdiv);
+  const vspan = vdiv*DY;
+  const vmid = S.offset + S.vpos/100*vspan*0.9;
+  return {vdiv, vspan, vmid};
+}
+
+/* =====================================================================
+ * 绘图
+ * ===================================================================*/
+function fmtV(v,d){ const a=Math.abs(v);
+  if(a<1e-9) return '0V';
+  if(a<1e-3) return (v*1e6).toFixed(0)+'µV';
+  if(a<1) return (v*1e3).toFixed(d===undefined?1:d)+'mV';
+  return v.toFixed(2)+'V'; }
+function fmtT(t){ const a=Math.abs(t);
+  if(a<1e-6) return (t*1e9).toFixed(1)+'ns';
+  if(a<1e-3) return (t*1e6).toFixed(2)+'µs';
+  if(a<1) return (t*1e3).toFixed(2)+'ms';
+  return t.toFixed(3)+'s'; }
+function fmtF(f){ if(!isFinite(f)) return '—';
+  if(f<1e3) return f.toFixed(2)+'Hz';
+  if(f<1e6) return (f/1e3).toFixed(3)+'kHz';
+  return (f/1e6).toFixed(3)+'MHz'; }
+
+function drawGrid(){
+  G.fillStyle=C.bg; G.fillRect(0,0,W,H);
+
+  /* 绘图区外框（参考图里那圈亮绿） */
+  G.strokeStyle=C.frame; G.lineWidth=2;
+  G.strokeRect(PL.x+.5, PL.y+.5, PL.w, PL.h);
+
+  /* 细网格：每大格 5 等分 */
+  G.strokeStyle=C.gridMinor; G.lineWidth=1;
+  G.beginPath();
+  const sx=PL.w/(DX*5), sy=PL.h/(DY*5);
+  for(let i=1;i<DX*5;i++){ const x=Math.round(PL.x+i*sx)+.5; G.moveTo(x,PL.y); G.lineTo(x,PL.y+PL.h); }
+  for(let j=1;j<DY*5;j++){ const y=Math.round(PL.y+j*sy)+.5; G.moveTo(PL.x,y); G.lineTo(PL.x+PL.w,y); }
+  G.stroke();
+
+  /* 大格（暗绿，参考图那种绿） */
+  G.strokeStyle=C.grid; G.lineWidth=1;
+  G.beginPath();
+  for(let i=1;i<DX;i++){ const x=Math.round(PL.x+i*PL.w/DX)+.5; G.moveTo(x,PL.y); G.lineTo(x,PL.y+PL.h); }
+  for(let j=1;j<DY;j++){ const y=Math.round(PL.y+j*PL.h/DY)+.5; G.moveTo(PL.x,y); G.lineTo(PL.x+PL.w,y); }
+  G.stroke();
+
+  /* 中心刻度（模拟示波器那圈细刻度） */
+  G.strokeStyle=C.dim;
+  G.beginPath();
+  const cx=Math.round(PL.x+PL.w/2)+.5, cy=Math.round(PL.y+PL.h/2)+.5;
+  for(let x=PL.x+6;x<PL.x+PL.w;x+=8){ G.moveTo(x,cy-3); G.lineTo(x,cy+3); }
+  for(let y=PL.y+6;y<PL.y+PL.h;y+=8){ G.moveTo(cx-3,y); G.lineTo(cx+3,y); }
+  G.stroke();
+}
+
+/* 顶栏：A1=… A2=… Time/Div=… Trigger=… （照参考图，全在一条线上） */
+function drawInfoBar(){
+  const {vdiv} = vscale();
+  G.textBaseline='middle'; G.font='bold 15px Consolas,monospace'; G.textAlign='left';
+  let x = PL.x + 6;
+  const put = (label, val, valColor) => {
+    G.fillStyle=C.label; G.fillText(label, x, 24); x += G.measureText(label).width;
+    G.fillStyle=valColor||C.value; G.fillText(val, x, 24); x += G.measureText(val).width + 22;
+  };
+  put('A1=', fmtV(vdiv)+'/格', C.value);
+  put('A2=', S.ch2En?fmtV(vscale2().vdiv)+'/格':'GND', S.ch2En?C.trace2:C.label);
+  put('Time/Div=', fmtT(S.tdiv), C.value);
+  put('Trig=', (S.xyMode?'XY':('A1::'+(S.trmode==='auto'?'Auto':S.trmode==='normal'?'Norm':'Single'))),
+      C.trig);
+
+  /* 右上：帧率 / 点数（设备状态） */
+  G.textAlign='right'; G.fillStyle=C.dim; G.font='12px Consolas,monospace';
+  G.fillText(`${N_PTS}pts  ${fps.toFixed(0)}fps  ${fmtF(fsEff)}`, W-16, 24);
+}
+function vscale2(){ const s=vscale(); return {vdiv:s.vdiv}; }
+
+function drawTraces(){
+  const {vdiv, vmid} = vscale();
+  const yOf = v => PL.y + PL.h/2 - (v-vmid)/vdiv*(PL.h/DY);
+
+  G.save();
+  G.beginPath(); G.rect(PL.x,PL.y,PL.w,PL.h); G.clip();
+
+  if(S.xyMode){
+    /* ---------- XY：CH1 作 X 轴、CH2 作 Y 轴（李萨如） ---------- */
+    const {vdiv:vd2, vmid:vm2} = {vdiv: vscale().vdiv, vmid: vscale().vmid};
+    G.strokeStyle=C.trace1; G.lineWidth=1.6;
+    G.shadowColor='rgba(207,230,245,.35)'; G.shadowBlur=4;
+    G.beginPath();
+    for(let i=0;i<N_PTS;i++){
+      const x = PL.x + PL.w/2 + ch1[i]/vdiv*(PL.w/DX);
+      const y = PL.y + PL.h/2 - (ch2[i]-vm2)/vd2*(PL.h/DY);
+      if(i===0) G.moveTo(x,y); else G.lineTo(x,y);
+    }
+    G.stroke();
+    G.shadowBlur=0;
+    /* XY 模式下画中心十字 */
+    G.strokeStyle=C.dim; G.lineWidth=1;
+    G.beginPath();
+    G.moveTo(PL.x+PL.w/2, PL.y); G.lineTo(PL.x+PL.w/2, PL.y+PL.h);
+    G.moveTo(PL.x, PL.y+PL.h/2); G.lineTo(PL.x+PL.w, PL.y+PL.h/2);
+    G.stroke();
+  } else {
+    const shift = trigFound ? (0.2 - trigIdx/N_PTS) : (S.hpos/100*0.5);
+    const draw = (buf,color,width) => {
+      G.strokeStyle=color; G.lineWidth=width;
+      G.shadowColor = color===C.trace1 ? 'rgba(207,230,245,.35)' : 'rgba(255,210,74,.3)';
+      G.shadowBlur=4;
+      G.beginPath();
+      for(let i=0;i<N_PTS;i++){
+        const x = PL.x + (i/N_PTS + shift)*PL.w;
+        const y = yOf(buf[i]);
+        if(i===0) G.moveTo(x,y); else G.lineTo(x,y);
+      }
+      G.stroke();
+    };
+    if(S.ch2En) draw(ch2, C.trace2, 1.5);
+    draw(ch1, C.trace1, 1.8);
+    G.shadowBlur=0;
+  }
+  G.restore();
+
+  if(!S.xyMode && trigFound && S.running) drawTrigMark();
+}
+
+function drawTrigMark(){
+  const {vdiv,vmid} = vscale();
+  const y = PL.y + PL.h/2 - (trigLevelV()-vmid)/vdiv*(PL.h/DY);
+  if(y<PL.y||y>PL.y+PL.h) return;
+  G.save();
+  G.strokeStyle=C.trig; G.fillStyle=C.trig; G.globalAlpha=.85;
+  G.beginPath();
+  G.moveTo(PL.x,y); G.lineTo(PL.x+20,y);
+  G.moveTo(PL.x+PL.w-20,y); G.lineTo(PL.x+PL.w,y);
+  G.stroke();
+  /* 右侧电平箭头 */
+  G.beginPath();
+  G.moveTo(PL.x+PL.w+3,y); G.lineTo(PL.x+PL.w+12,y-6); G.lineTo(PL.x+PL.w+12,y+6);
+  G.closePath(); G.fill();
+  /* 顶部触发位置 */
+  const xt = PL.x + 0.2*PL.w;
+  G.beginPath(); G.moveTo(xt,PL.y+2); G.lineTo(xt-6,PL.y+11); G.lineTo(xt+6,PL.y+11);
+  G.closePath(); G.fill();
+  G.restore(); G.globalAlpha=1;
+}
+
+/* ---- 洋红虚线光标（参考图那种）---- */
+function drawCursors(){
+  if(!S.curOn) return;
+  G.save();
+  G.beginPath(); G.rect(PL.x,PL.y,PL.w,PL.h); G.clip();
+  G.setLineDash([7,5]); G.lineWidth=1.2; G.strokeStyle=C.cur;
+  G.beginPath();
+  G.moveTo(PL.x+S.cur.t1*PL.w, PL.y); G.lineTo(PL.x+S.cur.t1*PL.w, PL.y+PL.h);
+  G.moveTo(PL.x+S.cur.t2*PL.w, PL.y); G.lineTo(PL.x+S.cur.t2*PL.w, PL.y+PL.h);
+  G.moveTo(PL.x, PL.y+S.cur.v1*PL.h); G.lineTo(PL.x+PL.w, PL.y+S.cur.v1*PL.h);
+  G.moveTo(PL.x, PL.y+S.cur.v2*PL.h); G.lineTo(PL.x+PL.w, PL.y+S.cur.v2*PL.h);
+  G.stroke();
+  G.setLineDash([]);
+  /* 交点小方块 */
+  G.fillStyle=C.cur;
+  for(const t of [S.cur.t1,S.cur.t2]) for(const v of [S.cur.v1,S.cur.v2])
+    G.fillRect(PL.x+t*PL.w-2, PL.y+v*PL.h-2, 4, 4);
+  G.restore();
+}
+
+/* ---- 底部刻度数字（参考图右下角那个 1K 的味道）---- */
+function drawScaleText(){
+  G.font='12px Consolas,monospace'; G.textBaseline='middle';
+  const {vdiv} = vscale();
+  G.fillStyle=C.label; G.textAlign='center';
+  for(let i=0;i<=DX;i+=2){
+    const x=PL.x+i*PL.w/DX;
+    G.fillText(fmtT((i-DX/2)*S.tdiv), x, PL.y+PL.h+16);
+  }
+  G.textAlign='right';
+  for(let j=0;j<=DY;j+=2){
+    const y=PL.y+j*PL.h/DY;
+    G.fillText(fmtV((DY/2-j)*vdiv), PL.x-8, y);
+  }
+  G.fillStyle=C.dim; G.textAlign='right'; G.font='bold 13px Consolas,monospace';
+  G.textAlign='right'; G.fillText('1K', PL.x+PL.w-6, PL.y+PL.h-12);
+}
+
+/* =====================================================================
+ * 测量（沿用上一版：整数周期窗口）
+ * ===================================================================*/
+function measure(buf){
+  const n=N_PTS;
+  let mn=1e9,mx=-1e9;
+  for(let i=0;i<n;i++){ const v=buf[i]; if(v<mn)mn=v; if(v>mx)mx=v; }
+  const vpp=mx-mn;
+  let rising=[], hi=buf[0]>(mx+mn)/2;
+  for(let i=1;i<n;i++){ const now=buf[i]>(mx+mn)/2; if(!hi&&now) rising.push(i); hi=now; }
+  let period=NaN,freq=NaN,duty=NaN,riseT=NaN,mean=0,rms=0,cycles=0;
+  { let su=0,sq=0; for(let i=0;i<n;i++){su+=buf[i];sq+=buf[i]*buf[i];}
+    mean=su/n; rms=Math.sqrt(sq/n); }
+  if(rising.length>=2){
+    let acc=0; for(let i=1;i<rising.length;i++) acc+=rising[i]-rising[i-1];
+    const avg=acc/(rising.length-1);
+    period=avg/fsEff; freq=1/period;
+    let hiAcc=0,cnt=0;
+    for(let i=1;i<rising.length;i++){
+      let w=0;
+      for(let j=rising[i-1];j<rising[i];j++) if(buf[j]>(mx+mn)/2) w++;
+      hiAcc+=w; cnt++;
+    }
+    if(cnt) duty=(hiAcc/cnt)/avg;
+    const per=Math.round(avg);
+    if(per>2){
+      const st=rising[0], en=st+per*Math.floor((n-st-1)/per);
+      let su=0,sq=0,c=0;
+      for(let i=st;i<en;i++){su+=buf[i];sq+=buf[i]*buf[i];c++;}
+      if(c>0){ mean=su/c; rms=Math.sqrt(sq/c); cycles=c/per; }
+    }
+    const lo=mn+vpp*0.1, hiL=mn+vpp*0.9;
+    for(let i=1;i<n;i++) if(buf[i-1]<lo&&buf[i]>=lo){
+      for(let j=i;j<n;j++) if(buf[j]>=hiL){ riseT=(j-(i-1))/fsEff; break; }
+      break;
+    }
+  }
+  return {mn,mx,vpp,rms,mean,period,freq,duty,riseT,cycles,vamp:vpp/2};
+}
+
+/* ---- 右侧测量栏 ---- */
+function drawAside(){
+  const m1=measure(ch1), m2=S.ch2En?measure(ch2):null;
+  G.textAlign='left'; G.textBaseline='middle';
+
+  /* 标题 */
+  G.fillStyle=C.label; G.font='bold 13px Consolas,monospace';
+  G.fillText('CH1 测量', AS.x, AS.y+10);
+
+  const rows = S.xyMode ? [
+    ['X 峰峰值', fmtV(m1.vpp)],
+    ['X 最大值', fmtV(m1.mx)],
+    ['X 最小值', fmtV(m1.mn)],
+    ['Y 峰峰值', m2?fmtV(m2.vpp):'—'],
+    ['Y 最大值', m2?fmtV(m2.mx):'—'],
+    ['Y 最小值', m2?fmtV(m2.mn):'—'],
+    ['频率 X', fmtF(m1.freq)],
+    ['频率 Y', m2?fmtF(m2.freq):'—'],
+  ] : [
+    ['峰峰值 Vpp', fmtV(m1.vpp)],
+    ['最大值 Vmax', fmtV(m1.mx)],
+    ['最小值 Vmin', fmtV(m1.mn)],
+    ['幅度 Vamp', fmtV(m1.vamp)],
+    ['有效值 Vrms', fmtV(m1.rms)],
+    ['平均值 Vavg', fmtV(m1.mean)],
+    ['周期 T', isNaN(m1.period)?'—':fmtT(m1.period)],
+    ['频率 f', fmtF(m1.freq)],
+    ['占空比', isNaN(m1.duty)?'—':(m1.duty*100).toFixed(2)+'%'],
+    ['上升时间', isNaN(m1.riseT)?'—':fmtT(m1.riseT)],
+  ];
+  let y = AS.y+30;
+  G.font='12.5px Consolas,monospace';
+  for(const [k,v] of rows){
+    G.fillStyle=C.label;  G.textAlign='left';  G.fillText(k, AS.x, y);
+    G.fillStyle=C.value;  G.textAlign='right'; G.fillText(v, AS.x+AS.w, y);
+    /* 点线分隔 */
+    G.strokeStyle='#123a1c'; G.beginPath();
+    G.moveTo(AS.x, y+10); G.lineTo(AS.x+AS.w, y+10); G.stroke();
+    y += 21;
+  }
+
+  /* 光标读数 */
+  const {vspan,vmid} = vscale();
+  const tA=(S.cur.t1-.5)*DX*S.tdiv, tB=(S.cur.t2-.5)*DX*S.tdiv;
+  const vA=vmid+(.5-S.cur.v1)*vspan,  vB=vmid+(.5-S.cur.v2)*vspan;
+  y += 4;
+  G.fillStyle=C.cur; G.font='bold 12.5px Consolas,monospace';
+  G.fillText('光标', AS.x, y); y+=19;
+  G.font='12.5px Consolas,monospace';
+  const curs = [
+    ['T1', fmtT(tA)], ['T2', fmtT(tB)],
+    ['ΔT', fmtT(tB-tA)], ['1/ΔT', fmtF(1/Math.abs(tB-tA)||0)],
+    ['V1', fmtV(vA)], ['V2', fmtV(vB)], ['ΔV', fmtV(Math.abs(vB-vA))],
+  ];
+  for(const [k,v] of curs){
+    G.fillStyle=C.label;  G.textAlign='left';  G.fillText(k, AS.x, y);
+    G.fillStyle=C.cur;    G.textAlign='right'; G.fillText(v, AS.x+AS.w, y);
+    y += 19;
+  }
+}
+
+/* =====================================================================
+ * 底部控制条 + 导航（设备上的样子）
+ * ===================================================================*/
+const hits = [];   /* 点击区域 */
+function chip(x,y,w,h,text,on,color){
+  G.fillStyle = on ? '#0d2a14' : '#061a0a';
+  G.strokeStyle = on ? (color||C.accent) : '#123a1c';
+  G.lineWidth = 1.2;
+  G.beginPath(); G.roundRect(x,y,w,h,5); G.fill(); G.stroke();
+  G.fillStyle = on ? C.value : C.dim;
+  G.font = '13px Consolas,monospace'; G.textAlign='center'; G.textBaseline='middle';
+  G.fillText(text, x+w/2, y+h/2);
+  hits.push({x,y,w,h});
+  return {x,y,w,h};
+}
+
+let hitList = [];
+function drawControlBar(){
+  hitList = [];
+  G.fillStyle='#020602'; G.fillRect(CB.x,CB.y,CB.w,CB.h);
+  G.strokeStyle='#0f2a14'; G.beginPath();
+  G.moveTo(0,CB.y+.5); G.lineTo(W,CB.y+.5); G.stroke();
+
+  const y=CB.y+9, h=34;
+  let x=12;
+  const add=(w,txt,on,color,fn)=>{
+    G.fillStyle = on?'#0d2a14':'#061a0a';
+    G.strokeStyle = on?(color||C.accent):'#123a1c'; G.lineWidth=1.2;
+    G.beginPath(); G.roundRect(x,y,w,h,5); G.fill(); G.stroke();
+    G.fillStyle = on?C.value:C.dim;
+    G.font='13px Consolas,monospace'; G.textAlign='center'; G.textBaseline='middle';
+    G.fillText(txt, x+w/2, y+h/2);
+    hitList.push({x,y,w,h,fn});
+    x += w+8;
+  };
+
+  add(96, '时基 '+fmtT(S.tdiv), false, null, ()=>cycleTdiv(1));
+  add(84, '档位 '+(S.vdiv==='auto'?'自动':fmtV(parseFloat(S.vdiv))), false, null, ()=>cycleVdiv(1));
+  add(78, S.trmode==='auto'?'触发 自动':S.trmode==='normal'?'触发 正常':'触发 单次', true, C.trig,
+      ()=>{ S.trmode = S.trmode==='auto'?'normal':S.trmode==='normal'?'single':'auto'; });
+  add(72, S.tredge==='rise'?'边沿 ↑':'边沿 ↓', true, C.trig,
+      ()=>{ S.tredge = S.tredge==='rise'?'fall':'rise'; });
+  add(74, S.curOn?'光标 开':'光标 关', S.curOn, C.cur, ()=>{ S.curOn=!S.curOn; });
+  add(66, S.xyMode?'XY':'YT', S.xyMode, C.trace2, ()=>{ S.xyMode=!S.xyMode; });
+  add(86, '自动设置', false, null, autoSet);
+  add(76, S.running?'运行中':'已停止', S.running, C.accent, ()=>{ S.running=!S.running; });
+}
+
+/* 底部导航（保持设备原有 5 个页面 —— 旧功能一个不少） */
+const PAGES=['示波器','频谱','重建','锁定','系统'];
+function drawNav(){
+  G.fillStyle='#020602'; G.fillRect(NAV.x,NAV.y,NAV.w,NAV.h);
+  G.strokeStyle='#0f2a14'; G.beginPath();
+  G.moveTo(0,NAV.y+.5); G.lineTo(W,NAV.y+.5); G.stroke();
+  const w = NAV.w/PAGES.length;
+  PAGES.forEach((p,i)=>{
+    const x=i*w;
+    if(i===0){ G.fillStyle='#0d3a1a'; G.fillRect(x+6,NAV.y+6,w-12,NAV.h-12); }
+    G.fillStyle = i===0?C.value:C.dim;
+    G.font = i===0?'bold 15px Consolas,monospace':'15px Consolas,monospace';
+    G.textAlign='center'; G.textBaseline='middle';
+    G.fillText(p, x+w/2, NAV.y+NAV.h/2);
+  });
+}
+
+/* =====================================================================
+ * 控制逻辑
+ * ===================================================================*/
+const TDIVS=[0.5e-6,1e-6,2e-6,5e-6,10e-6,20e-6,50e-6,100e-6,200e-6,500e-6,1e-3,5e-3];
+function cycleTdiv(dir){
+  let i=TDIVS.findIndex(v=>Math.abs(v-S.tdiv)<1e-12);
+  if(i<0) i=7;
+  i=(i+dir+TDIVS.length)%TDIVS.length;
+  S.tdiv=TDIVS[i];
+  fsEff=N_PTS/(DX*S.tdiv);
+}
+const VDIVS=['auto',0.05,0.1,0.2,0.5,1,2];
+function cycleVdiv(dir){
+  let i=VDIVS.findIndex(v=>String(v)===String(S.vdiv));
+  if(i<0) i=0;
+  i=(i+dir+VDIVS.length)%VDIVS.length;
+  S.vdiv=VDIVS[i];
+}
+function autoSet(){
+  const m=measure(ch1);
+  if(isFinite(m.freq)&&m.freq>0){
+    const want=1/(m.freq*2);
+    let best=TDIVS[0], bd=1e9;
+    for(const v of TDIVS){ const d=Math.abs(Math.log(v/want)); if(d<bd){bd=d;best=v;} }
+    S.tdiv=best; fsEff=N_PTS/(DX*S.tdiv);
+  }
+  S.vdiv='auto'; S.vpos=0; S.trlev=0; S.running=true;
+}
+
+/* 点击 */
+CV.addEventListener('mousedown', ev=>{
+  const r=CV.getBoundingClientRect();
+  const p={x:(ev.clientX-r.left)*W/r.width, y:(ev.clientY-r.top)*H/r.height};
+  for(const h of hitList)
+    if(p.x>=h.x&&p.x<=h.x+h.w&&p.y>=h.y&&p.y<=h.y+h.h){ h.fn(); return; }
+  if(!S.curOn||S.xyMode) return;
+  /* 抓最近的虚线 */
+  let best=null,bd=14;
+  for(const k of ['t1','t2']){
+    const d=Math.abs(p.x-(PL.x+S.cur[k]*PL.w));
+    if(d<bd){bd=d;best=k;}
+  }
+  for(const k of ['v1','v2']){
+    const d=Math.abs(p.y-(PL.y+S.cur[k]*PL.h));
+    if(d<bd){bd=d;best=k;}
+  }
+  dragTarget=best;
+});
+CV.addEventListener('mousemove', ev=>{
+  if(!dragTarget) return;
+  const r=CV.getBoundingClientRect();
+  const x=(ev.clientX-r.left)*W/r.width, y=(ev.clientY-r.top)*H/r.height;
+  if(dragTarget[0]==='t') S.cur[dragTarget]=Math.min(1,Math.max(0,(x-PL.x)/PL.w));
+  else                    S.cur[dragTarget]=Math.min(1,Math.max(0,(y-PL.y)/PL.h));
+});
+window.addEventListener('mouseup', ()=>dragTarget=null);
+window.addEventListener('keydown', e=>{
+  if(e.key===' '){ S.running=!S.running; e.preventDefault(); }
+  if(e.key==='c'){ S.curOn=!S.curOn; }
+  if(e.key==='x'){ S.xyMode=!S.xyMode; }
+});
+
+/* =====================================================================
+ * 主循环
+ * ===================================================================*/
+function loop(ts){
+  if(!lastT) lastT=ts;
+  fc++;
+  if(ts-lastT>500){ fps=fc*1000/(ts-lastT); fc=0; lastT=ts; }
+
+  if(S.running){
+    phaseT += (1/Math.max(fps,30))*0.012;
+    fsEff = N_PTS/(DX*S.tdiv);
+    genFrame(phaseT);
+    const ti = findTrigger();
+    trigFound = ti>=0;
+    if(trigFound) trigIdx=ti;
+  }
+
+  drawGrid();
+  drawTraces();
+  if(!S.xyMode) drawCursors(); else drawXYCursors();
+  drawInfoBar();
+  drawScaleText();
+  drawAside();
+  drawControlBar();
+  drawNav();
+
+  requestAnimationFrame(loop);
+}
+/* XY 模式下光标没意义（不是时间轴），只画中心十字已足够 */
+function drawXYCursors(){}
+
+/* 调试用：文件名后加 #xy / #nocursor 直接进对应模式 */
+if (location.hash.indexOf('xy') >= 0) S.xyMode = true;
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
