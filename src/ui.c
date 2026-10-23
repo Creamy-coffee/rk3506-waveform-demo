@@ -541,7 +541,8 @@ static int      s_full_n;
  */
 static int      s_zoom_span;
 static float    s_vdiv_mv;       /* 手动垂直档位 mV/格；0 = 自动 */
-static int      s_tb_idx = 4;      /* 当前时基档位下标 */
+static int      s_tb_idx;          /* 当前时基档位下标 */
+static int      s_tb_autodone;     /* 上电后是否已按实测频率自动选过档 */
 static int      s_zoom_start;
 
 #define ZOOM_GAIN_MIN   0.05f
@@ -2945,6 +2946,14 @@ static void tick_scope(void)
                 lv_label_set_text(s_lbl_m_duty, "—");
             }
         }
+    }
+
+    /* 上电时还不知道信号频率，tb_default 只能按整帧选（大档位）。
+       等第一次测出峰值频率后自动再选一次，之后就交给用户手动控制。 */
+    if(!s_tb_autodone && s_real_peak_hz > 100.f) {
+        int d = 0; tb_default(&d);
+        if(d != s_tb_idx) tb_apply(d);
+        s_tb_autodone = 1;
     }
 
     trig_refresh();
