@@ -63,6 +63,7 @@ const S = {
   /* 触发 */
   trmode:'auto', tredge:'rise', trlev:0,
   /* 显示 */
+  page:0,                    /* 0..4，导航条页面 */
   math:0,                    /* 0=关 1=A+B 2=A-B 3=A×B 4=A÷B 5=XY */
   curOn:true,
   cur:{ t1:0.28, t2:0.62, v1:0.36, v2:0.68 },
@@ -227,6 +228,7 @@ function drawInfoBar(){
   put('Time/Div=', fmtT(S.tdiv), C.value);
   put('Trig=', (isXY() ? 'XY' : ('A1::' + (S.trmode==='auto'?'Auto':S.trmode==='normal'?'Norm':'Single'))),
       C.trig);
+  if (!isXY()) put('', fmtV(trigLevelV()), C.trig);   /* 触发电平值，跟参考图一样挂在 Trig 后面 */
   if (S.math >= 1 && S.math <= 4)
     put('Math=', MATH_NAMES[S.math] + ' ' + fmtV(mathVdiv) + MATH_UNIT[S.math] + '/格', C.math);
 
@@ -482,8 +484,8 @@ function drawControlBar(){
   G.moveTo(0,CB.y+.5); G.lineTo(W,CB.y+.5); G.stroke();
 
   const y=CB.y+9, h=34;
-  let x=12;
-  const add=(w,txt,on,color,fn)=>{
+  let x=10;
+  const btn=(w,txt,on,color,fn)=>{
     G.fillStyle = on?'#0d2a14':'#061a0a';
     G.strokeStyle = on?(color||C.accent):'#123a1c'; G.lineWidth=1.2;
     G.beginPath(); G.roundRect(x,y,w,h,5); G.fill(); G.stroke();
@@ -491,20 +493,51 @@ function drawControlBar(){
     G.font='13px Consolas,monospace'; G.textAlign='center'; G.textBaseline='middle';
     G.fillText(txt, x+w/2, y+h/2);
     hitList.push({x,y,w,h,fn});
-    x += w+8;
+    x += w+6;
   };
 
-  add(96, '时基 '+fmtT(S.tdiv), false, null, ()=>cycleTdiv(1));
-  add(84, '档位 '+(S.vdiv==='auto'?'自动':fmtV(parseFloat(S.vdiv))), false, null, ()=>cycleVdiv(1));
-  add(78, S.trmode==='auto'?'触发 自动':S.trmode==='normal'?'触发 正常':'触发 单次', true, C.trig,
+  /* 时基 / 档位 / 触发电平：都是 ◀ 值 ▶ 三段式，两个方向都能调 */
+  btn(26, '◀', false, null, ()=>cycleTdiv(-1));
+  btn(94, '时基 '+fmtT(S.tdiv), false, null, ()=>autoSetTdiv());   /* 点中间 = 自动 */
+  btn(26, '▶', false, null, ()=>cycleTdiv(1));
+
+  btn(26, '◀', false, null, ()=>cycleVdiv(-1));
+  btn(80, '档位 '+(S.vdiv==='auto'?'自动':fmtV(parseFloat(S.vdiv))), S.vdiv==='auto', null,
+      ()=>{ S.vdiv='auto'; });
+  btn(26, '▶', false, null, ()=>cycleVdiv(1));
+
+  btn(74, S.trmode==='auto'?'触发 自动':S.trmode==='normal'?'触发 正常':'触发 单次', true, C.trig,
       ()=>{ S.trmode = S.trmode==='auto'?'normal':S.trmode==='normal'?'single':'auto'; });
-  add(72, S.tredge==='rise'?'边沿 ↑':'边沿 ↓', true, C.trig,
+  btn(62, S.tredge==='rise'?'边沿 ↑':'边沿 ↓', true, C.trig,
       ()=>{ S.tredge = S.tredge==='rise'?'fall':'rise'; });
-  add(74, S.curOn?'光标 开':'光标 关', S.curOn, C.cur, ()=>{ S.curOn=!S.curOn; });
-  add(92, '数学 '+MATH_NAMES[S.math], S.math>0, C.math,
-      ()=>{ S.math = (S.math+1) % MATH_NAMES.length; });
-  add(86, '自动设置', false, null, autoSet);
-  add(76, S.running?'运行中':'已停止', S.running, C.accent, ()=>{ S.running=!S.running; });
+
+  /* 触发电平：◀ 值 ▶（也可以直接拖画面右侧那个洋红三角） */
+  btn(26, '◀', false, null, (s=>()=>setTrlev(S.trlev-5))());
+  btn(86, '电平 '+fmtV(trigLevelV()), true, C.trig, ()=>{ setTrlev(0); });
+  btn(26, '▶', false, null, ()=>setTrlev(S.trlev+5));
+
+  btn(62, S.curOn?'光标 开':'光标 关', S.curOn, C.cur, ()=>{ S.curOn=!S.curOn; });
+  btn(84, '数学 '+MATH_NAMES[S.math], S.math>0, C.math, ()=>{ S.math=(S.math+1)%MATH_NAMES.length; });
+  btn(76, '自动设置', false, null, autoSet);
+
+  /* 运行 / 暂停：原来叫「运行中」，很多人找不到，这里直接写「暂停」 */
+  if (S.running) btn(78, '⏸ 暂停', true, C.accent, ()=>{ S.running=false; });
+  else           btn(78, '▶ 运行', false, C.accent, ()=>{ S.running=true; });
+}
+
+function setTrlev(v){
+  if(v < -100) v = -100;
+  if(v >  100) v =  100;
+  S.trlev = v;
+}
+function autoSetTdiv(){
+  const m = measure(ch1);
+  if(isFinite(m.freq) && m.freq>0){
+    const want = 1/(m.freq*2);
+    let best=TDIVS[0], bd=1e9;
+    for(const v of TDIVS){ const d=Math.abs(Math.log(v/want)); if(d<bd){bd=d;best=v;} }
+    S.tdiv=best; fsEff=N_PTS/(DX*S.tdiv);
+  }
 }
 
 /* 底部导航（保持设备原有 5 个页面 —— 旧功能一个不少） */
@@ -515,12 +548,13 @@ function drawNav(){
   G.moveTo(0,NAV.y+.5); G.lineTo(W,NAV.y+.5); G.stroke();
   const w = NAV.w/PAGES.length;
   PAGES.forEach((p,i)=>{
-    const x=i*w;
-    if(i===0){ G.fillStyle='#0d3a1a'; G.fillRect(x+6,NAV.y+6,w-12,NAV.h-12); }
-    G.fillStyle = i===0?C.value:C.dim;
-    G.font = i===0?'bold 15px Consolas,monospace':'15px Consolas,monospace';
+    const x=i*w, sel=(i===S.page);
+    if(sel){ G.fillStyle='#0d3a1a'; G.fillRect(x+6,NAV.y+6,w-12,NAV.h-12); }
+    G.fillStyle = sel?C.value:C.dim;
+    G.font = sel?'bold 15px Consolas,monospace':'15px Consolas,monospace';
     G.textAlign='center'; G.textBaseline='middle';
     G.fillText(p, x+w/2, NAV.y+NAV.h/2);
+    hitList.push({x, y:NAV.y, w, h:NAV.h, fn:()=>{ S.page=i; }});
   });
 }
 
@@ -554,12 +588,19 @@ function autoSet(){
 }
 
 /* 点击 */
+/* 拖画面右侧的洋红三角 = 直接改触发电平（真示波器也是拧这个钮） */
+let dragTrig = false;
 CV.addEventListener('mousedown', ev=>{
   const r=CV.getBoundingClientRect();
   const p={x:(ev.clientX-r.left)*W/r.width, y:(ev.clientY-r.top)*H/r.height};
   for(const h of hitList)
     if(p.x>=h.x&&p.x<=h.x+h.w&&p.y>=h.y&&p.y<=h.y+h.h){ h.fn(); return; }
-  if(!S.curOn||S.xyMode) return;
+
+  /* 先判断是不是抓触发三角（在绘图区右侧 14px 内） */
+  if(S.page===0 && !isXY() && p.x > PL.x+PL.w && p.x < PL.x+PL.w+16){
+    dragTrig = true; updateTrlevFromY(p.y); return;
+  }
+  if(!S.curOn||isXY()) return;
   /* 抓最近的虚线 */
   let best=null,bd=14;
   for(const k of ['t1','t2']){
@@ -572,14 +613,26 @@ CV.addEventListener('mousedown', ev=>{
   }
   dragTarget=best;
 });
+/* 屏幕 y -> 触发电平（归一化 -100..100，0 就是屏幕中线） */
+function updateTrlevFromY(y){
+  const {vdiv, vmid} = vscale();
+  const v = vmid + (PL.y + PL.h/2 - y) / (PL.h/DY) * vdiv;
+  setTrlev((v - vmid) / ((vdiv*DY/2) * 0.95) * 100);
+}
+
 CV.addEventListener('mousemove', ev=>{
+  if(dragTrig){
+    const r=CV.getBoundingClientRect();
+    updateTrlevFromY((ev.clientY-r.top)*H/r.height);
+    return;
+  }
   if(!dragTarget) return;
   const r=CV.getBoundingClientRect();
   const x=(ev.clientX-r.left)*W/r.width, y=(ev.clientY-r.top)*H/r.height;
   if(dragTarget[0]==='t') S.cur[dragTarget]=Math.min(1,Math.max(0,(x-PL.x)/PL.w));
   else                    S.cur[dragTarget]=Math.min(1,Math.max(0,(y-PL.y)/PL.h));
 });
-window.addEventListener('mouseup', ()=>dragTarget=null);
+window.addEventListener('mouseup', ()=>{ dragTarget=null; dragTrig=false; });
 window.addEventListener('keydown', e=>{
   if(e.key===' '){ S.running=!S.running; e.preventDefault(); }
   if(e.key==='c'){ S.curOn=!S.curOn; }
@@ -604,22 +657,49 @@ function loop(ts){
     if(trigFound) trigIdx=ti;
   }
 
-  drawGrid();
-  drawTraces();
-  if(!isXY()) drawCursors();
-  drawInfoBar();
-  drawScaleText();
-  drawAside();
-  drawControlBar();
+  if (S.page === 0) {
+    drawGrid();
+    drawTraces();
+    if(!isXY()) drawCursors();
+    drawInfoBar();
+    drawScaleText();
+    drawAside();
+    drawControlBar();
+  } else {
+    drawOtherPage();
+  }
   drawNav();
 
   requestAnimationFrame(loop);
 }
+/* 其它页：本次只重做示波器页，这里如实说明，而不是点了一点反应都没有 */
+function drawOtherPage(){
+  G.fillStyle=C.bg; G.fillRect(0,0,W,CB.y);
+  G.strokeStyle=C.frame; G.lineWidth=2;
+  G.strokeRect(PL.x+.5, PL.y+.5, PL.w+AS.w+32, PL.h);
+
+  G.textAlign='center'; G.textBaseline='middle';
+  G.fillStyle=C.label; G.font='bold 26px Consolas,monospace';
+  G.fillText('「'+PAGES[S.page]+'」页', W/2, H/2-46);
+
+  G.fillStyle=C.value; G.font='16px Consolas,monospace';
+  G.fillText('本次只重做了「示波器」页的外观', W/2, H/2-4);
+
+  G.fillStyle=C.dim; G.font='14px Consolas,monospace';
+  G.fillText('设备上这一页保持原样：旧功能一个没删', W/2, H/2+28);
+  G.fillText('（频谱 / 重建 / 锁定 / 系统 的界面未改动）', W/2, H/2+54);
+
+  G.fillStyle=C.trig; G.font='14px Consolas,monospace';
+  G.fillText('点下方「示波器」返回', W/2, H/2+96);
+}
+
 /* XY 模式下光标没意义（不是时间轴），只画中心十字已足够 */
 function drawXYCursors(){}
 
 /* 调试用：文件名后加 #xy / #nocursor 直接进对应模式 */
 if (location.hash.indexOf('xy') >= 0) S.math = 5;
+const ph = location.hash.match(/page=(\d)/);
+if (ph) S.page = Math.min(4, Math.max(0, parseInt(ph[1], 10)));
 const mh = location.hash.match(/math=(\d)/);
 if (mh) S.math = Math.min(5, Math.max(0, parseInt(mh[1], 10)));
 
