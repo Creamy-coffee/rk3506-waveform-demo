@@ -65,7 +65,7 @@
  * 差在浏览器 normal line-height 与实际字体度量的出入上 —— 所以以实测为准。
  * 我们改行高之后，第一条分隔线落在 y=129，参考稿 130，只差 1px。
  */
-#define METRIC_H  28   /* 原 39；示波器页 9 行读数（Vpp..占空比），28 才刚好放得下 */
+#define METRIC_H  21   /* 照 HTML：21px 一行，10 项测量 + 光标段 */
 /* .kv 一行：13px 字体行高 15 + 上下各 6 + 1px 下边框 */
 #define KV_H      28
 /* .panel-title 那一行 + margin-bottom */
@@ -125,6 +125,8 @@ static lv_obj_t *s_plot_raw, *s_plot_den;
 
 static lv_obj_t *s_lbl_scope_freq, *s_lbl_v1, *s_lbl_v2, *s_lbl_phase;
 static lv_obj_t *s_lbl_m_vmax, *s_lbl_m_vmin, *s_lbl_m_vrms, *s_lbl_m_per, *s_lbl_m_duty;
+static lv_obj_t *s_lbl_m_vamp, *s_lbl_m_vavg, *s_lbl_m_rise;
+static lv_obj_t *s_lbl_cur_dt, *s_lbl_cur_f, *s_lbl_cur_dv;
 static lv_obj_t *s_lbl_scope_axis;
 static lv_obj_t *s_lbl_fft_peakf, *s_lbl_fft_peakl, *s_lbl_fft_floor, *s_lbl_fft_win;
 static lv_obj_t *s_lbl_lock_ref, *s_lbl_lock_amp, *s_lbl_lock_phase, *s_lbl_lock_tau;
@@ -1626,16 +1628,27 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_t *p1 = mk_panel(aside, 0, 0, 0, 0);
     lv_obj_set_width(p1, LV_PCT(100));
     lv_obj_set_flex_grow(p1, 1);
-    mk_title(p1, 0, 0, "测量读数");
-    s_lbl_v1         = mk_metric(p1, TITLE_H + METRIC_H * 0, "CH1 峰峰值",  "20.4 mV",    V32_C_CH1);
-    s_lbl_v2         = mk_metric(p1, TITLE_H + METRIC_H * 1, "CH2 峰峰值",  "18.7 mV",    V32_C_CH2);
-    s_lbl_scope_freq = mk_metric(p1, TITLE_H + METRIC_H * 2, "频率",       "10.000 MHz", V32_C_METRIC_VALUE);
-    s_lbl_phase      = mk_metric(p1, TITLE_H + METRIC_H * 3, "相位差",     "43.7°",      V32_C_METRIC_VALUE);
-    s_lbl_m_vmax     = mk_metric(p1, TITLE_H + METRIC_H * 4, "最大值",     "2.10 V",     V32_C_METRIC_VALUE);
-    s_lbl_m_vmin     = mk_metric(p1, TITLE_H + METRIC_H * 5, "最小值",     "-2.10 V",    V32_C_METRIC_VALUE);
-    s_lbl_m_vrms     = mk_metric(p1, TITLE_H + METRIC_H * 6, "有效值",     "1.77 V",     V32_C_METRIC_VALUE);
-    s_lbl_m_per      = mk_metric(p1, TITLE_H + METRIC_H * 7, "周期",       "100.0 µs",   V32_C_METRIC_VALUE);
-    s_lbl_m_duty     = mk_metric(p1, TITLE_H + METRIC_H * 8, "占空比",     "50.0 %",     V32_C_METRIC_VALUE);
+    /* 照 HTML：标题「CH1 测量」绿色小字，10 行「标签左/数值右」无框线 */
+    mk_title(p1, 0, 0, "CH1 测量");
+    s_lbl_v1         = mk_metric(p1, TITLE_H + METRIC_H * 0, "峰峰值 Vpp",  "--", V32_C_METRIC_VALUE);
+    s_lbl_m_vmax     = mk_metric(p1, TITLE_H + METRIC_H * 1, "最大值 Vmax", "--", V32_C_METRIC_VALUE);
+    s_lbl_m_vmin     = mk_metric(p1, TITLE_H + METRIC_H * 2, "最小值 Vmin", "--", V32_C_METRIC_VALUE);
+    s_lbl_m_vamp     = mk_metric(p1, TITLE_H + METRIC_H * 3, "幅度 Vamp",   "--", V32_C_METRIC_VALUE);
+    s_lbl_m_vrms     = mk_metric(p1, TITLE_H + METRIC_H * 4, "有效值 Vrms", "--", V32_C_METRIC_VALUE);
+    s_lbl_m_vavg     = mk_metric(p1, TITLE_H + METRIC_H * 5, "平均值 Vavg", "--", V32_C_METRIC_VALUE);
+    s_lbl_m_per      = mk_metric(p1, TITLE_H + METRIC_H * 6, "周期 T",      "--", V32_C_METRIC_VALUE);
+    s_lbl_scope_freq = mk_metric(p1, TITLE_H + METRIC_H * 7, "频率 f",      "--", V32_C_METRIC_VALUE);
+    s_lbl_m_duty     = mk_metric(p1, TITLE_H + METRIC_H * 8, "占空比",      "--", V32_C_METRIC_VALUE);
+    s_lbl_m_rise     = mk_metric(p1, TITLE_H + METRIC_H * 9, "上升时间",    "--", V32_C_METRIC_VALUE);
+    /* 光标段：洋红（照 HTML） */
+    s_lbl_cur_dt     = mk_metric(p1, TITLE_H + METRIC_H * 10, "ΔT",   "--", V32_C_TRIGGER);
+    s_lbl_cur_f      = mk_metric(p1, TITLE_H + METRIC_H * 11, "1/ΔT", "--", V32_C_TRIGGER);
+    s_lbl_cur_dv     = mk_metric(p1, TITLE_H + METRIC_H * 12, "ΔV",   "--", V32_C_TRIGGER);
+
+    /* CH2 峰峰值 / 相位差已并入上面 10 项（HTML 里没有这两行，A2 在信息条里），
+       但 tick_scope 还在写这两个句柄 —— 建在面板外，别让它们露出来。 */
+    s_lbl_v2    = mk_metric(p1, -80, "CH2 峰峰值", "--", V32_C_CH2);
+    s_lbl_phase = mk_metric(p1, -80, "相位差",     "--", V32_C_TRIGGER);
 
     /*
      * ⚠️ 这里必须把面板自己的 2px 边框算进去（V32_PANEL_BW * 2）。
@@ -2757,6 +2770,35 @@ static void tick_scope(void)
         lv_label_set_text(s_lbl_scope_freq, "0.000 MHz");
     } else {
         lv_label_set_text_fmt(s_lbl_scope_freq, "%.3f MHz", (double)FREQ_MHZ[S.freq_idx]);
+    }
+
+    /* 新增三项 + 光标读数（照 HTML 的 10 项 + 光标段） */
+    if(S.use_real && s_real_valid && s_m1.vpp > 0.5f) {
+        const float k2 = V32_ADC_MV_PER_LSB / 1000.0f;
+        lv_label_set_text_fmt(s_lbl_m_vamp, "%.3f V", (double)(s_m1.vamp * k2));
+        lv_label_set_text_fmt(s_lbl_m_vavg, "%.3f V", (double)(s_m1.vavg * k2));
+        if(s_m1.ok && s_m1.rise_s > 0.f)
+            lv_label_set_text_fmt(s_lbl_m_rise, "%.2f µs", (double)(s_m1.rise_s * 1e6f));
+        else
+            lv_label_set_text(s_lbl_m_rise, "—");
+    } else {
+        lv_label_set_text(s_lbl_m_vamp, "—");
+        lv_label_set_text(s_lbl_m_vavg, "—");
+        lv_label_set_text(s_lbl_m_rise, "—");
+    }
+    if(s_cur_on && s_real_sc > 0.f) {
+        const float dts = fabsf(s_cur_x[1] - s_cur_x[0]) * (float)s_zoom_span
+                        / ((wave_source_get() && wave_source_get()->sample_rate > 0)
+                           ? (float)wave_source_get()->sample_rate : 65000000.0f);
+        const float dvm = fabsf(s_cur_y[1] - s_cur_y[0]) * (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;
+        if(dts < 1e-3f) lv_label_set_text_fmt(s_lbl_cur_dt, "%.1f µs", (double)(dts*1e6f));
+        else            lv_label_set_text_fmt(s_lbl_cur_dt, "%.2f ms", (double)(dts*1e3f));
+        lv_label_set_text_fmt(s_lbl_cur_f, "%.2f kHz", (double)(1.0f / (dts + 1e-12f) / 1000.0f));
+        lv_label_set_text_fmt(s_lbl_cur_dv, "%.1f mV", (double)dvm);
+    } else {
+        lv_label_set_text(s_lbl_cur_dt, "—");
+        lv_label_set_text(s_lbl_cur_f,  "—");
+        lv_label_set_text(s_lbl_cur_dv, "—");
     }
 
     /* 自动测量：单位换算统一在这里，面板只管排版 */
