@@ -2339,7 +2339,7 @@ static void tick_scope(void)
 
     if(real) {
         if(meas_ok)
-            lv_label_set_text_fmt(s_lbl_scope_freq, "%.4f MHz", (double)mm.tracked_hz_x1000 / 1e6);
+            lv_label_set_text_fmt(s_lbl_scope_freq, "%.4f MHz", (double)mm.tracked_hz_x1000 / 1e9);
         else
             lv_label_set_text_fmt(s_lbl_scope_freq, "%.3f MHz", (double)s_real_peak_hz / 1e6);
     } else if(use_real) {
@@ -2479,7 +2479,7 @@ static void tick_lock(void)
 
             if(ok) {
                 lv_label_set_text_fmt(s_lbl_lock_ref,   "%.4f MHz",
-                                      (double)mm.tracked_hz_x1000 / 1e6);
+                                      (double)mm.tracked_hz_x1000 / 1e9);
                 lv_label_set_text_fmt(s_lbl_lock_amp,   "%.1f mV",
                                       (double)mm.amp1_millicounts / 1000.0 * V32_ADC_MV_PER_LSB);
                 lv_label_set_text_fmt(s_lbl_lock_phase, "%.2f°",

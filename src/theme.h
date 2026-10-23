@@ -132,84 +132,84 @@
  * 想改回深色：把这一整块换回去即可，其余代码只引用宏、没有硬编码颜色。
  */
 /* 底色 / 外壳 */
-#define V32_C_BG             lv_color_hex(0xEEF3F8)  /* :root background */
-#define V32_C_SHELL          lv_color_hex(0xFFFFFF)  /* .shell background */
-#define V32_C_SHELL_BORDER   lv_color_hex(0xC9D6E4)
+#define V32_C_BG             lv_color_hex(0x050805)  /* :root background */
+#define V32_C_SHELL          lv_color_hex(0x0A0F0A)  /* .shell background */
+#define V32_C_SHELL_BORDER   lv_color_hex(0x1E301C)
 
 /* 顶栏 */
-#define V32_C_TOPBAR         lv_color_hex(0xFFFFFF)  /* .top */
-#define V32_C_TOPBAR_BORDER  lv_color_hex(0xDCE6F0)  /* .top border-bottom */
-#define V32_C_BRAND          lv_color_hex(0x0C7B94)  /* .brand（品牌青，白底压深） */
-#define V32_C_BRAND_TEXT     lv_color_hex(0x122C42)  /* .brand span */
-#define V32_C_BRAND_SMALL    lv_color_hex(0x44586C)  /* .brand small */
-#define V32_C_STATUS         lv_color_hex(0x2A3E4E)  /* .statuses */
-#define V32_C_LIVE           lv_color_hex(0x0B6B4A)  /* .live */
-#define V32_C_BADGE_BG       lv_color_hex(0xFFF3D2)  /* .mode-badge */
-#define V32_C_BADGE_FG       lv_color_hex(0x7A4A00)
+#define V32_C_TOPBAR         lv_color_hex(0x0A0F0A)  /* .top */
+#define V32_C_TOPBAR_BORDER  lv_color_hex(0x1A2A18)  /* .top border-bottom */
+#define V32_C_BRAND          lv_color_hex(0x3CFF6E)  /* .brand（品牌青，白底压深） */
+#define V32_C_BRAND_TEXT     lv_color_hex(0x9FE8B4)  /* .brand span */
+#define V32_C_BRAND_SMALL    lv_color_hex(0x4E7A5A)  /* .brand small */
+#define V32_C_STATUS         lv_color_hex(0x6FAE84)  /* .statuses */
+#define V32_C_LIVE           lv_color_hex(0x35CC45)  /* .live */
+#define V32_C_BADGE_BG       lv_color_hex(0x1A2A12)  /* .mode-badge */
+#define V32_C_BADGE_FG       lv_color_hex(0xFFB340)
 
 /* 面板 / 绘图区 */
-#define V32_C_PANEL          lv_color_hex(0xFFFFFF)  /* .panel background */
-#define V32_C_PANEL_BORDER   lv_color_hex(0xDCE6F0)
-#define V32_C_PLOT           lv_color_hex(0xFBFDFF)  /* .plot background */
-#define V32_C_PLOT_BORDER    lv_color_hex(0xD5E0EC)
-#define V32_C_PLOT_TITLE     lv_color_hex(0x2E4156)  /* .plot-title */
-#define V32_C_PLOT_FOOT      lv_color_hex(0x35485C)  /* .plot-foot */
-#define V32_C_PANEL_TITLE    lv_color_hex(0x2E4156)  /* .panel-title */
+#define V32_C_PANEL          lv_color_hex(0x0A0F0A)  /* .panel background */
+#define V32_C_PANEL_BORDER   lv_color_hex(0x1A2A18)
+#define V32_C_PLOT           lv_color_hex(0x050805)  /* .plot background */
+#define V32_C_PLOT_BORDER    lv_color_hex(0x1F7A2A)
+#define V32_C_PLOT_TITLE     lv_color_hex(0x35CC45)  /* .plot-title */
+#define V32_C_PLOT_FOOT      lv_color_hex(0x2E8A44)  /* .plot-foot */
+#define V32_C_PANEL_TITLE    lv_color_hex(0x35CC45)  /* .panel-title */
 
 /* 指标行 .metric */
-#define V32_C_METRIC_LABEL   lv_color_hex(0x2E4156)
-#define V32_C_METRIC_VALUE   lv_color_hex(0x12293E)
-#define V32_C_METRIC_BORDER  lv_color_hex(0xE7EDF4)
+#define V32_C_METRIC_LABEL   lv_color_hex(0x35CC45)
+#define V32_C_METRIC_VALUE   lv_color_hex(0xE8F2E8)
+#define V32_C_METRIC_BORDER  lv_color_hex(0x14210F)
 
 /* 语义色（.yellow/.cyan/.green）—— 深色主题的同色系压暗版，白底可读 */
-#define V32_C_CH1            lv_color_hex(0xA85E00)  /* .yellow   CH1 / 矢量 */
-#define V32_C_CH2            lv_color_hex(0x095F73)  /* .cyan     CH2 */
-#define V32_C_GREEN          lv_color_hex(0x0B6B4A)  /* .green    正常/锁定 */
-#define V32_C_FFT            lv_color_hex(0x0B6B4A)  /* FFT 曲线 */
-#define V32_C_AI_OUT         lv_color_hex(0x0A7A52)  /* AI 降噪输出曲线 */
+#define V32_C_CH1            lv_color_hex(0xCFE6F5)  /* .yellow   CH1 / 矢量 */
+#define V32_C_CH2            lv_color_hex(0xFFD24A)  /* .cyan     CH2 */
+#define V32_C_GREEN          lv_color_hex(0x35CC45)  /* .green    正常/锁定 */
+#define V32_C_FFT            lv_color_hex(0x35CC45)  /* FFT 曲线 */
+#define V32_C_AI_OUT         lv_color_hex(0x7CFF9A)  /* AI 降噪输出曲线 */
 
 /* 提示文字 */
-#define V32_C_TEXT           lv_color_hex(0x17293A)  /* :root color */
-#define V32_C_FSNOTE         lv_color_hex(0x4E6378)  /* .fullscreen-note */
-#define V32_C_NOTE           lv_color_hex(0x42576B)  /* .note */
-#define V32_C_HINT           lv_color_hex(0x2E4156)  /* .touch-hint */
-#define V32_C_MINI           lv_color_hex(0x48607A)  /* .mini */
-#define V32_C_LABEL          lv_color_hex(0x2E4156)  /* .group label */
-#define V32_C_KV_KEY         lv_color_hex(0x3D5468)  /* .kv span */
-#define V32_C_KV_BORDER      lv_color_hex(0xE7EDF4)
-#define V32_C_SUBHEAD        lv_color_hex(0x54687C)  /* .subhead */
-#define V32_C_WARN           lv_color_hex(0x7A3E00)  /* 模拟件的黄色警示 */
+#define V32_C_TEXT           lv_color_hex(0xCFE0CF)  /* :root color */
+#define V32_C_FSNOTE         lv_color_hex(0x4E7A5A)  /* .fullscreen-note */
+#define V32_C_NOTE           lv_color_hex(0x6FAE84)  /* .note */
+#define V32_C_HINT           lv_color_hex(0x35CC45)  /* .touch-hint */
+#define V32_C_MINI           lv_color_hex(0x4E7A5A)  /* .mini */
+#define V32_C_LABEL          lv_color_hex(0x35CC45)  /* .group label */
+#define V32_C_KV_KEY         lv_color_hex(0x2E8A44)  /* .kv span */
+#define V32_C_KV_BORDER      lv_color_hex(0x14210F)
+#define V32_C_SUBHEAD        lv_color_hex(0x4E7A5A)  /* .subhead */
+#define V32_C_WARN           lv_color_hex(0xFFB340)  /* 模拟件的黄色警示 */
 
 /* 控件条 .controls */
-#define V32_C_CTRL_BG        lv_color_hex(0xF5F8FC)
-#define V32_C_CTRL_BORDER    lv_color_hex(0xDCE6F0)
-#define V32_C_SEL_BG         lv_color_hex(0xFFFFFF)  /* select */
-#define V32_C_SEL_FG         lv_color_hex(0x14293C)
-#define V32_C_SEL_BORDER     lv_color_hex(0xC3D2E2)
-#define V32_C_SEL_BG2        lv_color_hex(0xFFFFFF)  /* dropdown 弹出列表 */
+#define V32_C_CTRL_BG        lv_color_hex(0x0A0F0A)
+#define V32_C_CTRL_BORDER    lv_color_hex(0x1A2A18)
+#define V32_C_SEL_BG         lv_color_hex(0x0A0F0A)  /* select */
+#define V32_C_SEL_FG         lv_color_hex(0xCFE0CF)
+#define V32_C_SEL_BORDER     lv_color_hex(0x1E301C)
+#define V32_C_SEL_BG2        lv_color_hex(0x0A0F0A)  /* dropdown 弹出列表 */
 
 /* 按钮 .chip / .nav button */
-#define V32_C_CHIP_BG        lv_color_hex(0xF4F8FC)
-#define V32_C_CHIP_BORDER    lv_color_hex(0xCBD9E7)
-#define V32_C_CHIP_FG        lv_color_hex(0x2A4356)
-#define V32_C_CHIP_BG_PRESS  lv_color_hex(0xE3EBF4)  /* .chip:active（白底上是压暗） */
-#define V32_C_CHIP_ON_BG     lv_color_hex(0xDEF3FA)  /* .chip.selected */
-#define V32_C_CHIP_ON_BORDER lv_color_hex(0x17A0BE)
-#define V32_C_CHIP_ON_FG     lv_color_hex(0x056A85)
+#define V32_C_CHIP_BG        lv_color_hex(0x0A0F0A)
+#define V32_C_CHIP_BORDER    lv_color_hex(0x22371F)
+#define V32_C_CHIP_FG        lv_color_hex(0x6FAE84)
+#define V32_C_CHIP_BG_PRESS  lv_color_hex(0x14210F)  /* .chip:active（白底上是压暗） */
+#define V32_C_CHIP_ON_BG     lv_color_hex(0x13351B)  /* .chip.selected */
+#define V32_C_CHIP_ON_BORDER lv_color_hex(0x35CC45)
+#define V32_C_CHIP_ON_FG     lv_color_hex(0x9FE8B4)
 
 /* 底部导航 .nav */
-#define V32_C_NAV_BG         lv_color_hex(0xFFFFFF)
-#define V32_C_NAV_BORDER     lv_color_hex(0xDCE6F0)
-#define V32_C_NAV_FG         lv_color_hex(0x35506A)
-#define V32_C_NAV_ON_BG      lv_color_hex(0xE2F4FA)  /* .nav button.active */
-#define V32_C_NAV_ON_FG      lv_color_hex(0x046C88)
-#define V32_C_NAV_ON_BAR     lv_color_hex(0x16A3C1)
+#define V32_C_NAV_BG         lv_color_hex(0x0A0F0A)
+#define V32_C_NAV_BORDER     lv_color_hex(0x1A2A18)
+#define V32_C_NAV_FG         lv_color_hex(0x6FAE84)
+#define V32_C_NAV_ON_BG      lv_color_hex(0x0D3A1A)  /* .nav button.active */
+#define V32_C_NAV_ON_FG      lv_color_hex(0x3CFF6E)
+#define V32_C_NAV_ON_BAR     lv_color_hex(0x0D3A1A)
 
-/* 画布内部（网格方向：白底上必须是"比底暗"，见上面的第 3 条） */
-#define V32_C_GRID           lv_color_hex(0xE4EBF3)  /* grid() 网格 */
-#define V32_C_GRID_CENTER    lv_color_hex(0xB7C6D6)  /* 中心虚线 */
-#define V32_C_TRIGGER        lv_color_hex(0x54708A)  /* 触发线 + "T" */
-#define V32_C_IQ_RING        lv_color_hex(0xC3D2E0)  /* 矢量图同心圆 */
+/* 画布内部（**黑底**：网格必须比底色**亮**，否则看不见） */
+#define V32_C_GRID           lv_color_hex(0x0B3D14)  /* grid() 网格 */
+#define V32_C_GRID_CENTER    lv_color_hex(0x1F7A2A)  /* 中心虚线 */
+#define V32_C_TRIGGER        lv_color_hex(0xFF45FF)  /* 触发线 + "T" */
+#define V32_C_IQ_RING        lv_color_hex(0x22371F)  /* 矢量图同心圆 */
 
 /* ==================== 字体 ==================== */
 /* 由 tools/gen_v32_fonts.py 从参考稿 HTML + 本工程源码的字符串字面量里扒字符集
