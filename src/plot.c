@@ -562,6 +562,35 @@ static void draw_cursors(lv_layer_t *layer, plot_t *p,
     }
 }
 
+/* XY 模式（李萨如）：trace0 当 X、trace1 当 Y，逐点连线。
+ * 不画时间轴 —— 横轴是 CH1 的电压，纵轴是 CH2 的电压。 */
+static void draw_xy(lv_layer_t *layer, plot_t *p,
+                    int32_t x0, int32_t y0, int32_t w, int32_t h)
+{
+    if(!p->tr[0].vis || !p->tr[1].vis) return;
+
+    lv_draw_line_dsc_t ld;
+    lv_draw_line_dsc_init(&ld);
+    ld.color = p->tr[0].color;
+    ld.width = 2;
+    ld.opa   = LV_OPA_COVER;
+
+    const int n = (p->tr[0].n < p->tr[1].n) ? p->tr[0].n : p->tr[1].n;
+    int32_t px = 0, py = 0;
+    for(int i = 0; i < n; i++) {
+        const int32_t cx = x0 + (int32_t)(p->tr[0].y[i] * (float)(w - 1));
+        const int32_t cy = y0 + h - 1 - (int32_t)(p->tr[1].y[i] * (float)(h - 1));
+        if(i > 0) line(layer, &ld, px, py, cx, cy);
+        px = cx; py = cy;
+    }
+
+    /* 中心十字（原点 = 两路中点） */
+    ld.color = p->center_color;
+    ld.width = 1;
+    line(layer, &ld, x0 + w/2, y0, x0 + w/2, y0 + h - 1);
+    line(layer, &ld, x0, y0 + h/2, x0 + w - 1, y0 + h/2);
+}
+
 static void draw_trigger(lv_layer_t *layer, plot_t *p,
                          int32_t x0, int32_t y0, int32_t w, int32_t h)
 {
@@ -663,6 +692,9 @@ static void plot_draw_cb(lv_event_t *e)
 
     if(p->mode == PLOT_IQ) {
         draw_iq(layer, p, x0, y0, w, h);
+    }
+    else if(p->mode == PLOT_XY) {
+        draw_xy(layer, p, x0, y0, w, h);
     }
     else {
         draw_one_trace(layer, p, 0, x0, y0, w, h);

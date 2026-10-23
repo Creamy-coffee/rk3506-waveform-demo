@@ -36,6 +36,7 @@ typedef enum {
     PLOT_SCOPE = 0,   /* 双通道折线 + 触发线 + 中心虚线，10×8 网格 */
     PLOT_FFT,         /* 单条频谱曲线 + 峰值箭头，13×8 网格 */
     PLOT_IQ,          /* 同心圆 + 矢量线（Q/I 轴），8×8 网格 */
+    PLOT_XY,          /* 李萨如：trace0 作 X 轴、trace1 作 Y 轴 */
     PLOT_HIST,        /* 双通道时间历程（锁相输出），10×8 网格 */
     PLOT_AI           /* 单条曲线（AI 原始/降噪），10×4 网格 */
 } plot_mode_t;

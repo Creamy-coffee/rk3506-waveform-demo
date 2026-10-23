@@ -2387,10 +2387,17 @@ static void cb_trig_lev_auto(lv_event_t *e){ LV_UNUSED(e); s_trig_lev = 0.5f; tr
 static void cb_math_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
-    s_math_mode = (s_math_mode + 1) % 3;
-    static const char *nm[3] = { "关", "A+B", "A-B" };
+    s_math_mode = (s_math_mode + 1) % 4;
+    static const char *nm[4] = { "关", "A+B", "A-B", "XY" };
     if(s_chip_math) { chip_set_text(s_chip_math, nm[s_math_mode]);
                       chip_selected(s_chip_math, s_math_mode != 0); }
+    /*
+     * XY（李萨如）：把绘图控件切成 XY 模式 —— trace0 当 X 轴、trace1 当 Y 轴。
+     * 两条迹线的归一化用的是同一套 s_real_lo/s_real_sc（两路共用纵向量程），
+     * 所以 XY 平面是等比例的，不会因为某一路幅度大就被拉扁。
+     */
+    if(s_plot_scope)
+        plot_set_mode(s_plot_scope, (s_math_mode == 3) ? PLOT_XY : PLOT_SCOPE);
     ui_tick();
 }
 
