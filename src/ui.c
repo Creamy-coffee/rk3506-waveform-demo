@@ -1201,7 +1201,7 @@ static void real_update(void)
     s_real_t_last = lv_tick_get();
     s_real_valid = true;
 
-    if(S.auto_fit) auto_fit_apply(fn);
+    if(S.auto_fit && S.page == UI_PAGE_AI) auto_fit_apply(fn);
     auto_decimation();
 }
 
@@ -2268,16 +2268,25 @@ static void cb_scope_touch(lv_event_t *e)
 }
 
 /* 时基档位表（跟 HTML 原型一致） */
-static const float TB_US[12] = { 0.5f,1.f,2.f,5.f,10.f,20.f,50.f,100.f,200.f,500.f,1000.f,5000.f };
+/* 时基档位（µs/格）。原来最小 0.5µs —— 看 10 MHz（周期 0.1µs）时
+   一屏 5µs 就是 50 个周期，挤成一片。补上 0.02/0.05/0.1/0.2 四档。 */
+static const float TB_US[16] = { 0.02f,0.05f,0.1f,0.2f,0.5f,1.f,2.f,5.f,10.f,20.f,50.f,100.f,200.f,500.f,1000.f,5000.f };
+#define TB_N 16
 static void tb_default(int *idx)
 {
     const wave_source_t *src = wave_source_get();
     const float fs = (src && src->sample_rate > 0) ? (float)src->sample_rate : 65000000.0f;
     const int   fn = (src && src->frame_len > 0) ? src->frame_len : V32_POINTS;
     /* 一屏 10 格、整帧放满：us/格 = 帧长/fs*1e6/10 */
-    const float want = (float)fn / fs * 1e6f / (float)V32_GRID_X;
+    float want;
+    if(s_real_peak_hz > 100.f) {
+        /* 一屏 10 格放 ~5 个周期 => 每格 0.5 个周期 */
+        want = 0.5e6f / s_real_peak_hz;
+    } else {
+        want = (float)fn / fs * 1e6f / (float)V32_GRID_X;
+    }
     int best = 0; float bd = 1e9f;
-    for(int i = 0; i < 12; i++) { float d = fabsf(TB_US[i] - want); if(d < bd) { bd = d; best = i; } }
+    for(int i = 0; i < TB_N; i++) { float d = fabsf(TB_US[i] - want); if(d < bd) { bd = d; best = i; } }
     *idx = best;
 }
 static void tb_apply(int idx)
@@ -2286,7 +2295,7 @@ static void tb_apply(int idx)
     const float fs = (src && src->sample_rate > 0) ? (float)src->sample_rate : 65000000.0f;
     const int   fn = (src && src->frame_len > 0) ? src->frame_len : V32_POINTS;
     if(idx < 0) idx = 0;
-    if(idx > 11) idx = 11;
+    if(idx > TB_N - 1) idx = TB_N - 1;
     s_tb_idx = idx;
     int span = (int)(TB_US[idx] * 1e-6f * (float)V32_GRID_X * fs + 0.5f);
     if(span < 8) span = 8;
