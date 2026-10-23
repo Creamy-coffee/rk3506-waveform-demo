@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>示波器界面原型 · 黑底绿线</title>
+<style>
+  :root{
+    --bg:#0a0d0a; --panel:#111511; --line:#1e2a1e;
+    --grn:#3cff6e; --grn-dim:#1f7a38; --grn-deep:#123a1c;
+    --amber:#ffb340; --cyan:#57d8ff; --txt:#c8e6cd; --txt-dim:#6b8a72;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:#060806;color:var(--txt);
+    font:14px/1.5 "Consolas","SF Mono",Menlo,"Microsoft YaHei",monospace}
+  .wrap{display:flex;gap:16px;padding:16px;height:100%}
+  .stage{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+  .bezel{background:#0d120d;border:6px solid #1a231a;border-radius:14px;
+    box-shadow:0 0 0 1px #2a3a2a, 0 18px 40px -12px #000 inset, 0 8px 28px rgba(0,0,0,.7);
+    padding:10px;position:relative}
+  canvas{width:100%;height:auto;display:block;border-radius:6px;
+    background:#050805;image-rendering:auto}
+  .glow{position:absolute;inset:10px;border-radius:6px;pointer-events:none;
+    box-shadow:inset 0 0 90px rgba(60,255,110,.05), inset 0 0 24px rgba(0,0,0,.8)}
+  .hint{color:var(--txt-dim);font-size:12px}
+
+  .panel{width:330px;flex:none;overflow:auto;background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .panel h3{margin:14px 0 8px;font-size:12px;letter-spacing:.14em;color:var(--grn-dim);
+    text-transform:uppercase;font-weight:600}
+  .panel h3:first-child{margin-top:0}
+  .row{display:flex;align-items:center;gap:8px;margin:7px 0}
+  .row label{width:66px;color:var(--txt-dim);font-size:12px;flex:none}
+  select,input[type=range],button{font:inherit}
+  select{flex:1;background:#0b140d;color:var(--txt);border:1px solid #23331f;
+    border-radius:5px;padding:4px 6px;outline:none}
+  input[type=range]{flex:1;accent-color:#3cff6e;height:18px}
+  .val{width:78px;text-align:right;color:var(--grn);font-size:12px;flex:none}
+  .seg{display:flex;gap:4px;flex:1}
+  .seg button{flex:1;background:#0b140d;color:var(--txt-dim);border:1px solid #23331f;
+    border-radius:5px;padding:5px 0;cursor:pointer;font-size:12px}
+  .seg button.on{background:#123a1c;color:var(--grn);border-color:#2e6b3c;
+    box-shadow:0 0 8px rgba(60,255,110,.25)}
+
+  table.meas{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.meas td{padding:3px 0;border-bottom:1px dotted #1c261c}
+  table.meas td:first-child{color:var(--txt-dim)}
+  table.meas td:last-child{text-align:right;color:var(--grn);font-variant-numeric:tabular-nums}
+  .ch{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;
+    background:var(--grn);box-shadow:0 0 6px var(--grn)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage">
+    <div class="bezel">
+      <canvas id="scope" width="1024" height="600"></canvas>
+      <div class="glow"></div>
+    </div>
+    <div class="hint">把鼠标移到屏幕上拖动：竖向虚线 = 时间光标 T1/T2，横向虚线 = 电压光标 V1/V2</div>
+  </div>
+
+  <div class="panel">
+    <h3>信号源（模拟 FPGA）</h3>
+    <div class="row"><label>波形</label>
+      <select id="wavetype">
+        <option value="sine">正弦</option>
+        <option value="square" selected>方波</option>
+        <option value="tri">三角</option>
+        <option value="saw">锯齿</option>
+        <option value="am">AM 调幅</option>
+      </select></div>
+    <div class="row"><label>频率</label><input id="freq" type="range" min="0" max="1000" value="470"><span class="val" id="freqv"></span></div>
+    <div class="row"><label>Vpp</label><input id="amp" type="range" min="20" max="900" value="500"><span class="val" id="ampv"></span></div>
+    <div class="row"><label>噪声</label><input id="noise" type="range" min="0" max="100" value="6"><span class="val" id="noisev"></span></div>
+    <div class="row"><label>偏置</label><input id="ofs" type="range" min="-200" max="200" value="0"><span class="val" id="ofsv"></span></div>
+
+    <h3>水平</h3>
+    <div class="row"><label>时基</label>
+      <select id="tdiv">
+        <option value="0.0000005">0.5 µs/格</option>
+        <option value="0.000001">1 µs/格</option>
+        <option value="0.000002">2 µs/格</option>
+        <option value="0.000005">5 µs/格</option>
+        <option value="0.00001">10 µs/格</option>
+        <option value="0.00002">20 µs/格</option>
+        <option value="0.00005">50 µs/格</option>
+        <option value="0.0001" selected>100 µs/格</option>
+        <option value="0.0002">200 µs/格</option>
+        <option value="0.0005">500 µs/格</option>
+        <option value="0.001">1 ms/格</option>
+        <option value="0.005">5 ms/格</option>
+      </select></div>
+    <div class="row"><label>位置</label><input id="hpos" type="range" min="-50" max="50" value="0"><span class="val" id="hposv"></span></div>
+
+    <h3>垂直</h3>
+    <div class="row"><label>档位</label>
+      <select id="vdiv">
+        <option value="auto" selected>自动</option>
+        <option value="0.05">50 mV/格</option>
+        <option value="0.1">100 mV/格</option>
+        <option value="0.2">200 mV/格</option>
+        <option value="0.5">500 mV/格</option>
+        <option value="1">1 V/格</option>
+        <option value="2">2 V/格</option>
+      </select></div>
+    <div class="row"><label>位置</label><input id="vpos" type="range" min="-50" max="50" value="0"><span class="val" id="vposv"></span></div>
+
+    <h3>触发</h3>
+    <div class="row"><label>模式</label>
+      <div class="seg" id="trmode">
+        <button data-v="auto" class="on">自动</button>
+        <button data-v="normal">正常</button>
+        <button data-v="single">单次</button>
+      </div></div>
+    <div class="row"><label>边沿</label>
+      <div class="seg" id="tredge">
+        <button data-v="rise" class="on">上升</button>
+        <button data-v="fall">下降</button>
+      </div></div>
+    <div class="row"><label>电平</label><input id="trlev" type="range" min="-100" max="100" value="0"><span class="val" id="trlevv"></span></div>
+
+    <h3>测量</h3>
+    <table class="meas">
+      <tr><td>峰峰值 Vpp</td><td id="m_vpp">—</td></tr>
+      <tr><td>最大值 Vmax</td><td id="m_vmax">—</td></tr>
+      <tr><td>最小值 Vmin</td><td id="m_vmin">—</td></tr>
+      <tr><td>幅度 Vamp</td><td id="m_vamp">—</td></tr>
+      <tr><td>有效值 Vrms</td><td id="m_vrms">—</td></tr>
+      <tr><td>平均值 Vavg</td><td id="m_vavg">—</td></tr>
+      <tr><td>周期 T</td><td id="m_per">—</td></tr>
+      <tr><td>频率 f</td><td id="m_freq">—</td></tr>
+      <tr><td>占空比</td><td id="m_duty">—</td></tr>
+      <tr><td>上升时间</td><td id="m_rise">—</td></tr>
+    </table>
+
+    <h3>光标</h3>
+    <table class="meas">
+      <tr><td>T1 / T2</td><td id="c_t">—</td></tr>
+      <tr><td>ΔT / 1/ΔT</td><td id="c_dt">—</td></tr>
+      <tr><td>V1 / V2</td><td id="c_v">—</td></tr>
+      <tr><td>ΔV</td><td id="c_dv">—</td></tr>
+    </table>
+
+    <h3>运行</h3>
+    <div class="row"><label>控制</label>
+      <div class="seg">
+        <button id="btn_auto">自动设置</button>
+        <button id="btn_run" class="on">运行中</button>
+      </div></div>
+    <div class="row"><label>刷新</label><span class="val" id="fps">—</span></div>
+    <div class="row"><label>采样</label><span class="val" id="srate">—</span></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =======================================================================
+ * 示波器界面原型：黑底绿线 + 可调网格 + 触发 + 自动测量 + 光标
+ * 数据用软件模拟（等价于 FPGA 每帧 1024 点），量纲按板上标定 2.441 mV/LSB
+ * ===================================================================== */
+
+const CV = document.getElementById('scope');
+const G  = CV.getContext('2d', { alpha:false });
+const W = CV.width, H = CV.height;
+
+/* ---- 屏幕布局（跟设备 1024x600 一致）---- */
+const PL = { x: 78, y: 54, w: 862, h: 470 };      /* 绘图区 */
+const DIV_X = 10, DIV_Y = 8;                       /* 10 格 x 8 格 */
+
+/* ---- 板上标定：1 LSB = 2.441 mV ---- */
+const MV_PER_LSB = 2.441;
+const N_PTS = 1024;                                /* 每帧点数（FPGA 现状） */
+
+/* ---- 状态 ---- */
+const S = {
+  wavetype:'square', freq:1000, ampVpp:5, noise:0.03, offset:0,
+  tdiv:100e-6, hpos:0, vdiv:'auto', vpos:0,
+  trmode:'auto', tredge:'rise', trlev:0,
+  curOn:true,
+  cur: { t1:0.28, t2:0.62, v1:0.36, v2:0.68 },     /* 归一化 0..1 */
+};
+let dragTarget = null;
+
+/* ---- 数据缓冲 ---- */
+let frame = new Float32Array(N_PTS);   /* 单位 V */
+let fsEff = N_PTS / (DIV_X * S.tdiv);  /* 等效采样率 */
+let trigIdx = 0;                       /* 触发点在本帧的样本序号 */
+let trigFound = false;
+let running = true;
+let lastFpsT = 0, fpsCnt = 0, fps = 0;
+
+/* =====================================================================
+ * 1) 数据产生：模拟 FPGA 每帧送来 1024 个点
+ *    v(t) 是真实电压，再按 2.441mV/LSB 量化成 12bit 码值再回算 —— 这样
+ *    噪声、分辨率都跟真实链路一致，测量算法才不会"太理想"
+ * ===================================================================*/
+function genFrame(t0) {
+  const dt = 1 / fsEff;
+  const f  = S.freq, A = S.ampVpp / 2, off = S.offset;
+  for (let i = 0; i < N_PTS; i++) {
+    const t = t0 + i * dt;
+    const ph = 2 * Math.PI * f * t;
+    let v;
+    switch (S.wavetype) {
+      case 'sine':   v = A * Math.sin(ph); break;
+      case 'square': v = (Math.sin(ph) >= 0 ? A : -A); break;
+      case 'tri':    v = A * (2 / Math.PI) * Math.asin(Math.sin(ph)); break;
+      case 'saw': {
+        const u = (f * t) % 1;                 /* 0..1 */
+        v = A * (2 * u - 1);
+        break;
+      }
+      case 'am':     v = A * (1 + 0.6 * Math.sin(2*Math.PI*f*0.05*t)) * Math.sin(ph); break;
+      default:       v = 0;
+    }
+    v += off + (Math.random() * 2 - 1) * S.noise;
+    /* 量化到 12bit（-2048..2047），跟 FPGA 一致 */
+    let code = Math.round(v * 1000 / MV_PER_LSB);
+    if (code > 2047) code = 2047;
+    if (code < -2048) code = -2048;
+    frame[i] = code * MV_PER_LSB / 1000;
+  }
+}
+
+/* =====================================================================
+ * 2) 触发：在帧里找第一个穿越触发电平的边沿
+ *    自动模式找不到就自由运行（跟真示波器一致）
+ * ===================================================================*/
+function findTrigger() {
+  const lv = trigLevelV();
+  const rising = (S.tredge === 'rise');
+  /* 从 25% 处开始找：触发点钉在屏幕 20% 位置时需要左边有数据，
+     否则屏幕左 1/5 是空白（原型里一帧就是全部数据，没有更早的） */
+  for (let i = Math.floor(N_PTS * 0.25); i < N_PTS - 1; i++) {
+    const a = frame[i - 1], b = frame[i];
+    if (rising) { if (a < lv && b >= lv) return i; }
+    else        { if (a > lv && b <= lv) return i; }
+  }
+  return -1;
+}
+function trigLevelV() {
+  /* 触发电平以"满屏"归一化保存，换算成电压要跟着垂直档位走 */
+  const { vmid, vspan } = vscale();
+  return vmid + S.trlev / 100 * (vspan / 2) * 0.95;
+}
+
+/* =====================================================================
+ * 3) 垂直标定
+ * ===================================================================*/
+function vscale() {
+  let vdiv;
+  if (S.vdiv === 'auto') {
+    let mn = 1e9, mx = -1e9;
+    for (let i = 0; i < N_PTS; i++) { const v = frame[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
+    const span = Math.max(mx - mn, 1e-3);
+    vdiv = niceStep(span / (DIV_Y * 0.8));
+  } else {
+    vdiv = parseFloat(S.vdiv);
+  }
+  const vspan = vdiv * DIV_Y;
+  const vmid = S.offset + S.vpos / 100 * vspan * 0.9;
+  return { vdiv, vspan, vmid };
+}
+function niceStep(x) {
+  const p = Math.pow(10, Math.floor(Math.log10(x)));
+  const m = x / p;
+  const n = m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10;
+  return n * p;
+}
+
+/* =====================================================================
+ * 4) 绘制
+ * ===================================================================*/
+const C = {
+  bg:'#050805', grid:'#12301b', gridFine:'#0c1f12', graticule:'#1a4a28',
+  trace:'#3cff6e', traceGlow:'rgba(60,255,110,.55)',
+  text:'#7fd79a', textDim:'#2f7a46', amber:'#ffb340', cyan:'#57d8ff',
+};
+
+function drawGrid() {
+  G.fillStyle = C.bg;
+  G.fillRect(0, 0, W, H);
+
+  /* 细网格（每大格 5 等分）—— 复古示波器的点阵网格 */
+  G.strokeStyle = C.gridFine; G.lineWidth = 1;
+  G.beginPath();
+  const sx = PL.w / (DIV_X * 5), sy = PL.h / (DIV_Y * 5);
+  for (let i = 1; i < DIV_X * 5; i++) {
+    const x = Math.round(PL.x + i * sx) + .5;
+    G.moveTo(x, PL.y); G.lineTo(x, PL.y + PL.h);
+  }
+  for (let j = 1; j < DIV_Y * 5; j++) {
+    const y = Math.round(PL.y + j * sy) + .5;
+    G.moveTo(PL.x, y); G.lineTo(PL.x + PL.w, y);
+  }
+  G.stroke();
+
+  /* 大格 */
+  G.strokeStyle = C.grid; G.lineWidth = 1;
+  G.beginPath();
+  for (let i = 0; i <= DIV_X; i++) {
+    const x = Math.round(PL.x + i * PL.w / DIV_X) + .5;
+    G.moveTo(x, PL.y); G.lineTo(x, PL.y + PL.h);
+  }
+  for (let j = 0; j <= DIV_Y; j++) {
+    const y = Math.round(PL.y + j * PL.h / DIV_Y) + .5;
+    G.moveTo(PL.x, y); G.lineTo(PL.x + PL.w, y);
+  }
+  G.stroke();
+
+  /* 中线刻度（示波器的中心十字） */
+  G.strokeStyle = C.graticule;
+  G.beginPath();
+  const cx = Math.round(PL.x + PL.w / 2) + .5, cy = Math.round(PL.y + PL.h / 2) + .5;
+  for (let x = PL.x; x < PL.x + PL.w; x += 8) { G.moveTo(x, cy - 4); G.lineTo(x, cy + 4); }
+  for (let y = PL.y; y < PL.y + PL.h; y += 8) { G.moveTo(cx - 4, y); G.lineTo(cx + 4, y); }
+  G.stroke();
+}
+
+function drawLabels() {
+  const { vdiv } = vscale();
+  G.fillStyle = C.text; G.font = '13px Consolas, monospace';
+  G.textBaseline = 'middle';
+
+  /* 时间轴 */
+  for (let i = 0; i <= DIV_X; i += 2) {
+    const x = PL.x + i * PL.w / DIV_X;
+    const t = (i - DIV_X / 2) * S.tdiv;
+    G.textAlign = i === 0 ? 'left' : (i === DIV_X ? 'right' : 'center');
+    G.fillText(fmtTime(t), x, PL.y + PL.h + 20);
+  }
+  /* 电压轴 */
+  G.textAlign = 'right';
+  for (let j = 0; j <= DIV_Y; j += 2) {
+    const y = PL.y + j * PL.h / DIV_Y;
+    const v = (DIV_Y / 2 - j) * vdiv;
+    G.fillText(fmtVolt(v), PL.x - 10, y);
+  }
+
+  /* 左上：档位信息（示波器那种一行小字） */
+  G.textAlign = 'left';
+  G.fillStyle = C.trace;
+  G.font = 'bold 15px Consolas, monospace';
+  G.fillText('CH1', PL.x, 30);
+  G.fillStyle = C.text; G.font = '13px Consolas, monospace';
+  G.fillText(`${fmtVolt(vdiv)}/格   ${fmtTime(S.tdiv)}/格`, PL.x + 46, 30);
+  G.fillStyle = C.textDim;
+  G.fillText(`${N_PTS} 点 · ${fmtHz(fsEff)} 采样`, PL.x + 340, 30);
+
+  /* 右上：触发状态 */
+  G.textAlign = 'right';
+  const st = !running ? '■ 停' : (trigFound ? `↗ ${S.tredge === 'rise' ? '↑' : '↓'} ${fmtVolt(trigLevelV())}` : '⟳ 自由');
+  G.fillStyle = trigFound ? C.amber : C.textDim;
+  G.fillText(S.trmode === 'auto' ? '自动' : S.trmode === 'normal' ? '正常' : '单次', W - PL.x, 30);
+  G.fillStyle = trigFound ? C.amber : C.textDim;
+  G.fillText(st, W - PL.x, 50);
+}
+
+function drawTrace() {
+  const { vdiv, vmid } = vscale();
+
+  /*
+   * 横向映射：
+   *   触发到 -> 把触发点钉在屏幕左侧 20% 处（常规示波器的做法），
+   *             这样边沿不会左右乱跑，眼睛才看得舒服。
+   *   没触发 -> 按水平位置自由平移。
+   * 一帧正好覆盖 10 格（fsEff = N/(10*时基)），所以 i/N 就是一屏的横向比例。
+   */
+  const shift = trigFound ? (0.2 - trigIdx / N_PTS) : (S.hpos / 100 * 0.5);
+
+  G.save();
+  G.beginPath(); G.rect(PL.x, PL.y, PL.w, PL.h); G.clip();
+
+  G.strokeStyle = C.trace;
+  G.lineWidth = 2;
+  G.lineJoin = 'round'; G.lineCap = 'round';
+  G.shadowColor = C.traceGlow;
+  G.shadowBlur = 7;
+
+  const yOf = v => PL.y + PL.h / 2 - (v - vmid) / vdiv * (PL.h / DIV_Y);
+  G.beginPath();
+  for (let i = 0; i < N_PTS; i++) {
+    const x = PL.x + (i / N_PTS + shift) * PL.w;
+    const y = yOf(frame[i]);
+    if (i === 0) G.moveTo(x, y); else G.lineTo(x, y);
+  }
+  G.stroke();
+  G.restore();
+
+  drawTriggerMark();
+}
+
+/* 触发标记：屏幕顶部的小箭头 + 右侧电平三角，跟真示波器一样 */
+function drawTriggerMark() {
+  if (!trigFound || !running) return;
+  const { vdiv, vmid } = vscale();
+  const y = PL.y + PL.h / 2 - (trigLevelV() - vmid) / vdiv * (PL.h / DIV_Y);
+  if (y < PL.y || y > PL.y + PL.h) return;
+
+  G.save();
+  G.strokeStyle = C.amber; G.fillStyle = C.amber; G.lineWidth = 1;
+  G.globalAlpha = 0.75;
+
+  /* 电平线（只在左右各画一小段，避免糊住波形） */
+  G.beginPath();
+  G.moveTo(PL.x, y); G.lineTo(PL.x + 26, y);
+  G.moveTo(PL.x + PL.w - 26, y); G.lineTo(PL.x + PL.w, y);
+  G.stroke();
+
+  /* 右侧电平三角 */
+  G.beginPath();
+  G.moveTo(PL.x + PL.w + 2, y);
+  G.lineTo(PL.x + PL.w + 12, y - 6);
+  G.lineTo(PL.x + PL.w + 12, y + 6);
+  G.closePath(); G.fill();
+
+  /* 顶部触发位置箭头 */
+  const xt = PL.x + 0.2 * PL.w;
+  G.beginPath();
+  G.moveTo(xt, PL.y);
+  G.lineTo(xt - 6, PL.y - 9);
+  G.lineTo(xt + 6, PL.y - 9);
+  G.closePath(); G.fill();
+  G.restore();
+  G.globalAlpha = 1;
+}
+
+/* =====================================================================
+ * 5) 测量
+ * ===================================================================*/
+function measure() {
+  const n = N_PTS;
+  let mn = 1e9, mx = -1e9;
+  for (let i = 0; i < n; i++) {
+    const v = frame[i];
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+  const vpp = mx - mn;
+
+  /* --- 周期 / 频率 / 占空比：用过冲电平做迟滞比较 --- */
+  const mid = (mx + mn) / 2;
+  const hys = Math.max(vpp * 0.1, 1e-4);
+  let risingIdx = [];
+  let hi = (frame[0] > mid);
+  for (let i = 1; i < n; i++) {
+    const now = (frame[i] > mid);
+    if (!hi && now) risingIdx.push(i);
+    hi = now;
+  }
+  let period = NaN, freq = NaN, duty = NaN, riseT = NaN;
+  let mean = 0, rms = 0, cycles = 0;
+  {   /* 没找到周期时的兜底：整帧平均 */
+    let su = 0, sq = 0;
+    for (let i = 0; i < n; i++) { su += frame[i]; sq += frame[i] * frame[i]; }
+    mean = su / n; rms = Math.sqrt(sq / n);
+  }
+
+  if (risingIdx.length >= 2) {
+    let acc = 0, k = 0;
+    for (let i = 1; i < risingIdx.length; i++) { acc += risingIdx[i] - risingIdx[i-1]; k++; }
+    const avg = acc / k;                       /* 平均周期（样本） */
+    period = avg / fsEff;
+    freq = 1 / period;
+
+    /* 占空比：找到电平以上的宽度 */
+    let hiAcc = 0, hiCnt = 0;
+    for (let i = 1; i < risingIdx.length; i++) {
+      let w = 0;
+      for (let j = risingIdx[i-1]; j < risingIdx[i]; j++)
+        if (frame[j] > mid) w++;
+      hiAcc += w; hiCnt++;
+    }
+    if (hiCnt) duty = (hiAcc / hiCnt) / avg;
+
+    /*
+     * 平均值 / 有效值用**整数个周期**算。
+     * 一帧里首尾通常是半个周期，直接整帧平均会带进直流偏置 —— 方波明明是
+     * 对称的，却显示 -68 mV，就是这半个周期造成的。真示波器也是这么做的
+     * （读数标明"基于 N 个周期"）。
+     */
+    const per = Math.round(avg);
+    if (per > 2) {
+      const start = risingIdx[0];
+      const end = start + per * Math.floor((n - start - 1) / per);
+      let su = 0, sq = 0, cnt = 0;
+      for (let i = start; i < end; i++) { su += frame[i]; sq += frame[i] * frame[i]; cnt++; }
+      if (cnt > 0) { mean = su / cnt; rms = Math.sqrt(sq / cnt); cycles = cnt / per; }
+    }
+
+    /* 上升时间：10%→90% 穿越（取第一个完整边沿） */
+    const lo = mn + vpp * 0.1, hiL = mn + vpp * 0.9;
+    for (let i = 1; i < n; i++) {
+      if (frame[i-1] < lo && frame[i] >= lo) {
+        let a = i-1;
+        for (let j = a; j < n; j++) if (frame[j] >= hiL) { riseT = (j - a) / fsEff; break; }
+        break;
+      }
+    }
+  }
+
+  return { mn, mx, vpp, rms, mean, period, freq, duty, riseT, cycles };
+}
+
+/* =====================================================================
+ * 6) 光标
+ * ===================================================================*/
+function drawCursors() {
+  if (!S.curOn) return;
+  const { vdiv, vmid } = vscale();
+  G.save();
+  G.beginPath(); G.rect(PL.x, PL.y, PL.w, PL.h); G.clip();
+  G.setLineDash([6, 5]);
+  G.lineWidth = 1;
+
+  /* 时间光标 */
+  [['t1', C.cyan, 'T1'], ['t2', C.cyan, 'T2']].forEach(([k, col, nm]) => {
+    const x = PL.x + S.cur[k] * PL.w;
+    G.strokeStyle = col; G.beginPath(); G.moveTo(x, PL.y); G.lineTo(x, PL.y + PL.h); G.stroke();
+    G.fillStyle = col; G.font = 'bold 12px Consolas, monospace';
+    G.textAlign = 'left'; G.fillText(nm, x + 4, PL.y + 14);
+  });
+  /* 电压光标 */
+  [['v1', C.amber, 'V1'], ['v2', C.amber, 'V2']].forEach(([k, col, nm]) => {
+    const y = PL.y + S.cur[k] * PL.h;
+    G.strokeStyle = col; G.beginPath(); G.moveTo(PL.x, y); G.lineTo(PL.x + PL.w, y); G.stroke();
+    G.fillStyle = col; G.font = 'bold 12px Consolas, monospace';
+    G.textAlign = 'left'; G.fillText(nm, PL.x + 4, y - 6);
+  });
+  G.restore();
+  G.setLineDash([]);
+}
+
+/* =====================================================================
+ * 7) 主循环
+ * ===================================================================*/
+let phaseT = 0;
+function loop(ts) {
+  if (!lastFpsT) lastFpsT = ts;
+  fpsCnt++;
+  if (ts - lastFpsT > 500) { fps = fpsCnt * 1000 / (ts - lastFpsT); fpsCnt = 0; lastFpsT = ts;
+    document.getElementById('fps').textContent = fps.toFixed(0) + ' fps'; }
+
+  if (running) {
+    phaseT += 1 / Math.max(fps || 60, 1) * 0.02;      /* 让波形缓慢流动（便于看触发效果） */
+    fsEff = N_PTS / (DIV_X * S.tdiv);
+    genFrame(phaseT);
+    const ti = findTrigger();
+    trigFound = (ti >= 0);
+    if (trigFound) trigIdx = ti;
+    if (!trigFound && S.trmode !== 'auto') {
+      /* 正常/单次模式没触发 -> 不更新画面 */
+    }
+  }
+
+  drawGrid();
+  drawTrace();
+  drawCursors();
+  drawLabels();
+  updateReadouts();
+  requestAnimationFrame(loop);
+}
+
+function updateReadouts() {
+  const m = measure();
+  const set = (id, txt) => { const e = document.getElementById(id); if (e) e.textContent = txt; };
+  set('m_vpp',  fmtVolt(m.vpp, 3));
+  set('m_vmax', fmtVolt(m.mx, 3));
+  set('m_vmin', fmtVolt(m.mn, 3));
+  set('m_vamp', fmtVolt(m.vpp / 2, 3));
+  set('m_vrms', fmtVolt(m.rms, 3));
+  set('m_vavg', fmtVolt(m.mean, 3));
+  set('m_per',  isNaN(m.period) ? '—' : fmtTime(m.period));
+  set('m_freq', isNaN(m.freq) ? '—' : fmtHz(m.freq));
+  set('m_duty', isNaN(m.duty) ? '—' : (m.duty * 100).toFixed(2) + ' %');
+  set('m_rise', isNaN(m.riseT) ? '—' : fmtTime(m.riseT));
+
+  /* 光标换算 */
+  const { vdiv, vmid, vspan } = vscale();
+  const tA = (S.cur.t1 - 0.5) * DIV_X * S.tdiv;
+  const tB = (S.cur.t2 - 0.5) * DIV_X * S.tdiv;
+  const vA = vmid + (0.5 - S.cur.v1) * vspan;
+  const vB = vmid + (0.5 - S.cur.v2) * vspan;
+  set('c_t',  fmtTime(tA) + ' / ' + fmtTime(tB));
+  const dt = tB - tA;
+  set('c_dt', fmtTime(dt) + ' / ' + (dt !== 0 ? fmtHz(1 / Math.abs(dt)) : '—'));
+  set('c_v',  fmtVolt(vA) + ' / ' + fmtVolt(vB));
+  set('c_dv', fmtVolt(Math.abs(vB - vA)));
+  set('srate', fmtHz(fsEff));
+}
+
+/* ---- 单位格式化 ---- */
+function fmtVolt(v, dec) {
+  const a = Math.abs(v);
+  if (a === 0) return '0 V';
+  if (a < 0.001) return (v * 1e6).toFixed(0) + ' µV';
+  if (a < 1) return (v * 1e3).toFixed(dec === 3 ? 1 : 1) + ' mV';
+  return v.toFixed(2) + ' V';
+}
+function fmtTime(t) {
+  const a = Math.abs(t);
+  if (a < 1e-6) return (t * 1e9).toFixed(1) + ' ns';
+  if (a < 1e-3) return (t * 1e6).toFixed(2) + ' µs';
+  if (a < 1) return (t * 1e3).toFixed(2) + ' ms';
+  return t.toFixed(3) + ' s';
+}
+function fmtHz(f) {
+  if (!isFinite(f)) return '—';
+  if (f < 1e3) return f.toFixed(2) + ' Hz';
+  if (f < 1e6) return (f / 1e3).toFixed(3) + ' kHz';
+  return (f / 1e6).toFixed(3) + ' MHz';
+}
+
+/* =====================================================================
+ * 8) 交互
+ * ===================================================================*/
+function bindRange(id, fn) {
+  const el = document.getElementById(id);
+  const up = () => { fn(parseFloat(el.value)); };
+  el.addEventListener('input', up); up();
+}
+bindRange('freq',  v => { S.freq = 10 * Math.pow(10, v / 1000 * 6.5); document.getElementById('freqv').textContent = fmtHz(S.freq); });
+bindRange('amp',   v => { S.ampVpp = v / 100; document.getElementById('ampv').textContent = S.ampVpp.toFixed(2) + ' V'; });
+bindRange('noise', v => { S.noise = v / 1000; document.getElementById('noisev').textContent = (S.noise*1000).toFixed(0) + ' mV'; });
+bindRange('ofs',   v => { S.offset = v / 100; document.getElementById('ofsv').textContent = S.offset.toFixed(2) + ' V'; });
+bindRange('hpos',  v => { S.hpos = v; document.getElementById('hposv').textContent = v + '%'; });
+bindRange('vpos',  v => { S.vpos = v; document.getElementById('vposv').textContent = v + '%'; });
+bindRange('trlev', v => { S.trlev = v; document.getElementById('trlevv').textContent = v + '%'; });
+
+document.getElementById('wavetype').addEventListener('change', e => S.wavetype = e.target.value);
+document.getElementById('tdiv').addEventListener('change', e => S.tdiv = parseFloat(e.target.value));
+document.getElementById('vdiv').addEventListener('change', e => S.vdiv = e.target.value);
+
+function bindSeg(id, key) {
+  const box = document.getElementById(id);
+  box.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    [...box.children].forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    if (key === 'trmode') { S.trmode = b.dataset.v; running = true; }
+    else S.tredge = b.dataset.v;
+  });
+}
+bindSeg('trmode', 'trmode');
+bindSeg('tredge', 'tredge');
+
+/* ---- 自动设置：像真示波器一样按信号自己挑时基和档位 ---- */
+function autoSet() {
+  const m = measure();
+  if (!isNaN(m.freq) && m.freq > 0) {
+    /* 目标：一屏 5 个周期（10 格里每格半周期，边沿看得清） */
+    const want = 1 / (m.freq * 2);
+    const sel = document.getElementById('tdiv');
+    let best = null, bd = 1e9;
+    for (const opt of sel.options) {
+      const v = parseFloat(opt.value);
+      const d = Math.abs(Math.log(v / want));
+      if (d < bd) { bd = d; best = v; }
+    }
+    if (best) { sel.value = String(best); S.tdiv = best; }
+  }
+  /* 垂直：让波形占 80% 高度 */
+  if (m.vpp > 0) {
+    const need = m.vpp / (DIV_Y * 0.8);
+    const vsel = document.getElementById('vdiv');
+    let best = null, bd = 1e9;
+    for (const opt of vsel.options) {
+      if (opt.value === 'auto') continue;
+      const v = parseFloat(opt.value);
+      const d = Math.abs(Math.log(v / need));
+      if (d < bd) { bd = d; best = v; }
+    }
+    if (best) { vsel.value = String(best); S.vdiv = String(best); }
+  }
+  /* 触发电平放到信号中点 */
+  S.trlev = 0;
+  document.getElementById('trlev').value = 0;
+  document.getElementById('trlevv').textContent = '0%';
+  running = true;
+}
+
+function setRunning(on) {
+  running = on;
+  const b = document.getElementById('btn_run');
+  b.textContent = on ? '运行中' : '已停止';
+  b.classList.toggle('on', on);
+}
+document.getElementById('btn_auto').addEventListener('click', autoSet);
+document.getElementById('btn_run').addEventListener('click', () => setRunning(!running));
+
+/* ---- 光标拖动 ---- */
+function canvasPos(ev) {
+  const r = CV.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) * W / r.width, y: (ev.clientY - r.top) * H / r.height };
+}
+CV.addEventListener('mousedown', ev => {
+  const p = canvasPos(ev);
+  if (!S.curOn) return;
+  let best = null, bd = 18;
+  for (const k of ['t1', 't2']) {
+    const x = PL.x + S.cur[k] * PL.w;
+    const d = Math.abs(p.x - x);
+    if (d < bd) { bd = d; best = k; }
+  }
+  for (const k of ['v1', 'v2']) {
+    const y = PL.y + S.cur[k] * PL.h;
+    const d = Math.abs(p.y - y);
+    if (d < bd) { bd = d; best = k; }
+  }
+  dragTarget = best;
+});
+CV.addEventListener('mousemove', ev => {
+  if (!dragTarget) return;
+  const p = canvasPos(ev);
+  if (dragTarget[0] === 't')
+    S.cur[dragTarget] = Math.min(1, Math.max(0, (p.x - PL.x) / PL.w));
+  else
+    S.cur[dragTarget] = Math.min(1, Math.max(0, (p.y - PL.y) / PL.h));
+});
+window.addEventListener('mouseup', () => dragTarget = null);
+window.addEventListener('keydown', e => {
+  if (e.key === ' ') { setRunning(!running); e.preventDefault(); }
+  if (e.key === 'c') S.curOn = !S.curOn;
+});
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
