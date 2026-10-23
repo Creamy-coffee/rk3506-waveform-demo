@@ -665,8 +665,17 @@ static void auto_fit_apply(int fn)
         }
         float span = mx - mn;
         if(span < 1e-3f) span = 1e-3f;
-        s_real_lo = mn - span * 0.05f;
-        s_real_sc = 1.0f / (span * 1.10f);
+        if(s_vdiv_mv > 0.f) {
+            /* 手动档位：满屏 = 档位 × 格数（格数 = V32_GRID_Y），以信号中点为中心。
+               这才是示波器的 V/div —— 用户调的就是"每格多少伏"，不是倍率。 */
+            const float full = s_vdiv_mv / V32_ADC_MV_PER_LSB * (float)V32_GRID_Y;
+            const float mid  = (mn + mx) * 0.5f;
+            s_real_lo = mid - full * 0.5f;
+            s_real_sc = 1.0f / full;
+        } else {
+            s_real_lo = mn - span * 0.05f;
+            s_real_sc = 1.0f / (span * 1.10f);
+        }
     }
 
     s_gain = 1.0f;
@@ -976,8 +985,11 @@ static meas_t s_m1;      /* CH1 的测量结果 */
 /* 触发：0=关 1=自动 2=正常；边沿 0=升 1=降；电平按帧内 min..max 归一化 */
 /* 测量光标：2 竖（T1/T2）+ 2 横（V1/V2），都是 0..1 的相对位置 */
 /* 垂直增益（手动档位）：1× / 2× / 4× / 0.5× / 0.25×，乘在归一化后的 y 上 */
+static float s_vdiv_mv;          /* 手动档位 mV/格；0 = 自动（按信号幅度） */
 static int   s_vgain;
-static const float VGAINS[5] = { 1.0f, 2.0f, 4.0f, 0.5f, 0.25f };
+/* 档位表：mV/格。0 表示自动。范围从 10mV/格 到 5V/格，
+   跟真示波器一样直接调"每格多少伏"，而不是倍率。 */
+static const float VDIVS_MV[10] = { 0.f, 5000.f, 2000.f, 1000.f, 500.f, 200.f, 100.f, 50.f, 20.f, 10.f };
 
 static int   s_cur_on;
 static float s_cur_x[2] = { 0.30f, 0.70f };
@@ -1115,8 +1127,17 @@ static void real_update(void)
         const float mx = (a_hi > b_hi) ? a_hi : b_hi;
         float span = mx - mn;
         if(span < 1e-3f) span = 1e-3f;
-        s_real_lo = mn - span * 0.05f;
-        s_real_sc = 1.0f / (span * 1.10f);
+        if(s_vdiv_mv > 0.f) {
+            /* 手动档位：满屏 = 档位 × 格数（格数 = V32_GRID_Y），以信号中点为中心。
+               这才是示波器的 V/div —— 用户调的就是"每格多少伏"，不是倍率。 */
+            const float full = s_vdiv_mv / V32_ADC_MV_PER_LSB * (float)V32_GRID_Y;
+            const float mid  = (mn + mx) * 0.5f;
+            s_real_lo = mid - full * 0.5f;
+            s_real_sc = 1.0f / full;
+        } else {
+            s_real_lo = mn - span * 0.05f;
+            s_real_sc = 1.0f / (span * 1.10f);
+        }
     }
 
     memcpy(s_real_d0, d0, (size_t)dn * sizeof(float));
@@ -2272,9 +2293,9 @@ static void vg_label(void)
     if(s_chip_vg) { chip_set_text(s_chip_vg, s_vgain == 0 ? "自动" : (s_vgain == 3 ? "1/2" : (s_vgain == 4 ? "1/4" : (s_vgain == 2 ? "4x" : "2x"))));
                     chip_selected(s_chip_vg, s_vgain != 0); }
 }
-static void cb_vg_dec(lv_event_t *e) { LV_UNUSED(e); if(s_vgain > 0) s_vgain--; vg_label(); }
-static void cb_vg_inc(lv_event_t *e) { LV_UNUSED(e); if(s_vgain < 4) s_vgain++; vg_label(); }
-static void cb_vg_auto(lv_event_t *e){ LV_UNUSED(e); s_vgain = 0; vg_label(); }
+static void cb_vg_dec(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx > 0) s_vdiv_idx--; s_vdiv_mv = VDIVS_MV[s_vdiv_idx]; vg_label(); }
+static void cb_vg_inc(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx < 9) s_vdiv_idx++; s_vdiv_mv = VDIVS_MV[s_vdiv_idx]; vg_label(); }
+static void cb_vg_auto(lv_event_t *e){ LV_UNUSED(e); s_vdiv_idx = 0; s_vdiv_mv = 0.f; vg_label(); }
 
 static void cb_cur_cycle(lv_event_t *e)
 {
