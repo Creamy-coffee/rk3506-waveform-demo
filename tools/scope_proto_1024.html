@@ -61,7 +61,7 @@ const S = {
   /* 水平 / 垂直 */
   tdiv:100e-6, hpos:0, vdiv:'auto', vpos:0,
   /* 触发 */
-  trmode:'auto', tredge:'rise', trlev:0,
+  trmode:'auto', tredge:'rise', trlev:0, trlevUser:false,
   /* 显示 */
   page:0,                    /* 0..4，导航条页面 */
   math:0,                    /* 0=关 1=A+B 2=A-B 3=A×B 4=A÷B 5=XY */
@@ -146,9 +146,27 @@ function findTrigger(){
   let mn=1e9,mx=-1e9;
   for(let i=0;i<N_PTS;i++){ if(acq1[i]<mn)mn=acq1[i]; if(acq1[i]>mx)mx=acq1[i]; }
   const hys = Math.max((mx-mn)*0.02, 1e-4);
+
+  /*
+   * 迟滞的正确写法：**先离开电平，再穿越回来**，而不是要求"相邻两点跨过 ±hys"。
+   *
+   * 之前那种写法隐含了一个条件：一个采样周期内信号必须跳过 2×hys。
+   * 1.024 MSPS 采 10 kHz 时，相邻样点最多只跳约 0.15 V，而 2×hys ≈ 0.17 V
+   * —— 永远满足不了，于是**一次也触发不到**，自动模式看起来就是"没用"。
+   *
+   * 改成 armed 标志：只要之前有过"明确低于 lv-hys"的点就算武装，
+   * 之后第一次穿过 lv 就是触发点。这跟采样率、斜率都无关。
+   */
+  let armed = false;
   for(let i=Math.floor(N_PTS*0.25); i<N_PTS-1; i++){
-    const a=acq1[i-1], b=acq1[i];
-    if(up ? (a < lv-hys && b >= lv+hys) : (a > lv+hys && b <= lv-hys)) return i;
+    const a = acq1[i-1], b = acq1[i];
+    if(up){
+      if(a <= lv - hys) armed = true;
+      if(armed && b >= lv) return i;
+    } else {
+      if(a >= lv + hys) armed = true;
+      if(armed && b <= lv) return i;
+    }
   }
   return -1;
 }
@@ -314,10 +332,20 @@ function drawTrigMark(){
   if(y<PL.y||y>PL.y+PL.h) return;
   G.save();
   G.strokeStyle=C.trig; G.fillStyle=C.trig; G.globalAlpha=.85;
+  /* 贯穿绘图区的细虚线（透明度低，不糊波形）+ 两端实线头 */
+  G.globalAlpha = 0.28;
+  G.setLineDash([4,6]); G.beginPath();
+  G.moveTo(PL.x,y); G.lineTo(PL.x+PL.w,y); G.stroke();
+  G.setLineDash([]);
+  G.globalAlpha = 0.85;
   G.beginPath();
-  G.moveTo(PL.x,y); G.lineTo(PL.x+20,y);
-  G.moveTo(PL.x+PL.w-20,y); G.lineTo(PL.x+PL.w,y);
+  G.moveTo(PL.x,y); G.lineTo(PL.x+22,y);
+  G.moveTo(PL.x+PL.w-22,y); G.lineTo(PL.x+PL.w,y);
   G.stroke();
+  /* 左端小三角，提示"这条线可以拖" */
+  G.beginPath();
+  G.moveTo(PL.x+2,y); G.lineTo(PL.x+11,y-6); G.lineTo(PL.x+11,y+6);
+  G.closePath(); G.fill();
   /* 右侧电平箭头 */
   G.beginPath();
   G.moveTo(PL.x+PL.w+3,y); G.lineTo(PL.x+PL.w+12,y-6); G.lineTo(PL.x+PL.w+12,y+6);
@@ -521,9 +549,9 @@ function drawControlBar(){
       ()=>{ S.tredge = S.tredge==='rise'?'fall':'rise'; });
 
   /* 触发电平：◀ 值 ▶（也可以直接拖画面右侧那个洋红三角） */
-  btn(26, '◀', false, null, (s=>()=>setTrlev(S.trlev-5))());
-  btn(86, '电平 '+fmtV(trigLevelV()), true, C.trig, ()=>{ setTrlev(0); });
-  btn(26, '▶', false, null, ()=>setTrlev(S.trlev+5));
+  btn(26, '◀', false, null, ()=>setTrlev(S.trlev-5, true));
+  btn(86, '电平 '+fmtV(trigLevelV()), true, C.trig, ()=>{ S.trlevUser=false; });  /* 点中间 = 回到自动 */
+  btn(26, '▶', false, null, ()=>setTrlev(S.trlev+5, true));
 
   btn(62, S.curOn?'光标 开':'光标 关', S.curOn, C.cur, ()=>{ S.curOn=!S.curOn; });
   btn(84, '数学 '+MATH_NAMES[S.math], S.math>0, C.math, ()=>{ S.math=(S.math+1)%MATH_NAMES.length; });
@@ -534,7 +562,19 @@ function drawControlBar(){
   else           btn(78, '▶ 运行', false, C.accent, ()=>{ singleLatched=false; S.running=true; });
 }
 
-function setTrlev(v){
+/* 当前采集数据的信号中点，换算成 S.trlev 的归一化值 */
+function signalMidNorm(){
+  const {vdiv, vmid} = vscale();
+  let mn=1e9, mx=-1e9;
+  for(let i=0;i<N_PTS;i++){ const v=acq1[i]; if(v<mn)mn=v; if(v>mx)mx=v; }
+  if(!(mx>mn)) return S.trlev;
+  const mid = (mn+mx)/2;
+  const span = vdiv*DY;
+  return (mid - vmid) / ((span/2) * 0.95) * 100;
+}
+
+function setTrlev(v, byUser){
+  if(byUser) S.trlevUser = true;
   if(v < -100) v = -100;
   if(v >  100) v =  100;
   S.trlev = v;
@@ -605,9 +645,17 @@ CV.addEventListener('mousedown', ev=>{
   for(const h of hitList)
     if(p.x>=h.x&&p.x<=h.x+h.w&&p.y>=h.y&&p.y<=h.y+h.h){ h.fn(); return; }
 
-  /* 先判断是不是抓触发三角（在绘图区右侧 14px 内） */
-  if(S.page===0 && !isXY() && p.x > PL.x+PL.w && p.x < PL.x+PL.w+16){
-    dragTrig = true; updateTrlevFromY(p.y); return;
+  if(S.page===0 && !isXY()){
+    /* ① 右侧洋红三角 */
+    if(p.x > PL.x+PL.w && p.x < PL.x+PL.w+18){
+      dragTrig = true; updateTrlevFromY(p.y); return;
+    }
+    /* ② 绘图区内的电平线本身（±14 px 内就抓）——比去点外面那个小三角容易得多 */
+    const {vdiv,vmid} = vscale();
+    const ly = PL.y + PL.h/2 - (trigLevelV()-vmid)/vdiv*(PL.h/DY);
+    if(p.x >= PL.x && p.x <= PL.x+PL.w && Math.abs(p.y-ly) < 14){
+      dragTrig = true; return;
+    }
   }
   if(!S.curOn||isXY()) return;
   /* 抓最近的虚线 */
@@ -632,6 +680,7 @@ function updateTrlevFromY(y){
 CV.addEventListener('mousemove', ev=>{
   if(dragTrig){
     const r=CV.getBoundingClientRect();
+    S.trlevUser = true;                       /* 手一拖就算用户设定了，不再自动回中 */
     updateTrlevFromY((ev.clientY-r.top)*H/r.height);
     return;
   }
@@ -660,6 +709,11 @@ function loop(ts){
     phaseT += (1/Math.max(fps,30))*0.012;
     fsEff = N_PTS/(DX*S.tdiv);
     genFrame(phaseT);                       /* -> acq1/acq2 */
+
+    /* 自动模式 + 用户没动过电平 => 自动放在信号中点。
+       否则电平一旦落在信号范围外就永远触发不到，自动模式等于废掉。 */
+    if(S.trmode==='auto' && !S.trlevUser) S.trlev = signalMidNorm();
+
     const ti = findTrigger();
 
     /*
