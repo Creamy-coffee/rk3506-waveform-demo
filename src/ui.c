@@ -126,7 +126,7 @@ static lv_obj_t *s_plot_raw, *s_plot_den;
 static lv_obj_t *s_lbl_scope_freq, *s_lbl_v1, *s_lbl_v2, *s_lbl_phase;
 static lv_obj_t *s_lbl_m_vmax, *s_lbl_m_vmin, *s_lbl_m_vrms, *s_lbl_m_per, *s_lbl_m_duty;
 static lv_obj_t *s_lbl_m_vamp, *s_lbl_m_vavg, *s_lbl_m_rise;
-static lv_obj_t *s_lbl_cur_dt, *s_lbl_cur_f, *s_lbl_cur_dv;
+static lv_obj_t *s_lbl_cur_t, *s_lbl_cur_dt, *s_lbl_cur_v, *s_lbl_cur_dv;
 static lv_obj_t *s_lbl_scope_axis;
 static lv_obj_t *s_lbl_fft_peakf, *s_lbl_fft_peakl, *s_lbl_fft_floor, *s_lbl_fft_win;
 static lv_obj_t *s_lbl_lock_ref, *s_lbl_lock_amp, *s_lbl_lock_phase, *s_lbl_lock_tau;
@@ -144,7 +144,10 @@ static lv_obj_t *s_lbl_fft_cur;
 static lv_obj_t *s_lbl_fft_title;
 static lv_obj_t *s_chip_tb, *s_chip_vg;   /* 时基 / 档位 的值芯片 */
 static lv_obj_t *s_chip_cur;    /* 光标开关芯片 */
-static lv_obj_t *s_chip_trig, *s_chip_edge, *s_chip_lev;   /* 触发选择芯片 */
+static lv_obj_t *s_chip_trig, *s_chip_edge, *s_chip_lev;
+/* 这几组原先没挂到 s_ctrl_grp 上，页切换时谁都不隐藏它们 —— 会一直显示，
+   把控制条塞满、「暂停」被挤出屏幕外。这里显式管起来。 */
+static lv_obj_t *s_g_win, *s_g_tau, *s_g_ai, *s_g_sys;   /* 触发选择芯片 */
 static lv_obj_t *s_chip_math;   /* Math 选择芯片 */
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
@@ -1641,9 +1644,10 @@ static void build_scope(lv_obj_t *pg)
     s_lbl_m_duty     = mk_metric(p1, TITLE_H + METRIC_H * 8, "占空比",      "--", V32_C_METRIC_VALUE);
     s_lbl_m_rise     = mk_metric(p1, TITLE_H + METRIC_H * 9, "上升时间",    "--", V32_C_METRIC_VALUE);
     /* 光标段：洋红（照 HTML） */
-    s_lbl_cur_dt     = mk_metric(p1, TITLE_H + METRIC_H * 10, "ΔT",   "--", V32_C_TRIGGER);
-    s_lbl_cur_f      = mk_metric(p1, TITLE_H + METRIC_H * 11, "1/ΔT", "--", V32_C_TRIGGER);
-    s_lbl_cur_dv     = mk_metric(p1, TITLE_H + METRIC_H * 12, "ΔV",   "--", V32_C_TRIGGER);
+    s_lbl_cur_t      = mk_metric(p1, TITLE_H + METRIC_H * 10, "T1 / T2",     "--", V32_C_TRIGGER);
+    s_lbl_cur_dt     = mk_metric(p1, TITLE_H + METRIC_H * 11, "ΔT / 1/ΔT",   "--", V32_C_TRIGGER);
+    s_lbl_cur_v      = mk_metric(p1, TITLE_H + METRIC_H * 12, "V1 / V2",     "--", V32_C_TRIGGER);
+    s_lbl_cur_dv     = mk_metric(p1, TITLE_H + METRIC_H * 13, "ΔV",          "--", V32_C_TRIGGER);
 
     /* CH2 峰峰值 / 相位差已并入上面 10 项（HTML 里没有这两行，A2 在信息条里），
        但 tick_scope 还在写这两个句柄 —— 建在面板外，别让它们露出来。 */
@@ -2286,8 +2290,14 @@ static void trig_refresh(void)
     if(s_chip_trig) { chip_set_text(s_chip_trig, nm[s_trig_mode]);
                       chip_selected(s_chip_trig, s_trig_mode != 0); }
     if(s_chip_edge) chip_set_text(s_chip_edge, s_trig_edge ? "↓" : "↑");
-    if(s_chip_lev)  lv_label_set_text_fmt(lv_obj_get_child(s_chip_lev, 0), "%.0f%%",
-                                          (double)(s_trig_lev * 100.0f));
+    if(s_chip_lev) {
+        /* 显示电压而不是百分比：50% 对用户没有意义，
+           示波器上这个旋钮标的永远是伏特 */
+        const float k3 = V32_ADC_MV_PER_LSB / 1000.0f;
+        const float lv = (s_m1.vmin + (s_m1.vmax - s_m1.vmin) * s_trig_lev) * k3;
+        if(fabsf(lv) < 1.f) lv_label_set_text_fmt(lv_obj_get_child(s_chip_lev, 0), "%.0fmV", (double)(lv*1000.f));
+        else                lv_label_set_text_fmt(lv_obj_get_child(s_chip_lev, 0), "%.2fV", (double)lv);
+    }
 }
 static void cb_trig_mode(lv_event_t *e) { LV_UNUSED(e); s_trig_mode = (s_trig_mode + 1) % 3; trig_refresh(); ui_tick(); }
 static void cb_trig_edge(lv_event_t *e) { LV_UNUSED(e); s_trig_edge = !s_trig_edge; trig_refresh(); ui_tick(); }
@@ -2478,6 +2488,14 @@ static void ctrl_set_page(int page)
         if(i == page) lv_obj_remove_flag(s_ctrl_grp[i], LV_OBJ_FLAG_HIDDEN);
         else          lv_obj_add_flag(s_ctrl_grp[i], LV_OBJ_FLAG_HIDDEN);
     }
+    /* 没挂到 s_ctrl_grp 的那几组，逐个按页开关 */
+    #define GRP_SHOW(g, cond) do{ if(g){ if(cond) lv_obj_remove_flag(g, LV_OBJ_FLAG_HIDDEN); \
+                                          else      lv_obj_add_flag(g, LV_OBJ_FLAG_HIDDEN); } }while(0)
+    GRP_SHOW(s_g_win, page == UI_PAGE_FFT);
+    GRP_SHOW(s_g_tau, page == UI_PAGE_LOCK);
+    GRP_SHOW(s_g_ai,  page == UI_PAGE_AI);
+    GRP_SHOW(s_g_sys, page == UI_PAGE_SYSTEM);
+    #undef GRP_SHOW
 }
 
 static void build_controls(lv_obj_t *root)
@@ -2520,16 +2538,26 @@ static void build_controls(lv_obj_t *root)
     lv_obj_set_flex_flow(cp, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(cp, V32_GROUP_GAP, LV_PART_MAIN);
 
+    /*
+     * 示波器页的控件全部装进 gsc 这一个容器。
+     * 之前它们的 s_ctrl_grp[SCOPE] 是 NULL，ctrl_set_page() 谁都不隐藏，
+     * 结果 FFT 页的「窗函数」等控件泄漏到示波器页，还把「暂停」挤出了屏幕。
+     * 装了容器之后，页切换只显示本页那一组。
+     */
+    lv_obj_t *gsc = mk(cp, 0, 0, LV_SIZE_CONTENT, V32_CHIP_H);
+    lv_obj_set_flex_flow(gsc, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(gsc, V32_GROUP_GAP, LV_PART_MAIN);
+
     /* Math：关 / A+B / A-B（点一下换一个）—— 放在时基组前面，最容易被看到 */
     {
-        lv_obj_t *gm = mk_group(cp, "Math");
+        lv_obj_t *gm = mk_group(gsc, "Math");
         s_chip_math = mk_chip(gm, "A-B", cb_math_cycle);
         chip_selected(s_chip_math, true);
     }
 
     /* 时基：◀ 值 ▶（点中间 = 自动） */
     {
-        lv_obj_t *gs3 = mk_group(cp, "时基");
+        lv_obj_t *gs3 = mk_group(gsc, "时基");
         mk_chip(gs3, "◀", cb_tb_dec);
         s_chip_tb = mk_chip(gs3, "2us", cb_tb_auto);
         mk_chip(gs3, "▶", cb_tb_inc);
@@ -2537,7 +2565,7 @@ static void build_controls(lv_obj_t *root)
 
     /* 垂直档位：◀ 值 ▶（点中间 = 自动 1×） */
     {
-        lv_obj_t *gv = mk_group(cp, "档位");
+        lv_obj_t *gv = mk_group(gsc, "档位");
         mk_chip(gv, "◀", cb_vg_dec);
         s_chip_vg = mk_chip(gv, "自动", cb_vg_auto);
         mk_chip(gv, "▶", cb_vg_inc);
@@ -2545,14 +2573,14 @@ static void build_controls(lv_obj_t *root)
 
     /* 光标开/关 */
     {
-        lv_obj_t *gcu = mk_group(cp, "光标");
+        lv_obj_t *gcu = mk_group(gsc, "光标");
         s_chip_cur = mk_chip(gcu, "关", cb_cur_cycle);
         chip_selected(s_chip_cur, false);
     }
 
     /* 触发：模式 / 边沿 / 电平◀值▶ 各管一件事，别塞成一个 */
     {
-        lv_obj_t *gt = mk_group(cp, "触发");
+        lv_obj_t *gt = mk_group(gsc, "触发");
         s_chip_trig = mk_chip(gt, "关", cb_trig_mode);
         s_chip_edge = mk_chip(gt, "↑", cb_trig_edge);
         mk_chip(gt, "◀", cb_trig_lev_dec);
@@ -2564,7 +2592,7 @@ static void build_controls(lv_obj_t *root)
     /* 旧的时基下拉框不再创建：已被上面的 ◀ 值 ▶ 三段式取代。
        （原来这里还兼职当 s_ctrl_grp[UI_PAGE_SCOPE]，所以只 hide 会被
         ctrl_set_page 又显示回来 —— 必须整个不创建。） */
-    s_ctrl_grp[UI_PAGE_SCOPE] = NULL;
+    s_ctrl_grp[UI_PAGE_SCOPE] = gsc;
 
     lv_obj_t *gc = mk_group(cp, "频谱通道");
     {
@@ -2581,6 +2609,7 @@ static void build_controls(lv_obj_t *root)
     s_ctrl_grp[UI_PAGE_FFT] = gc;
 
     lv_obj_t *gf2 = mk_group(cp, "窗函数");
+    s_g_win = gf2;
     /*
      * ⚠️ 这里原来是个下拉框，实测**点不开**（点下去只重绘了框本身，
      *    弹出列表从来不出现 —— 和之前「频谱通道」下拉框同一个毛病）。
@@ -2594,6 +2623,7 @@ static void build_controls(lv_obj_t *root)
 
 
     lv_obj_t *gl = mk_group(cp, "积分时间");
+    s_g_tau = gl;
     lv_obj_t *dd_t = mk_dropdown(gl, TAU_OPTS, TAU_DEF, cb_tau);
     lv_obj_set_style_max_width(dd_t, V32_SEL_MAX_W, LV_PART_MAIN);
     s_ctrl_grp[UI_PAGE_LOCK] = gl;
@@ -2602,6 +2632,7 @@ static void build_controls(lv_obj_t *root)
     /* 重建开关是**全局**的（示波器页也跟着变），所以放在主控制条，不放页内组 */
     mk_label(ga, 0, 0, "开关在主控条", V32_FONT_SMALL, V32_C_HINT);
     s_ctrl_grp[UI_PAGE_AI] = ga;
+    s_g_ai = ga;
 
     lv_obj_t *gsys = mk(cp, 0, 0, LV_SIZE_CONTENT, V32_CHIP_H);
     /* 这句原来是写死的「未连接真实硬件」。走真实链路时它会自相矛盾，
@@ -2613,6 +2644,7 @@ static void build_controls(lv_obj_t *root)
              S.use_real ? s_live_txt : "当前为离线演示，未连接真实硬件",
              V32_FONT_SMALL, V32_C_HINT);
     s_ctrl_grp[UI_PAGE_SYSTEM] = gsys;
+    s_g_sys = gsys;
 
     /* ---- 四个动作按钮 ----
      * 「自动」放在最前面紧挨着「暂停」：示波器上 Auto Set 和 Run/Stop 是
@@ -2787,17 +2819,25 @@ static void tick_scope(void)
         lv_label_set_text(s_lbl_m_rise, "—");
     }
     if(s_cur_on && s_real_sc > 0.f) {
-        const float dts = fabsf(s_cur_x[1] - s_cur_x[0]) * (float)s_zoom_span
-                        / ((wave_source_get() && wave_source_get()->sample_rate > 0)
-                           ? (float)wave_source_get()->sample_rate : 65000000.0f);
-        const float dvm = fabsf(s_cur_y[1] - s_cur_y[0]) * (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;
-        if(dts < 1e-3f) lv_label_set_text_fmt(s_lbl_cur_dt, "%.1f µs", (double)(dts*1e6f));
-        else            lv_label_set_text_fmt(s_lbl_cur_dt, "%.2f ms", (double)(dts*1e3f));
-        lv_label_set_text_fmt(s_lbl_cur_f, "%.2f kHz", (double)(1.0f / (dts + 1e-12f) / 1000.0f));
-        lv_label_set_text_fmt(s_lbl_cur_dv, "%.1f mV", (double)dvm);
+        const wave_source_t *cs = wave_source_get();
+        const float cfs = (cs && cs->sample_rate > 0) ? (float)cs->sample_rate : 65000000.0f;
+        const float span_s = (float)(s_zoom_span > 0 ? s_zoom_span : 1024) / cfs;
+        const float t1 = (s_cur_x[0] - 0.5f) * span_s * 1e6f;      /* µs */
+        const float t2 = (s_cur_x[1] - 0.5f) * span_s * 1e6f;
+        const float dts = fabsf(t2 - t1);
+        const float vr = (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;  /* 满屏 mV */
+        const float v1 = (0.5f - s_cur_y[0]) * vr;
+        const float v2 = (0.5f - s_cur_y[1]) * vr;
+        const float dvm = fabsf(v2 - v1);
+        lv_label_set_text_fmt(s_lbl_cur_t, "%.0f/%.0fµs", (double)t1, (double)t2);
+        lv_label_set_text_fmt(s_lbl_cur_dt, "%.0fµs/%.1fk",
+                              (double)dts, (double)(dts > 0.f ? 1.0f/(dts*1e-6f)/1000.0f : 0.f));
+        lv_label_set_text_fmt(s_lbl_cur_v, "%.0f/%.0fmV", (double)v1, (double)v2);
+        lv_label_set_text_fmt(s_lbl_cur_dv, "%.0f mV", (double)dvm);
     } else {
+        lv_label_set_text(s_lbl_cur_t,  "—");
         lv_label_set_text(s_lbl_cur_dt, "—");
-        lv_label_set_text(s_lbl_cur_f,  "—");
+        lv_label_set_text(s_lbl_cur_v,  "—");
         lv_label_set_text(s_lbl_cur_dv, "—");
     }
 

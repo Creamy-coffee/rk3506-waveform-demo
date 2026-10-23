@@ -81,9 +81,9 @@
  * ⚠️ 高度取 43 而不是 CSS 的 37：min-height:37px 在参考稿里根本没生效 ——
  *    .chip 的字号是 16px（继承 body），行高 21 撑出 21+20+2=43 > 37。
  *    （反解 ref_scope.png：右栏 CH1 ON 的框是 90×43） */
-#define V32_CHIP_PAD_X       12
+#define V32_CHIP_PAD_X       7
 #define V32_CHIP_PAD_Y       10
-#define V32_CHIP_H           43
+#define V32_CHIP_H           34
 #define V32_CHIP_RADIUS      6
 #define V32_SEL_MAX_W        140
 
@@ -255,7 +255,7 @@ LV_FONT_DECLARE(lv_font_v32_20_bold);
  * ⏸暂停/↺复位/⛶全屏 同理，整体窄了一圈。
  * 我们这档字体的 line_height 是 19，所以高度靠 V32_CHIP_H 显式钉到 43。
  */
-#define V32_FONT_CHIP    (&lv_font_v32_16)
+#define V32_FONT_CHIP    (&lv_font_v32_12)   /* 照 HTML 13px，我们只有 12 档 */
 
 /*
  * 粗体。参考稿不是"到处都是常规体"：
