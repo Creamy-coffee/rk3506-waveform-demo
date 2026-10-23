@@ -2278,7 +2278,16 @@ static void tb_apply(int idx)
     s_tb_idx = idx;
     int span = (int)(TB_US[idx] * 1e-6f * (float)V32_GRID_X * fs + 0.5f);
     if(span < 8) span = 8;
-    if(span > fn) span = fn;
+    /*
+     * 窗口最多只取整帧的 3/4。
+     * 触发是靠在帧内挪窗口起点实现的；如果窗口等于整帧，起点只能是 0，
+     * 波形永远推不动 —— 这就是"触发看起来完全没用"的真正原因。
+     * 留出 1/4 帧的余量，触发点才有地方把波形钉到屏幕 20% 处。
+     */
+    {
+        const int cap = fn - fn / 4;
+        if(span > cap) span = cap;
+    }
     s_zoom_span  = span;
     s_zoom_start = (fn - span) / 2;
     update_axis_label();
