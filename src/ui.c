@@ -2281,6 +2281,13 @@ static void build_controls(lv_obj_t *root)
     lv_obj_set_flex_flow(cp, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(cp, V32_GROUP_GAP, LV_PART_MAIN);
 
+    /* Math：关 / A+B / A-B（点一下换一个）—— 放在时基组前面，最容易被看到 */
+    {
+        lv_obj_t *gm = mk_group(cp, "Math");
+        s_chip_math = mk_chip(gm, "A-B", cb_math_cycle);
+        chip_selected(s_chip_math, true);
+    }
+
     lv_obj_t *gs = mk_group(cp, "时基");
     lv_obj_t *dd_tb = mk_dropdown(gs, TIMEBASE_OPTS, TIMEBASE_DEF, cb_timebase);
     s_dd_tb = dd_tb;
