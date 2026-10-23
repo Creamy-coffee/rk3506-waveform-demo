@@ -237,9 +237,8 @@ static lv_obj_t *mk_metric(lv_obj_t *parent, int y, const char *name,
                            const char *val, lv_color_t val_color)
 {
     lv_obj_t *row = mk(parent, 0, y, V32_RIGHT_W - V32_PANEL_PAD * 2, METRIC_H);
-    lv_obj_set_style_border_color(row, V32_C_METRIC_BORDER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
+    /* HTML 原型的测量栏是纯文字（标签左、数值右），没有分隔线 */
+    lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
 
     lv_obj_t *k = mk_label(row, 0, 0, name, V32_FONT_SMALL, V32_C_METRIC_LABEL);
     lv_obj_align(k, LV_ALIGN_LEFT_MID, 0, V32_METRIC_LABEL_DY);
@@ -3187,6 +3186,10 @@ void ui_create(void)
     s_app_t0 = lv_tick_get();
 
     build_topbar(root);
+    /* HTML 原型最上面没有「V32 信号分析仪」这条标题栏，信息行（A1=…）就在最顶上。
+       flex 列布局会跳过隐藏成员，把这块高度让给下面的绘图区。 */
+    if(root && lv_obj_get_child_count(root) > 0)
+        lv_obj_add_flag(lv_obj_get_child(root, 0), LV_OBJ_FLAG_HIDDEN);
 
     /* 五个页面叠在同一位置，靠 HIDDEN 切换 */
     for(int i = 0; i < UI_PAGE_COUNT; i++) {
