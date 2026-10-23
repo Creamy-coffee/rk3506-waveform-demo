@@ -1600,6 +1600,9 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_set_style_text_letter_space(t0, 1, LV_PART_MAIN);
     mk_label(tr, 0, 0, "● CH1", V32_FONT_SMALL, V32_C_CH1);
     mk_label(tr, 0, 0, "● CH2", V32_FONT_SMALL, V32_C_CH2);
+    /* HTML 原型的网格上方没有这行标题，信息行（A1=… A2=…）就长在那一带，
+       所以把这行整行藏掉，让画面跟原型一致 */
+    lv_obj_add_flag(tr, LV_OBJ_FLAG_HIDDEN);
 
     s_lbl_scope_axis = mk_label(s_plot_scope, 0, 0, "",
                                 V32_FONT_SMALL, V32_C_PLOT_FOOT);
@@ -1610,7 +1613,10 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_set_style_radius(s_lbl_scope_axis, 3, LV_PART_MAIN);
     lv_obj_set_style_pad_hor(s_lbl_scope_axis, 4, LV_PART_MAIN);
     lv_obj_set_style_pad_ver(s_lbl_scope_axis, 1, LV_PART_MAIN);
-    lv_obj_align(s_lbl_scope_axis, LV_ALIGN_BOTTOM_LEFT, 56, -22);   /* 抬到时间刻度带上方 */
+    /* 信息行放在**左上角**（HTML 原型的位置），并垫一块画布色底板压住网格 */
+    lv_obj_set_width(s_lbl_scope_axis, 620);
+    lv_label_set_long_mode(s_lbl_scope_axis, LV_LABEL_LONG_CLIP);
+    lv_obj_align(s_lbl_scope_axis, LV_ALIGN_TOP_LEFT, 8, 4);
 
     /* ---- 右侧读数栏 ---- */
     lv_obj_t *aside = mk(pg, 0, 0, ASIDE_W, MAIN_H);

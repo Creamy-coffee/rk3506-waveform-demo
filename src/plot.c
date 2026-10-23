@@ -507,7 +507,7 @@ static void draw_ticks(lv_layer_t *layer, plot_t *p,
     if(p->tk_ny > 0) {
         for(int j = 0; j < p->tk_ny && j < 5; j++) {
             const int32_t cy = gy + (int32_t)((long)j * 2 * gh / (long)p->divy);
-            text_w(layer, ox, cy - 8, 50, p->tk_y[j], V32_C_CHIP_ON_FG, V32_FONT_SMALL);
+            text_w(layer, ox + 2, cy - 8, 60, p->tk_y[j], V32_C_CHIP_ON_FG, V32_FONT_SMALL);
         }
     }
     (void)ow;
@@ -635,8 +635,9 @@ static void plot_draw_cb(lv_event_t *e)
 
     /* 有刻度文字时，网格往里收：左 42px 给电压刻度，下 18px 给时间刻度 */
     int32_t ox = x0, oy = y0, ow = w, oh = h;
-    if(p->tk_ny > 0) { x0 += 54; w -= 54; }
+    if(p->tk_ny > 0) { x0 += 64; w -= 64; }
     if(p->tk_nx > 0) { h -= 18; }
+    if(p->tk_ny > 0) { y0 += 20; h -= 20; }   /* 顶部信息条 */
 
     draw_grid(layer, p, x0, y0, w, h);
 
