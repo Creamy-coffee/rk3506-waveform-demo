@@ -1501,7 +1501,13 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
      */
     {
         v32_spec_view_t sp;
-        if(S.use_real && v32_get_spec(&sp) && sp.got > 2 && sp.nfft > 0 && sp.fs_eff_hz > 0) {
+        /*
+         * FPGA 的 V32SPEC! 帧里**只有 CH0**（PROTOCOL.md 明确写了），
+         * 所以用户选 CH2 时必须走本地 FFT —— 否则选了通道画面一点变化都没有，
+         * 看起来就像"通道选择是坏的"。
+         */
+        if(S.use_real && s_real_fft_ch == 0
+           && v32_get_spec(&sp) && sp.got > 2 && sp.nfft > 0 && sp.fs_eff_hz > 0) {
             int   bi = 2;
             float bv = -1e30f;
             const uint32_t bins = sp.got;
