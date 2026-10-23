@@ -140,6 +140,7 @@ static lv_obj_t *s_lbl_den_title;
 static lv_obj_t *s_lbl_recon_badge;      /* 示波器页右上角「重建」牌 */
 static lv_obj_t *s_lbl_fft_cur;
 static lv_obj_t *s_lbl_fft_title;
+static lv_obj_t *s_chip_trig;   /* 触发选择芯片 */
 static lv_obj_t *s_chip_math;   /* Math 选择芯片 */
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
@@ -963,6 +964,10 @@ static meas_t s_m1;      /* CH1 的测量结果 */
 /* ===== Math：A+B / A-B（第三条迹线）=====
  * 只做加减：乘除的量纲是 V²/无量纲，跟同一套纵轴放不下（原型里靠独立档位，
  * 设备上这块屏没有位置再放一个档位，先做加法/减法这两个真正实用的）。 */
+/* 触发：0=关 1=自动 2=正常；边沿 0=升 1=降；电平按帧内 min..max 归一化 */
+static int   s_trig_mode, s_trig_edge;
+static float s_trig_lev = 0.5f;
+
 static int   s_math_mode = 2;    /* 0=关 1=A+B 2=A-B（先默认 A-B，界面上能直接看到） */
 static float s_math[PLOT_MAX_PTS];
 static float s_math_y[PLOT_MAX_PTS];
@@ -1033,6 +1038,40 @@ static void real_update(void)
         if(d0[i] > a_hi) a_hi = d0[i];
         if(d1[i] < b_lo) b_lo = d1[i];
         if(d1[i] > b_hi) b_hi = d1[i];
+    }
+
+    /* ===== 触发：把触发点钉在屏幕左侧 20% 处 =====
+     * 用 armed 方式找穿越点：先出现"明确在电平另一侧"的样点才算武装，
+     * 之后第一次穿过电平就是触发点。
+     * （**不要**写成"相邻两点必须跨过 lv±hys"——采样率低时一个周期内
+     *  样点跳不过 2×hys，那会变成一次也触发不到，之前踩过这个坑。）
+     */
+    if(s_trig_mode && fn > 8) {
+        float lo = s_full0[0], hi = s_full0[0];
+        for (int i = 1; i < fn; i++) {
+            if (s_full0[i] < lo) lo = s_full0[i];
+            if (s_full0[i] > hi) hi = s_full0[i];
+        }
+        if (hi - lo > 1.0f) {
+            const float lv = lo + (hi - lo) * s_trig_lev;
+            int armed = 0, ti = -1;
+            for (int i = 1; i < fn; i++) {
+                if (s_trig_edge == 0) {
+                    if (s_full0[i-1] <= lv) armed = 1;
+                    if (armed && s_full0[i] >= lv) { ti = i; break; }
+                } else {
+                    if (s_full0[i-1] >= lv) armed = 1;
+                    if (armed && s_full0[i] <= lv) { ti = i; break; }
+                }
+            }
+            const int span = (s_zoom_span > 0 && s_zoom_span <= fn) ? s_zoom_span : fn;
+            if (ti >= 0) {
+                int st = ti - (int)((float)span * 0.2f);
+                if (st < 0) st = 0;
+                if (st > fn - span) st = fn - span;
+                s_zoom_start = st;
+            }
+        }
     }
 
     /* 有了样点就算全套测量（跟绘图共用同一帧，读数不会跟波形对不上） */
@@ -2058,6 +2097,19 @@ static void cb_fch_auto(lv_event_t *e) { LV_UNUSED(e); fft_ch_set(0); }
 static void cb_fch_ch1 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(1); }
 static void cb_fch_ch2 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(2); }
 
+static void cb_trig_cycle(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    static int step;
+    step = (step + 1) % 5;
+    s_trig_mode = (step == 0) ? 0 : (step <= 2 ? 1 : 2);   /* 关/自动/正常 */
+    s_trig_edge = (step == 3 || step == 2) ? 1 : 0;         /* 3=正常↓ 2=自动↓ */
+    static const char *nm[5] = { "关", "自动↑", "自动↓", "正常↑", "正常↓" };
+    if(s_chip_trig) { chip_set_text(s_chip_trig, nm[step]);
+                      chip_selected(s_chip_trig, step != 0); }
+    ui_tick();
+}
+
 static void cb_math_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
@@ -2286,6 +2338,13 @@ static void build_controls(lv_obj_t *root)
         lv_obj_t *gm = mk_group(cp, "Math");
         s_chip_math = mk_chip(gm, "A-B", cb_math_cycle);
         chip_selected(s_chip_math, true);
+    }
+
+    /* 触发：关 -> 自动↑ -> 自动↓ -> 正常↑ -> 正常↓ */
+    {
+        lv_obj_t *gt = mk_group(cp, "触发");
+        s_chip_trig = mk_chip(gt, "关", cb_trig_cycle);
+        chip_selected(s_chip_trig, false);
     }
 
     lv_obj_t *gs = mk_group(cp, "时基");
