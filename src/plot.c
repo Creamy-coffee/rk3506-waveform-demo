@@ -57,6 +57,7 @@ typedef struct {
     float cur_x[4];          /* 竖线位置 0..1 */
     float cur_y[4];          /* 横线位置 0..1 */
 
+    char info[80];           /* 顶部信息行 */
     char axis_l[16];
     char axis_r[16];
     char leg0[10];
@@ -209,6 +210,17 @@ void plot_set_iq(lv_obj_t *plot, float phase_deg)
     lv_obj_invalidate(plot);
 }
 
+void plot_set_info(lv_obj_t *plot, const char *line)
+{
+    if(plot == NULL) return;
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    if(line == NULL) line = "";
+    if(strcmp(p->info, line) == 0) return;      /* 没变就别重绘 */
+    snprintf(p->info, sizeof p->info, "%s", line);
+    lv_obj_invalidate(plot);
+}
+
 void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, bool show)
 {
     if(plot == NULL) return;
@@ -258,6 +270,22 @@ static void line(lv_layer_t *layer, lv_draw_line_dsc_t *ld,
 
 /* 在 layer 上写一行小字。text 必须是常驻内存（字符串字面量或结构体里的 char[]），
  * 因为真正的渲染发生在回调返回之后。 */
+/* 指定宽度的文字：text() 固定 150px 宽，长串会被折行（信息行当初就折成了三行） */
+static void text_w(lv_layer_t *layer, int32_t x, int32_t y, int32_t w,
+                   const char *s, lv_color_t color, const lv_font_t *font)
+{
+    if(s == NULL || s[0] == '\0' || w < 8) return;
+    lv_draw_label_dsc_t dsc;
+    lv_draw_label_dsc_init(&dsc);
+    dsc.color = color;
+    dsc.font  = font;
+    dsc.text  = s;
+    dsc.opa   = LV_OPA_COVER;
+    const int32_t lh = font->line_height;
+    lv_area_t a = { x, y, x + w, y + lh };
+    lv_draw_label(layer, &dsc, &a);
+}
+
 static void text(lv_layer_t *layer, int32_t x, int32_t y,
                  const char *s, lv_color_t color, const lv_font_t *font)
 {
@@ -446,6 +474,15 @@ static void draw_iq(lv_layer_t *layer, plot_t *p,
 }
 
 /* 测量光标：洋红虚线。用短线段拼虚线（这版 LVGL 的 dash 支持不稳）。 */
+/* 顶部信息行：照原型的 A1=… A2=… Time/Div=… Trig=… 一行绿字 */
+static void draw_info(lv_layer_t *layer, plot_t *p, int32_t x0, int32_t y0, int32_t w)
+{
+    if(!p->info[0]) return;
+    /* 放底部左侧、占满整行宽度：顶部已经被标题/图例占了，挤在一起没法看 */
+    text_w(layer, x0 + 8, y0 + (p->obj ? (lv_obj_get_height(p->obj) - 34) : 0),
+           w - 16, p->info, V32_C_CHIP_ON_FG, V32_FONT_SMALL);
+}
+
 static void draw_cursors(lv_layer_t *layer, plot_t *p,
                          int32_t x0, int32_t y0, int32_t w, int32_t h)
 {
@@ -574,6 +611,8 @@ static void plot_draw_cb(lv_event_t *e)
         /* PLOT_FFT 也画游标线：频谱页要用手指点选频率（cb_fft_cursor） */
         if(p->mode == PLOT_SCOPE || p->mode == PLOT_FFT) draw_trigger(layer, p, x0, y0, w, h);
         if(p->mode == PLOT_SCOPE) draw_cursors(layer, p, x0, y0, w, h);
+        /* 信息行改由 ui.c 的标签控件显示（它自带底板、压在波形上也读得清）；
+           plot 里这套先关掉，否则同一行字会画两遍。 */
         if(p->mode == PLOT_FFT)   draw_peak(layer, p, x0, y0, w, h);
     }
 

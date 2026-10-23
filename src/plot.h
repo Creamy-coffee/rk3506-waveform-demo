@@ -80,6 +80,10 @@ void plot_set_axis_labels(lv_obj_t *plot, const char *left, const char *right);
 /* 测量光标：n<=4，xs 是竖线的相对位置 0..1，ys 是横线的相对位置 0..1。
  * 示波器页用 2 竖 + 2 横（时间光标 + 电压光标）。 */
 void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, bool show);
+
+/* 绘图区顶部那行示波器信息：A1=1.00V/格  A2=GND  Time/Div=202µs  Trig=A1::Auto
+ * 照 HTML 原型 scope_proto_1024.html 的版式。 */
+void plot_set_info(lv_obj_t *plot, const char *line);
 /* 两条曲线右端的小图例（可选，写 NULL 不画） */
 void plot_set_legends(lv_obj_t *plot, const char *l0, const char *l1);
 

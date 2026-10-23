@@ -1333,6 +1333,33 @@ static void update_axis_label(void)
         snprintf(last, sizeof last, "%s", buf);
     }
 
+    /* 顶部信息行（照 HTML 原型）：A1=… A2=… Time/Div=… Trig=… */
+    if(s_plot_scope && S.use_real) {
+        char info[96], a1[16], a2[16], td[16];
+        if(s_real_sc > 0.f) {
+            const float mv = (1.0f / s_real_sc) / (float)V32_GRID_Y / s_gain * V32_ADC_MV_PER_LSB;
+            if(mv < 1000.f) snprintf(a1, sizeof a1, "%.2fV", (double)(mv / 1000.f));
+            else            snprintf(a1, sizeof a1, "%.1fV", (double)(mv / 1000.f));
+        } else snprintf(a1, sizeof a1, "--");
+        snprintf(a2, sizeof a2, "%s", S.ch2 ? a1 : "GND");
+        if(us_div < 1000.f) snprintf(td, sizeof td, "%.0fµs", (double)us_div);
+        else                snprintf(td, sizeof td, "%.1fms", (double)(us_div / 1000.f));
+        char curv[40] = "";
+        if(s_cur_on && s_real_sc > 0.f) {
+            const float dts = fabsf(s_cur_x[1] - s_cur_x[0]) * (float)span / fs;
+            const float dvm = fabsf(s_cur_y[1] - s_cur_y[0]) * (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;
+            if(dts < 1e-3f) snprintf(curv, sizeof curv, "  ΔT %.1fµs ΔV %.0fmV", (double)(dts*1e6f), (double)dvm);
+            else            snprintf(curv, sizeof curv, "  ΔT %.2fms ΔV %.0fmV", (double)(dts*1e3f), (double)dvm);
+        }
+        snprintf(info, sizeof info, "A1=%s A2=%s %s/格 Trig=%s%s%s",
+                 a1, a2, td,
+                 s_trig_mode == 0 ? "关" : (s_trig_mode == 1 ? "Auto" : "Norm"),
+                 s_trig_mode ? (s_trig_edge ? "↓" : "↑") : "", curv);
+        /* 直接写进左下角那行标签（它自带底板，压在波形上也读得清）；
+           plot 内的信息行已关闭，避免同一行字画两遍。 */
+        if(s_lbl_scope_axis) lv_label_set_text(s_lbl_scope_axis, info);
+    }
+
     if(s_chip_tb) {
         char tb[16];
         if(us_div < 1.f)       snprintf(tb, sizeof tb, "%.2fµs", (double)us_div);
@@ -1552,12 +1579,12 @@ static void build_scope(lv_obj_t *pg)
     mk_label(tr, 0, 0, "● CH1", V32_FONT_SMALL, V32_C_CH1);
     mk_label(tr, 0, 0, "● CH2", V32_FONT_SMALL, V32_C_CH2);
 
-    s_lbl_scope_axis = mk_label(s_plot_scope, 0, 0, "2 µs/格 · 触发 自动",
+    s_lbl_scope_axis = mk_label(s_plot_scope, 0, 0, "",
                                 V32_FONT_SMALL, V32_C_PLOT_FOOT);
     /* 垫一块和画布同色的底板：这行字压在左下角，波形经常从它上面穿过去，
      * 白底主题下不垫就读不出来（FFT 页的角标同理，见 plot.c 的 text_plated）。 */
     lv_obj_set_style_bg_color(s_lbl_scope_axis, V32_C_PLOT, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_lbl_scope_axis, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_lbl_scope_axis, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_radius(s_lbl_scope_axis, 3, LV_PART_MAIN);
     lv_obj_set_style_pad_hor(s_lbl_scope_axis, 4, LV_PART_MAIN);
     lv_obj_set_style_pad_ver(s_lbl_scope_axis, 1, LV_PART_MAIN);
