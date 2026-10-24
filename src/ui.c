@@ -1449,6 +1449,22 @@ static void update_axis_label(void)
 
         if(!S.running) V32_SEG("⏸已冻结 ", V32_C_WARN);
 
+        /*
+         * 调制模式提示：FPGA 切到调制后停发 V32CAP3! 波形帧，示波器页
+         * 只剩冻结的最后一屏 —— 不标出来，看起来和"串口断了"一模一样。
+         * IQ 帧新鲜就说明链路活着，只是不在发波形。
+         */
+        {
+            v32_iq_view_t ivq;
+            if(v32_get_iq(&ivq)) {
+                char mb[24];
+                snprintf(mb, sizeof mb, "●调制·%s(波形停发) ",
+                         (s_mod_idx >= 0 && s_mod_idx < V32_MOD_COUNT)
+                             ? MOD_NAME[s_mod_idx] : "?");
+                V32_SEG(mb, V32_C_WARN);
+            }
+        }
+
         if(s_real_sc > 0.f) {
             const float mv = (1.0f / s_real_sc) / (float)V32_GRID_Y / s_gain * V32_ADC_MV_PER_LSB;
             snprintf(a1, sizeof a1, "%.3fV/格", (double)(mv / 1000.f));
