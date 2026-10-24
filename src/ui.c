@@ -194,6 +194,7 @@ static lv_obj_t *s_chip_trig, *s_chip_edge, *s_chip_lev;
 static lv_obj_t *s_g_win, *s_g_tau, *s_g_ai, *s_g_sys;   /* 触发选择芯片 */
 static lv_obj_t *s_chip_math;   /* Math 选择芯片 */
 static lv_obj_t *s_chip_mod;    /* 调制模式选择芯片（AA5 SET_MODULATION） */
+static lv_obj_t *s_chip_demod; /* 示波器页解调显示开关（右栏通道面板第二行） */
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
@@ -1571,9 +1572,19 @@ static void fmt_mv(char *b, size_t n, float mv)
 static void update_axis_label(void)
 {
     const wave_source_t *src = wave_source_get();
-    const float fs = (src && src->sample_rate > 0) ? (float)src->sample_rate : 1.0f;
-    const int   span = s_zoom_span > 0 ? s_zoom_span
-                                       : ((src && src->frame_len > 0) ? src->frame_len : V32_POINTS);
+    float fs = (src && src->sample_rate > 0) ? (float)src->sample_rate : 1.0f;
+    int   span = s_zoom_span > 0 ? s_zoom_span
+                                 : ((src && src->frame_len > 0) ? src->frame_len : V32_POINTS);
+    /* 解调模式：fs/span 换成解调帧的（fs_iq、按 TB 档的窗口点数，超帧 cap）。
+       不换的话时基读数按 65 MHz 波形帧折算 —— 差 decim(4096) 倍，全是错的。 */
+    {
+        v32_iq_view_t ivq;
+        if(S.use_real && v32_get_iq(&ivq) && ivq.points >= 2u && ivq.decim) {
+            fs = (float)ivq.fs_hz / (float)ivq.decim;
+            span = (int)(TB_US[s_tb_idx] * 1e-6f * 10.0f * fs + 0.5f);
+            if(span > (int)ivq.points) span = (int)ivq.points;
+        }
+    }
     const float us_div = (float)span / fs * 1e6f / (float)V32_GRID_X;
 
     /* 绘图区刻度文字（照 HTML 原型）：底部 6 个时间刻度、左侧 5 个电压刻度 */
@@ -1962,7 +1973,7 @@ static void build_scope(lv_obj_t *pg)
      *    （反解 ref_scope.png：CHANNELS 面板 y=355..442 共 88px）
      */
     lv_obj_t *p2 = mk_panel(aside, 0, 0, 0,
-                            TITLE_H + V32_CHIP_H + V32_PANEL_PAD * 2
+                            TITLE_H + (V32_CHIP_H + 7) * 2 + V32_PANEL_PAD * 2
                             + V32_PANEL_BW * 2);
     lv_obj_set_width(p2, LV_PCT(100));
     mk_title(p2, 0, 0, "通道");
@@ -1973,6 +1984,14 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_set_style_pad_column(row, 7, LV_PART_MAIN);
     s_chip_ch1 = mk_chip(row, "CH1 开", cb_ch1);
     s_chip_ch2 = mk_chip(row, "CH2 开", cb_ch2);
+    /* 第二行：解调显示开关 —— 调制波在示波器页直接看，开关就在眼前，
+       不用跑去锁相页找「调制」芯片。控制条放不下（会溢出）。 */
+    lv_obj_t *row2 = mk(p2, 0, TITLE_H + V32_CHIP_H + 7, 0, V32_CHIP_H);
+    lv_obj_set_width(row2, LV_PCT(100));
+    lv_obj_set_flex_flow(row2, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row2, 7, LV_PART_MAIN);
+    s_chip_demod = mk_chip(row2, "解调 关", cb_demod_toggle);
+    chip_selected_c(s_chip_demod, false, V32_C_WARN);
     /*
      * ⚠️ 必须在这里补一次"选中"着色。
      *    mk_chip() 建出来的是 chip_styles() 的**未选中**配色，选中态只在
@@ -2721,6 +2740,28 @@ static void cb_win_cycle(lv_event_t *e)
  * 新固件认 AA5；两条都发，哪边生效都有显示。旧命令枚举：
  *   0=示波 1=AM 2=FM 7=PM；锁相/基带在旧协议里没有对应，只发 AA5。
  */
+/* 解调显示开关：开 = FPGA 切 AM 解调（示波器页画解调 I/Q），
+ * 关 = 回示波模式（恢复波形帧）。和锁相页「调制」芯片共用 s_mod_idx，
+ * 两处状态同步；AM 是当前发生器的调制制式。 */
+static void cb_demod_toggle(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    v32_iq_view_t iv;
+    const bool on = (v32_get_iq(&iv) == 0);      /* 现在关着 -> 点开 */
+    if(on) {
+        s_mod_idx = V32_MOD_AM;
+        if(S.use_real) { v32_cmd_mode(1); v32_aa5_set_modulation((uint32_t)s_mod_idx); }
+    } else {
+        s_mod_idx = V32_MOD_AUTO;
+        if(S.use_real) { v32_cmd_mode(0); v32_aa5_set_modulation((uint32_t)s_mod_idx); }
+    }
+    if(s_chip_demod) {
+        chip_set_text(s_chip_demod, on ? "解调 开" : "解调 关");
+        chip_selected_c(s_chip_demod, on, V32_C_WARN);
+    }
+    ui_tick();
+}
+
 static void cb_mod_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
@@ -3179,28 +3220,72 @@ static void tick_scope(void)
     {
         v32_iq_view_t ivs;
         if(S.use_real && v32_get_iq(&ivs) && ivs.points >= 2u) {
+            /*
+             * 按时基档取窗口（◀▶ 可拉）：解调样率 fs_iq = fs/decim
+             * （4096 抽取下 ≈ 15.87 kHz，一帧 256 点 ≈ 16 ms）。
+             * 窗口点数 = TB×10×fs_iq，超出一帧就 cap 满屏（读数按实际
+             * 窗口折算，见 update_axis_label 的同款计算）；比一帧短就
+             * 只取**末尾**最新一段（解调数据关心最新状态）。
+             */
+            const float fs_iq = (ivs.fs_hz && ivs.decim)
+                              ? (float)ivs.fs_hz / (float)ivs.decim : 15869.0f;
+            int want = (int)(TB_US[s_tb_idx] * 1e-6f * 10.0f * fs_iq + 0.5f);
+            if(want < 8) want = 8;
+            const int pts = (int)ivs.points;
+            if(want > pts) want = pts;
+            const int w0 = pts - want;                    /* 窗口起点（取末尾） */
+
             float peak = 1.0f;
-            for(uint32_t k = 0; k < ivs.points && k < (uint32_t)V32_IQ_MAX_POINTS; k++) {
+            for(int k = w0; k < pts; k++) {
                 const float ai = fabsf((float)ivs.i[k]);
                 const float aq = fabsf((float)ivs.q[k]);
                 if(ai > peak) peak = ai;
                 if(aq > peak) peak = aq;
             }
-            const int nn = ((int)ivs.points < n) ? (int)ivs.points : n;
-            for(int k = 0; k < nn; k++) {
-                float ya = 0.5f + (float)ivs.i[k] / (2.0f * peak);
-                float yb = 0.5f + (float)ivs.q[k] / (2.0f * peak);
+            for(int k = 0; k < n; k++) {                  /* 窗口线性映射到满屏 */
+                const float t = (float)k * (float)(want - 1) / (float)(n - 1);
+                const int a0 = w0 + (int)t;
+                const int a1 = (a0 + 1 < pts) ? a0 + 1 : a0;
+                const float fr = t - (float)(int)t;
+                const float yi = (float)ivs.i[a0] * (1.f - fr) + (float)ivs.i[a1] * fr;
+                const float yq = (float)ivs.q[a0] * (1.f - fr) + (float)ivs.q[a1] * fr;
+                float ya = 0.5f + yi / (2.0f * peak);
+                float yb = 0.5f + yq / (2.0f * peak);
                 if(ya < 0.f) ya = 0.f;  if(ya > 1.f) ya = 1.f;
                 if(yb < 0.f) yb = 0.f;  if(yb > 1.f) yb = 1.f;
                 ch1[k] = ya;  ch2[k] = yb;
             }
-            plot_set_trace(s_plot_scope, 0, ch1, nn, V32_C_CH1, 2);   /* I */
-            plot_set_trace(s_plot_scope, 1, ch2, nn, V32_C_CH2, 2);   /* Q */
+            plot_set_trace(s_plot_scope, 0, ch1, n, V32_C_CH1, 2);    /* I */
+            plot_set_trace(s_plot_scope, 1, ch2, n, V32_C_CH2, 2);    /* Q */
+            /* 芯片状态与 FPGA 实际模式同步（服务重启/外部命令切过模式后，
+               初值「关」会对不上 —— 解调帧在到达就是「开」，变化才刷屏） */
+            {
+                static int s_demod_shown = -1;
+                if(s_demod_shown != 1 && s_chip_demod) {
+                    chip_set_text(s_chip_demod, "解调 开");
+                    chip_selected_c(s_chip_demod, true, V32_C_WARN);
+                    s_demod_shown = 1;
+                }
+            }
             plot_hide_trace(s_plot_scope, 2);                          /* Math 无意义 */
             plot_set_cursors(s_plot_scope, 0, NULL, NULL, false);      /* 光标/触发停用 */
             plot_set_trigger(s_plot_scope, false, 0.f);
             plot_set_trigger_level(s_plot_scope, false, 0.5f);
+            update_axis_label();   /* 时基读数跟着解调窗口每帧刷新 */
             return;
+        }
+    }
+
+    /* 解调关闭时把芯片刷回「关」（同样变化才刷） */
+    if(S.use_real) {
+        static int s_demod_shown2 = -1;
+        v32_iq_view_t ivx;
+        if(v32_get_iq(&ivx) == 0 && s_demod_shown2 != 0) {
+            if(s_chip_demod) {
+                chip_set_text(s_chip_demod, "解调 关");
+                chip_selected_c(s_chip_demod, false, V32_C_WARN);
+            }
+            s_demod_shown2 = 0;
         }
     }
 
