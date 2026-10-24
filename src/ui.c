@@ -1056,6 +1056,14 @@ static float s_trig_lev = 0.5f;
 static int   s_math_mode = 2;    /* 0=关 1=A+B 2=A-B 3=A×B 4=A÷B 5=XY（默认 A-B） */
 static float s_math[PLOT_MAX_PTS];
 static float s_math_y[PLOT_MAX_PTS];
+/*
+ * 「零帧」检测：波形帧两路 min/max 各差 <=1 码连续 30 帧，就认为 FPGA
+ * 送的是空帧。实测踩过：FPGA 端改动期间 ADC→DDC/FFT 路径有信号、
+ * 波形帧却全零，屏幕一条平线 —— 和「没接数据」长得一模一样，
+ * 必须在信息行标出来才能分清是链路问题还是 FPGA 数据问题。
+ */
+static int  s_zero_seq;       /* 连续零帧计数 */
+static int  s_zero_on;        /* 1 = 当前处于零帧状态 */
 
 static void real_update(void)
 {
@@ -1193,6 +1201,15 @@ static void real_update(void)
 
     s_real_vpp0_mv = (a_hi - a_lo) * V32_ADC_MV_PER_LSB;
     s_real_vpp1_mv = (b_hi - b_lo) * V32_ADC_MV_PER_LSB;
+
+    /* 零帧检测（阈值 1 码 = 量化噪声底；连续 30 帧 ≈ 5 s @22fps 才亮，防抖） */
+    if((a_hi - a_lo) <= 1.0f && (b_hi - b_lo) <= 1.0f) {
+        if(s_zero_seq < 1000) s_zero_seq++;
+        s_zero_on = (s_zero_seq >= 30);
+    } else {
+        s_zero_seq = 0;
+        s_zero_on  = 0;
+    }
 
     /* 两路共用同一纵向量程 —— 否则屏幕上 CH1 和 CH2 谁大谁小是假的 */
     {
@@ -1477,6 +1494,7 @@ static void update_axis_label(void)
             snprintf(segs[n].txt, sizeof segs[n].txt, "%s", (s_)); \
             segs[n].color = (c_); n++; } while(0)
 
+        if(s_zero_on) V32_SEG("●零帧 ", V32_C_WARN);
         if(!S.running) V32_SEG("⏸已冻结 ", V32_C_WARN);
 
         /*
