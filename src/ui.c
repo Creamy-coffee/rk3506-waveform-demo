@@ -3237,11 +3237,40 @@ static void tick_lock(void)
     real_update();
 
     if(S.use_real) {
+        /*
+         * 调制模式：FPGA 停发 MEAS/SPEC，改发 V32IQ01! 解调 I/Q（实测
+         * 256 点/帧、抽取 4096）。IQ 帧一到，时间历程图就改画解调 I/Q，
+         * 读数走「解调」分支 —— 这就是「手动调制波显示」。
+         */
+        v32_iq_view_t iv;
+        const bool have_iq = (v32_get_iq(&iv) != 0) && iv.points >= 2u;
+        if(have_iq) {
+            float peak = 1.0f;
+            for(uint32_t k = 0; k < iv.points && k < (uint32_t)V32_IQ_MAX_POINTS; k++) {
+                const float ai = fabsf((float)iv.i[k]);
+                const float aq = fabsf((float)iv.q[k]);
+                if(ai > peak) peak = ai;
+                if(aq > peak) peak = aq;
+            }
+            const int nn = ((int)iv.points < n) ? (int)iv.points : n;
+            for(int k = 0; k < nn; k++) {
+                float ya = 0.5f + (float)iv.i[k] / (2.0f * peak);
+                float yb = 0.5f + (float)iv.q[k] / (2.0f * peak);
+                if(ya < 0.f) ya = 0.f;  if(ya > 1.f) ya = 1.f;
+                if(yb < 0.f) yb = 0.f;  if(yb > 1.f) yb = 1.f;
+                a[k] = ya;  b[k] = yb;
+            }
+            plot_set_trace(s_plot_lock, 0, a, nn, V32_C_CH1, 2);   /* I */
+            plot_set_trace(s_plot_lock, 1, b, nn, V32_C_CH2, 2);   /* Q */
+        }
+
         if(s_real_valid && s_full_n >= 2) {
-            map_window(s_full0, s_full_n, a, n, false);
-            map_window(s_full1, s_full_n, b, n, false);
-            plot_set_trace(s_plot_lock, 0, a, n, V32_C_CH1, 2);
-            plot_set_trace(s_plot_lock, 1, b, n, V32_C_CH2, 2);
+            if(!have_iq) {          /* 普通模式仍画原始双通道波形 */
+                map_window(s_full0, s_full_n, a, n, false);
+                map_window(s_full1, s_full_n, b, n, false);
+                plot_set_trace(s_plot_lock, 0, a, n, V32_C_CH1, 2);
+                plot_set_trace(s_plot_lock, 1, b, n, V32_C_CH2, 2);
+            }
 
             /*
              * 锁定页的读数**全部来自片上锁相**（V32MEAS!）。
@@ -3268,6 +3297,43 @@ static void tick_lock(void)
                 plot_set_iq(s_plot_iq, (float)(mm.pdiff_millideg / 1000.0));
                 lv_label_set_text(s_lbl_lock_state, "● 锁定");
                 lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_GREEN, LV_PART_MAIN);
+            } else if(have_iq) {
+                /*
+                 * 解调读数：幅度/相位直接从 I/Q 算。
+                 * 相位取整窗均值（atan2f(Σq, Σi)），单点相位在 FM 下抖得没法看。
+                 */
+                float sq = 0.f, si = 0.f, imax = 0.f, imin = 0.f;
+                const uint32_t nq = (iv.points < (uint32_t)V32_IQ_MAX_POINTS)
+                                  ? iv.points : (uint32_t)V32_IQ_MAX_POINTS;
+                for(uint32_t k = 0; k < nq; k++) {
+                    si += (float)iv.i[k];  sq += (float)iv.q[k];
+                    if((float)iv.i[k] > imax) imax = (float)iv.i[k];
+                    if((float)iv.i[k] < imin) imin = (float)iv.i[k];
+                }
+                const float ph = atan2f(sq, si) * 57.29578f;   /* rad→deg */
+                const float ivpp = (imax - imin) * V32_ADC_MV_PER_LSB;
+                lv_label_set_text(s_lbl_lock_ref,   "—");
+                lv_label_set_text_fmt(s_lbl_lock_amp,   "%.1f mV", (double)ivpp);
+                lv_label_set_text_fmt(s_lbl_lock_phase, "%.2f°",   (double)ph);
+                lv_obj_set_style_text_color(s_lbl_lock_ref,   V32_C_METRIC_VALUE, LV_PART_MAIN);
+                lv_obj_set_style_text_color(s_lbl_lock_amp,   V32_C_METRIC_VALUE, LV_PART_MAIN);
+                lv_obj_set_style_text_color(s_lbl_lock_phase, V32_C_GREEN,        LV_PART_MAIN);
+                plot_set_iq(s_plot_iq, ph);
+                char st[24];
+                snprintf(st, sizeof st, "● 解调·%s",
+                         (s_mod_idx >= 0 && s_mod_idx < V32_MOD_COUNT)
+                             ? MOD_NAME[s_mod_idx] : "?");
+                lv_label_set_text(s_lbl_lock_state, st);
+                lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_GREEN, LV_PART_MAIN);
+                if(s_lbl_lock_raw) {
+                    char rb[96];
+                    snprintf(rb, sizeof rb, "IQ fid=%u pts=%u decim=%u cfg=%u fs=%uHz",
+                             (unsigned)iv.frame_id, (unsigned)iv.points,
+                             (unsigned)iv.decim, (unsigned)iv.cfg_id,
+                             (iv.fs_hz && iv.decim) ? (unsigned)(iv.fs_hz / iv.decim) : 0u);
+                    lv_label_set_text(s_lbl_lock_raw, rb);
+                    lv_obj_remove_flag(s_lbl_lock_raw, LV_OBJ_FLAG_HIDDEN);
+                }
             } else if(have_ddc) {
                 /*
                  * V32DDC3!（协作包 20261024）：参考频率/幅度/相位差全是它自己的字段。
