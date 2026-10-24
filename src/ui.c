@@ -2613,6 +2613,24 @@ static void tb_apply(int idx)
     const int   fn = (src && src->frame_len > 0) ? src->frame_len : V32_POINTS;
     if(idx < 0) idx = 0;
     if(idx > TB_N - 1) idx = TB_N - 1;
+    /*
+     * 解调模式：一帧只有 256 点（fs_iq≈15.87 kHz 时 ≈16 ms）。比这更深的
+     * 时基档全部被 cap 成满屏 —— 点了只剩数字变、波形纹丝不动（实测
+     * 「数字在变根本看不到变化」就是踩进了这段无效区间）。这里把档位
+     * 上限压到「窗口仍装得进一帧」的最大档，▶ 到头就停。
+     */
+    {
+        v32_iq_view_t ivt;
+        if(S.use_real && v32_get_iq(&ivt) && ivt.points >= 2u && ivt.decim) {
+            const float fs_iq = (float)ivt.fs_hz / (float)ivt.decim;
+            int cap_idx = 0;
+            for(int i = 0; i < TB_N; i++) {
+                const int w = (int)(TB_US[i] * 1e-6f * 10.0f * fs_iq + 0.5f);
+                if(w <= (int)ivt.points) cap_idx = i;
+            }
+            if(idx > cap_idx) idx = cap_idx;
+        }
+    }
     s_tb_idx = idx;
 
     int span = (int)(TB_US[idx] * 1e-6f * (float)V32_GRID_X * fs + 0.5f);
