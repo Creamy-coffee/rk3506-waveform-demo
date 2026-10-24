@@ -710,8 +710,13 @@ static void *reader_main(void *arg)
                     clock_gettime(CLOCK_MONOTONIC, &now);
                     if (now.tv_sec - last.tv_sec >= 2) {
                         last = now;
-                        fprintf(stderr, "[rx] 帧=%u fps=%.1f 头错=%u CRC错=%u 序列错=%u 样点错=%u EAGAIN=%u 丢弃字节=%u 尾巴=%u\n",
+                        /* dec=帧头抽取率、fn=每帧点数：判断 FPGA 送的是不是深抽取帧
+                           （dec≥1024 时一帧跨 ≥64ms，AM 包络才能帧内直见）。 */
+                        const wave_source_t *ws = wave_source_get();
+                        fprintf(stderr, "[rx] 帧=%u fps=%.1f dec=%d fn=%d 头错=%u CRC错=%u 序列错=%u 样点错=%u EAGAIN=%u 丢弃字节=%u 尾巴=%u\n",
                                 s_st.frames_ok, s_st.fps_milli / 1000.0,
+                                v32_last_decimation(),
+                                (ws && ws->frame_len > 0) ? ws->frame_len : 0,
                                 s_st.header_errors, s_st.crc_errors,
                                 s_st.sequence_errors, s_st.sample_errors,
                                 s_st.eagain_cnt, s_st.discarded_bytes,
