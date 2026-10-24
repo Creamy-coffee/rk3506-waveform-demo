@@ -1628,7 +1628,7 @@ static void update_axis_label(void)
             v32_iq_view_t ivq;
             if(v32_get_iq(&ivq)) {
                 char mb[24];
-                snprintf(mb, sizeof mb, "●调制·%s(波形停发) ",
+                snprintf(mb, sizeof mb, "●解调·%s ",
                          (s_mod_idx >= 0 && s_mod_idx < V32_MOD_COUNT)
                              ? MOD_NAME[s_mod_idx] : "?");
                 V32_SEG(mb, V32_C_WARN);
@@ -3168,6 +3168,41 @@ static void tick_scope(void)
     const int n = PLOT_MAX_PTS;
 
     real_update();
+
+    /*
+     * 调制模式（FPGA 停发波形帧、改发 V32IQ01! 解调帧）：示波器页
+     * 直接把解调 I/Q 画出来 —— 用户在默认页就能看调制波，不用切
+     * 锁相页。解调帧一帧 256 点 × decim4096 ≈ 16 ms 连续窗，
+     * 1 kHz 调制周期 1 ms ≈ 16 点/周期，波形真实连续。
+     * 帧级测量没有新波形帧，右栏读数自动变「—」，诚实。
+     */
+    {
+        v32_iq_view_t ivs;
+        if(S.use_real && v32_get_iq(&ivs) && ivs.points >= 2u) {
+            float peak = 1.0f;
+            for(uint32_t k = 0; k < ivs.points && k < (uint32_t)V32_IQ_MAX_POINTS; k++) {
+                const float ai = fabsf((float)ivs.i[k]);
+                const float aq = fabsf((float)ivs.q[k]);
+                if(ai > peak) peak = ai;
+                if(aq > peak) peak = aq;
+            }
+            const int nn = ((int)ivs.points < n) ? (int)ivs.points : n;
+            for(int k = 0; k < nn; k++) {
+                float ya = 0.5f + (float)ivs.i[k] / (2.0f * peak);
+                float yb = 0.5f + (float)ivs.q[k] / (2.0f * peak);
+                if(ya < 0.f) ya = 0.f;  if(ya > 1.f) ya = 1.f;
+                if(yb < 0.f) yb = 0.f;  if(yb > 1.f) yb = 1.f;
+                ch1[k] = ya;  ch2[k] = yb;
+            }
+            plot_set_trace(s_plot_scope, 0, ch1, nn, V32_C_CH1, 2);   /* I */
+            plot_set_trace(s_plot_scope, 1, ch2, nn, V32_C_CH2, 2);   /* Q */
+            plot_hide_trace(s_plot_scope, 2);                          /* Math 无意义 */
+            plot_set_cursors(s_plot_scope, 0, NULL, NULL, false);      /* 光标/触发停用 */
+            plot_set_trigger(s_plot_scope, false, 0.f);
+            plot_set_trigger_level(s_plot_scope, false, 0.5f);
+            return;
+        }
+    }
 
     /*
      * 深时基（窗口 > 一帧）：改从滚动缓冲取最近一段。
