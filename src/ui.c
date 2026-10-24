@@ -1053,7 +1053,7 @@ static float s_cur_y[2] = { 0.35f, 0.65f };
 static int   s_trig_mode, s_trig_edge;
 static float s_trig_lev = 0.5f;
 
-static int   s_math_mode = 2;    /* 0=关 1=A+B 2=A-B（先默认 A-B，界面上能直接看到） */
+static int   s_math_mode = 2;    /* 0=关 1=A+B 2=A-B 3=A×B 4=A÷B 5=XY（默认 A-B） */
 static float s_math[PLOT_MAX_PTS];
 static float s_math_y[PLOT_MAX_PTS];
 
@@ -1172,11 +1172,23 @@ static void real_update(void)
         measure_buf(s_full0, fn, fse, &s_m1);
     }
 
-    /* Math 迹线：算完直接用 CH1 的纵向映射归一化，保证跟着同一套刻度走 */
-    if(s_math_mode) {
-        for(int i = 0; i < fn; i++)
-            s_math[i] = (s_math_mode == 1) ? (s_full0[i] + s_full1[i])
-                                           : (s_full0[i] - s_full1[i]);
+    /*
+     * Math 迹线（原始码值域上运算，归一化在显示侧做）：
+     *   A×B 量纲是 V²，A÷B 无量纲 —— 都和 CH1/CH2 不是一套刻度，
+     *   所以这里只管算数，显示时用独立量程（照 HTML 原型的 mathVdiv）。
+     * A÷B 除零保护：分母绝对值 < 2 码（约 5 mV）按 0 处理，
+     * 否则噪声过零时会画出一条撑满全屏的竖线，把整屏糊掉。
+     */
+    if(s_math_mode >= 1 && s_math_mode <= 4) {
+        for(int i = 0; i < fn; i++) {
+            const float a = s_full0[i], b = s_full1[i];
+            switch(s_math_mode) {
+                case 1:  s_math[i] = a + b; break;
+                case 2:  s_math[i] = a - b; break;
+                case 3:  s_math[i] = a * b; break;
+                default: s_math[i] = (fabsf(b) < 2.0f) ? 0.0f : a / b; break;
+            }
+        }
     }
 
     s_real_vpp0_mv = (a_hi - a_lo) * V32_ADC_MV_PER_LSB;
@@ -1338,6 +1350,24 @@ static void map_window(const float *src, int src_n, float *y01, int n, bool bl)
         if(y > 1.f) y = 1.f;
         y01[i] = y;
     }
+}
+
+/*
+ * map_window 的「换自己的 lo/sc」版：Math 迹线量纲与 CH1/CH2 不同
+ * （A×B 是 V²），共用联合量程会被裁顶/压扁 —— 这正是之前
+ * 「加减看起来没效果」的原因。窗口映射逻辑完全复用 map_window，
+ * 只在调用期间换掉归一化常数（ui_tick 单线程调用，换完即还原）。
+ */
+static void map_window_own(const float *src, int src_n, float *y01, int n,
+                           float lo, float sc)
+{
+    const float saved_lo = s_real_lo;
+    const float saved_sc = s_real_sc;
+    s_real_lo = lo;
+    s_real_sc = sc;
+    map_window(src, src_n, y01, n, false);
+    s_real_lo = saved_lo;
+    s_real_sc = saved_sc;
 }
 
 static void fetch_scope(int ch, float *y01, int n)
@@ -2491,8 +2521,8 @@ static void cb_trig_lev_auto(lv_event_t *e){ LV_UNUSED(e); s_trig_lev = 0.5f; tr
 static void cb_math_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
-    s_math_mode = (s_math_mode + 1) % 4;
-    static const char *nm[4] = { "关", "A+B", "A-B", "XY" };
+    s_math_mode = (s_math_mode + 1) % 6;
+    static const char *nm[6] = { "关", "A+B", "A-B", "A×B", "A÷B", "XY" };
     if(s_chip_math) {
         char b[16];
         snprintf(b, sizeof b, "数学 %s", nm[s_math_mode]);
@@ -2505,7 +2535,7 @@ static void cb_math_cycle(lv_event_t *e)
      * 所以 XY 平面是等比例的，不会因为某一路幅度大就被拉扁。
      */
     if(s_plot_scope)
-        plot_set_mode(s_plot_scope, (s_math_mode == 3) ? PLOT_XY : PLOT_SCOPE);
+        plot_set_mode(s_plot_scope, (s_math_mode == 5) ? PLOT_XY : PLOT_SCOPE);
     ui_tick();
 }
 
@@ -3006,10 +3036,20 @@ static void tick_scope(void)
         plot_set_cursors(s_plot_scope, 4, xs, ys, s_cur_on != 0);
     }
 
-    /* Math 迹线（亮绿）：A+B / A-B。用自己的量程画，纵向不会被 CH1 压扁。 */
-    if(s_math_mode && s_real_valid && s_full_n >= 2) {
-        map_window(s_math, s_full_n, s_math_y, n, false);
-        plot_set_trace(s_plot_scope, 2, s_math_y, n, V32_C_GREEN, 2);
+    /*
+     * Math 迹线（亮绿）：A+B/A-B/A×B/A÷B 都按**自己的 min/max** 归一 ——
+     * 量纲不同（×B 是 V²），跟 CH1 共量程要么裁顶要么压成看不出变化的线。
+     * XY 模式（5）不画：那时绘图区整个切成李萨如，trace0/1 已经是 X/Y。
+     */
+    if(s_math_mode >= 1 && s_math_mode <= 4 && s_real_valid && s_full_n >= 2) {
+        float mn = 1e30f, mx = -1e30f;
+        for(int i = 0; i < s_full_n; i++) {
+            if(s_math[i] < mn) mn = s_math[i];
+            if(s_math[i] > mx) mx = s_math[i];
+        }
+        if(mx - mn < 1e-6f) { mn = -1.f; mx = 1.f; }
+        map_window_own(s_math, s_full_n, s_math_y, n, mn, 1.0f / (mx - mn));
+        plot_set_trace(s_plot_scope, 2, s_math_y, n, V32_C_MATH, 2);
     } else {
         plot_hide_trace(s_plot_scope, 2);
     }
