@@ -49,12 +49,11 @@ add_executable(waveform_demo
     src/fonts/lv_font_v32_18.c
     src/fonts/lv_font_v32_20.c
     src/fonts/lv_font_v32_12_bold.c
+    src/fonts/lv_font_v32_16_bold.c
     src/fonts/lv_font_v32_18_bold.c
     src/fonts/lv_font_v32_20_bold.c
-    # 注：tools/gen_v32_fonts.py 还会生成 lv_font_v32_16_bold.c，
-    # 这里**故意不列** —— 参考稿里 16px 只用在 .chip / select / .action，
-    # 这三处 font-weight 都是 normal，没有一处加粗。
-    # 列进来只会白编一遍（链接器会整段丢掉）。
+    # 16px 粗体现在用上了：scope_proto 化之后顶部信息行（A1=… Time/Div=…）
+    # 和右栏读数都走 lv_font_v32_16_bold（V32_FONT_INFO / V32_FONT_ROWVAL）。
     # （CMake 注释只有 #，写 /* */ 会被当成文件名，报 Cannot find source file: "//*"）
 )
 

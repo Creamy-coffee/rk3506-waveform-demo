@@ -63,9 +63,14 @@ void plot_set_trace(lv_obj_t *plot, int idx, const float *y, int n,
                     lv_color_t color, int32_t width);
 void plot_hide_trace(lv_obj_t *plot, int idx);
 
-/* ---- SCOPE 专用：触发线 ---- */
+/* ---- SCOPE 专用：触发线 ----
+ * plot_set_trigger      : 竖直的位置标记（FFT 页还在用；SCOPE 页画成
+ *                          顶部小三角，照 scope_proto_1024.html）
+ * plot_set_trigger_level: 水平的触发电平虚线（scope_proto 的洋红长虚线：
+ *                          两端 22px 实线头 + 左端小三角），y01: 0=底 1=顶 */
 /* x 是归一化横坐标 0..1（参考稿画的固定 0.46），会在竖线右侧写个 "T" */
 void plot_set_trigger(lv_obj_t *plot, bool vis, float x);
+void plot_set_trigger_level(lv_obj_t *plot, bool vis, float y01);
 
 /* ---- FFT 专用：峰值箭头 + 文字 ---- */
 /* 会在 (x, 曲线高度) 处画一个向下的三角形，并在旁边写 txt。
@@ -85,6 +90,16 @@ void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, b
 /* 绘图区顶部那行示波器信息：A1=1.00V/格  A2=GND  Time/Div=202µs  Trig=A1::Auto
  * 照 HTML 原型 scope_proto_1024.html 的版式。 */
 void plot_set_info(lv_obj_t *plot, const char *line);
+
+/*
+ * 分段配色的信息行（scope_proto 的画法：标签绿、数值白、触发洋红）。
+ * plot.c 会把文本拷进控件内部，调用方的缓冲可以复用；最多 12 段。
+ */
+typedef struct {
+    char       txt[28];
+    lv_color_t color;
+} plot_info_seg_t;
+void plot_set_info_segs(lv_obj_t *plot, const plot_info_seg_t *segs, int n);
 
 /* 刻度文字：x 轴 6 个（0,2,4,6,8,10 格）、y 轴 5 个（0,2,4,6,8 格）。
  * 传入后绘图区会自动留出左 42px / 下 18px 的边距画刻度，跟 HTML 原型一致。 */

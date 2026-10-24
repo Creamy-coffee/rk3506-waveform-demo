@@ -47,7 +47,12 @@
 #define V32_SHELL_H          (V32_SCR_H - 2 * V32_SHELL_BW)                 /* 598 */
 
 #define V32_ROW_TOP          48
-#define V32_ROW_CTRL         92
+/*
+ * 控制条 92 -> 60：scope_proto_1024.html 的控制条只有 52px 高
+ * （CB = {y:486, h:52}），芯片本身 34px。省出来的 32px 给绘图区，
+ * 正好补上右栏多出来的 3 行光标读数（T1/T2/ΔT/1/ΔT/V1/V2/ΔV 拆成 7 行）。
+ */
+#define V32_ROW_CTRL         60
 #define V32_ROW_NAV          56
 #define V32_ROW_MAIN         (V32_SHELL_H - V32_ROW_TOP - V32_ROW_CTRL - V32_ROW_NAV)  /* 402 */
 
@@ -87,11 +92,12 @@
 #define V32_CHIP_RADIUS      6
 #define V32_SEL_MAX_W        140
 
-/* .controls{ padding:7px 12px; gap:8px }   .group{ gap:7px } */
+/* .controls{ padding:7px 12px; gap:8px }   .group{ gap:7px }
+ * 行高 92->60 的原因见上面 V32_ROW_CTRL 处的注释 */
 #define V32_CTRL_PAD_X       12
 #define V32_CTRL_PAD_Y       7
-#define V32_CTRL_GAP         8
-#define V32_GROUP_GAP        7
+#define V32_CTRL_GAP         6
+#define V32_GROUP_GAP        5
 #define V32_SLIDER_W         96
 /* .nav{ grid-template-columns:repeat(5,1fr); gap:5px; padding:6px 9px } */
 #define V32_NAV_COLS         5
@@ -132,8 +138,8 @@
  * 想改回深色：把这一整块换回去即可，其余代码只引用宏、没有硬编码颜色。
  */
 /* 底色 / 外壳 */
-#define V32_C_BG             lv_color_hex(0x050805)  /* :root background */
-#define V32_C_SHELL          lv_color_hex(0x0A0F0A)  /* .shell background */
+#define V32_C_BG             lv_color_hex(0x000000)  /* scope_proto: 纯黑 */  /* :root background */
+#define V32_C_SHELL          lv_color_hex(0x000000)  /* scope_proto: 整屏黑 */  /* .shell background */
 #define V32_C_SHELL_BORDER   lv_color_hex(0x1E301C)
 
 /* 顶栏 */
@@ -181,29 +187,33 @@
 #define V32_C_WARN           lv_color_hex(0xFFB340)  /* 模拟件的黄色警示 */
 
 /* 控件条 .controls */
-#define V32_C_CTRL_BG        lv_color_hex(0x0A0F0A)
-#define V32_C_CTRL_BORDER    lv_color_hex(0x1A2A18)
+#define V32_C_CTRL_BG        lv_color_hex(0x020602)  /* scope_proto 控制条底 */
+#define V32_C_CTRL_BORDER    lv_color_hex(0x0F2A14)
 #define V32_C_SEL_BG         lv_color_hex(0x0A0F0A)  /* select */
 #define V32_C_SEL_FG         lv_color_hex(0xCFE0CF)
 #define V32_C_SEL_BORDER     lv_color_hex(0x1E301C)
 #define V32_C_SEL_BG2        lv_color_hex(0x0A0F0A)  /* dropdown 弹出列表 */
 
 /* 按钮 .chip / .nav button */
-#define V32_C_CHIP_BG        lv_color_hex(0x0A0F0A)
-#define V32_C_CHIP_BORDER    lv_color_hex(0x22371F)
-#define V32_C_CHIP_FG        lv_color_hex(0x6FAE84)
+#define V32_C_CHIP_BG        lv_color_hex(0x061A0A)  /* scope_proto 芯片底 */
+#define V32_C_CHIP_BORDER    lv_color_hex(0x123A1C)
+#define V32_C_CHIP_FG        lv_color_hex(0x1D6B2A)  /* scope_proto: 暗绿 C.dim */
 #define V32_C_CHIP_BG_PRESS  lv_color_hex(0x14210F)  /* .chip:active（白底上是压暗） */
-#define V32_C_CHIP_ON_BG     lv_color_hex(0x13351B)  /* .chip.selected */
+#define V32_C_CHIP_ON_BG     lv_color_hex(0x0D2A14)  /* .chip.selected */
 #define V32_C_CHIP_ON_BORDER lv_color_hex(0x35CC45)
-#define V32_C_CHIP_ON_FG     lv_color_hex(0x9FE8B4)
+#define V32_C_CHIP_ON_FG     lv_color_hex(0xE8F2E8)  /* scope_proto: 选中芯片白字 */
 
 /* 底部导航 .nav */
-#define V32_C_NAV_BG         lv_color_hex(0x0A0F0A)
-#define V32_C_NAV_BORDER     lv_color_hex(0x1A2A18)
-#define V32_C_NAV_FG         lv_color_hex(0x6FAE84)
+#define V32_C_NAV_BG         lv_color_hex(0x020602)  /* scope_proto 导航条底 */
+#define V32_C_NAV_BORDER     lv_color_hex(0x0F2A14)
+#define V32_C_NAV_FG         lv_color_hex(0x1D6B2A)  /* scope_proto: 未选中暗绿 */
 #define V32_C_NAV_ON_BG      lv_color_hex(0x0D3A1A)  /* .nav button.active */
-#define V32_C_NAV_ON_FG      lv_color_hex(0x3CFF6E)
+#define V32_C_NAV_ON_FG      lv_color_hex(0xE8F2E8)  /* scope_proto: 选中白字 */
 #define V32_C_NAV_ON_BAR     lv_color_hex(0x0D3A1A)
+
+/* scope_proto 专用 */
+#define V32_C_ROW_SEP        lv_color_hex(0x123A1C)  /* 测量行下的分隔线 */
+#define V32_C_MATH           lv_color_hex(0x7CFF9A)  /* 数学迹线 / 数学芯片（亮绿） */
 
 /* 画布内部（**黑底**：网格必须比底色**亮**，否则看不见） */
 #define V32_C_GRID           lv_color_hex(0x0B3D14)  /* grid() 网格 */
@@ -231,6 +241,7 @@ LV_FONT_DECLARE(lv_font_v32_16);
 LV_FONT_DECLARE(lv_font_v32_18);
 LV_FONT_DECLARE(lv_font_v32_20);
 LV_FONT_DECLARE(lv_font_v32_12_bold);
+LV_FONT_DECLARE(lv_font_v32_16_bold);
 LV_FONT_DECLARE(lv_font_v32_18_bold);
 LV_FONT_DECLARE(lv_font_v32_20_bold);
 
@@ -270,6 +281,12 @@ LV_FONT_DECLARE(lv_font_v32_20_bold);
  * 12px 上这点字重差看不出来）。四个粗体档因此各多几十 KB。
  */
 #define V32_FONT_SMALL_B (&lv_font_v32_18_bold)  /* 原 12px 粗体，同上上调 */
+
+/*
+ * 顶部信息行（A1=… A2=… Time/Div=… Trig=…）用 16px 粗体 ——
+ * scope_proto 里是 bold 15px Consolas，我们就近取 16 档。
+ */
+#define V32_FONT_INFO    (&lv_font_v32_16_bold)
 #define V32_FONT_BASE_B  (&lv_font_v32_18_bold)
 #define V32_FONT_BIG_B   (&lv_font_v32_20_bold)
 

@@ -65,7 +65,15 @@
  * 差在浏览器 normal line-height 与实际字体度量的出入上 —— 所以以实测为准。
  * 我们改行高之后，第一条分隔线落在 y=129，参考稿 130，只差 1px。
  */
-#define METRIC_H  21   /* 照 HTML：21px 一行，10 项测量 + 光标段 */
+/*
+ * 行高 21 -> 19：scope_proto 的光标段是 T1/T2/ΔT/1/ΔT/V1/V2/ΔV 各占一行
+ * （原来 4 行塞两人份，被并成 "T1 / T2"），拆开后右栏一共 10+7=17 行，
+ * 21px 一行放不下（下面还有「通道」面板），压到 19px。
+ * 数值字也换 16px 粗体（V32_FONT_ROWVAL），18px 粗体的行高 21 会顶行。
+ */
+#define METRIC_H  19
+/* 右栏读数：16px 粗体（scope_proto 是 12.5px 同号字，我们只有 16 档就近） */
+#define V32_FONT_ROWVAL  (&lv_font_v32_16_bold)
 /* .kv 一行：13px 字体行高 15 + 上下各 6 + 1px 下边框 */
 #define KV_H      28
 /* .panel-title 那一行 + margin-bottom */
@@ -126,8 +134,8 @@ static lv_obj_t *s_plot_raw, *s_plot_den;
 static lv_obj_t *s_lbl_scope_freq, *s_lbl_v1, *s_lbl_v2, *s_lbl_phase;
 static lv_obj_t *s_lbl_m_vmax, *s_lbl_m_vmin, *s_lbl_m_vrms, *s_lbl_m_per, *s_lbl_m_duty;
 static lv_obj_t *s_lbl_m_vamp, *s_lbl_m_vavg, *s_lbl_m_rise;
-static lv_obj_t *s_lbl_cur_t, *s_lbl_cur_dt, *s_lbl_cur_v, *s_lbl_cur_dv;
-static lv_obj_t *s_lbl_scope_axis;
+static lv_obj_t *s_lbl_cur_t1, *s_lbl_cur_t2, *s_lbl_cur_dt, *s_lbl_cur_idt;
+static lv_obj_t *s_lbl_cur_v1, *s_lbl_cur_v2, *s_lbl_cur_dv;
 static lv_obj_t *s_lbl_fft_peakf, *s_lbl_fft_peakl, *s_lbl_fft_floor, *s_lbl_fft_win;
 static lv_obj_t *s_lbl_lock_ref, *s_lbl_lock_amp, *s_lbl_lock_phase, *s_lbl_lock_tau;
 static lv_obj_t *s_lbl_lock_state;      /* 锁定状态（● 锁定 / ○ 原因） */
@@ -243,13 +251,15 @@ static lv_obj_t *mk_metric(lv_obj_t *parent, int y, const char *name,
                            const char *val, lv_color_t val_color)
 {
     lv_obj_t *row = mk(parent, 0, y, V32_RIGHT_W - V32_PANEL_PAD * 2, METRIC_H);
-    /* HTML 原型的测量栏是纯文字（标签左、数值右），没有分隔线 */
-    lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
+    /* scope_proto：每行下面一条 #123a1c 细分隔线 */
+    lv_obj_set_style_border_color(row, V32_C_ROW_SEP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
 
     lv_obj_t *k = mk_label(row, 0, 0, name, V32_FONT_SMALL, V32_C_METRIC_LABEL);
     lv_obj_align(k, LV_ALIGN_LEFT_MID, 0, V32_METRIC_LABEL_DY);
 
-    lv_obj_t *v = mk_label(row, 0, 0, val, V32_FONT_BASE_B, val_color);
+    lv_obj_t *v = mk_label(row, 0, 0, val, V32_FONT_ROWVAL, val_color);
     lv_obj_align(v, LV_ALIGN_RIGHT_MID, 0, V32_METRIC_VALUE_DY);
     return v;
 }
@@ -296,15 +306,20 @@ static void chip_styles(lv_obj_t *b)
     lv_obj_set_style_bg_color(b, V32_C_CHIP_BG_PRESS, LV_STATE_PRESSED);
 }
 
-static void chip_selected(lv_obj_t *b, bool on)
+static void chip_selected_c(lv_obj_t *b, bool on, lv_color_t border)
 {
     if(!b) return;                 /* 还没建好就别刷，避免空指针 */
     lv_obj_set_style_bg_color(b, on ? V32_C_CHIP_ON_BG : V32_C_CHIP_BG, LV_PART_MAIN);
-    lv_obj_set_style_border_color(b, on ? V32_C_CHIP_ON_BORDER : V32_C_CHIP_BORDER, LV_PART_MAIN);
+    lv_obj_set_style_border_color(b, on ? border : V32_C_CHIP_BORDER, LV_PART_MAIN);
     lv_obj_set_style_text_color(b, on ? V32_C_CHIP_ON_FG : V32_C_CHIP_FG, LV_PART_MAIN);
     /* 文字在子 label 上，得单独刷一次 */
     lv_obj_t *l = lv_obj_get_child(b, 0);
     if(l) lv_obj_set_style_text_color(l, on ? V32_C_CHIP_ON_FG : V32_C_CHIP_FG, LV_PART_MAIN);
+}
+/* 默认绿色选中（通道/窗函数等），触发/光标类芯片用洋红（scope_proto 的配色） */
+static void chip_selected(lv_obj_t *b, bool on)
+{
+    chip_selected_c(b, on, V32_C_CHIP_ON_BORDER);
 }
 
 static lv_obj_t *mk_chip(lv_obj_t *parent, const char *txt, lv_event_cb_t cb)
@@ -1331,6 +1346,27 @@ static void fetch_scope(int ch, float *y01, int n)
  * 暂停时前面挂一个「⏸ 已冻结」：冻结之后时基不用再变，但用户需要一眼看出
  * 屏幕上这一屏是停住的（否则和"链路断了"看起来一样）。
  * 缓冲区按字节算：一个汉字 3 字节，整串约 45 字节，留到 96 才够。 */
+/* 时间/频率/电压的小格式化工具：光标段和信息行共用（单位自适应） */
+static void fmt_time_s(char *b, size_t n, float t)
+{
+    const float a = fabsf(t);
+    if(a < 1e-6f)      snprintf(b, n, "%.0fns",  (double)(t * 1e9f));
+    else if(a < 1e-3f) snprintf(b, n, "%.2fµs", (double)(t * 1e6f));
+    else               snprintf(b, n, "%.2fms", (double)(t * 1e3f));
+}
+static void fmt_hz(char *b, size_t n, float f)
+{
+    if(!(f > 0.f) || !isfinite(f)) { snprintf(b, n, "—"); return; }
+    if(f < 1e3f)      snprintf(b, n, "%.1fHz",   (double)f);
+    else if(f < 1e6f) snprintf(b, n, "%.3fkHz",  (double)(f / 1e3f));
+    else              snprintf(b, n, "%.3fMHz",  (double)(f / 1e6f));
+}
+static void fmt_mv(char *b, size_t n, float mv)
+{
+    if(fabsf(mv) < 1000.f) snprintf(b, n, "%.0fmV", (double)mv);
+    else                   snprintf(b, n, "%.2fV",  (double)(mv / 1000.f));
+}
+
 static void update_axis_label(void)
 {
     const wave_source_t *src = wave_source_get();
@@ -1338,35 +1374,6 @@ static void update_axis_label(void)
     const int   span = s_zoom_span > 0 ? s_zoom_span
                                        : ((src && src->frame_len > 0) ? src->frame_len : V32_POINTS);
     const float us_div = (float)span / fs * 1e6f / (float)V32_GRID_X;
-
-    static char last[160];
-    char core[112];
-    char buf[160];
-
-    if(S.use_real && s_real_sc > 0.f) {
-        /* 满屏码值 = 1/sc，除纵向格数、再除增益 = 每格多少码 -> 换 mV */
-        const float mv_div = (1.0f / s_real_sc) / (float)V32_GRID_Y / s_gain
-                             * V32_ADC_MV_PER_LSB;
-        snprintf(core, sizeof core, "%.3f µs/格 · %.2f mV/格",
-                 (double)us_div, (double)mv_div);
-    } else {
-        snprintf(core, sizeof core, "%.3f µs/格 · 触发 自动", (double)us_div);
-    }
-    if(s_cur_on && s_real_sc > 0.f) {
-        /* 光标读数：ΔT 用时间轴换算，ΔV 用当前纵向满屏码值换算 */
-        const float dts = fabsf(s_cur_x[1] - s_cur_x[0]) * (float)span / fs;
-        const float dvm = fabsf(s_cur_y[1] - s_cur_y[0]) * (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;
-        char cur[64];
-        if(dts < 1e-3f) snprintf(cur, sizeof cur, "  ΔT %.2f µs · ΔV %.1f mV", (double)(dts*1e6f), (double)dvm);
-        else            snprintf(cur, sizeof cur, "  ΔT %.2f ms · ΔV %.1f mV", (double)(dts*1e3f), (double)dvm);
-        strncat(core, cur, sizeof core - strlen(core) - 1);
-    }
-    snprintf(buf, sizeof buf, "%s%s", S.running ? "" : "⏸ 已冻结 · ", core);
-
-    if(strcmp(buf, last) != 0) {
-        lv_label_set_text(s_lbl_scope_axis, buf);
-        snprintf(last, sizeof last, "%s", buf);
-    }
 
     /* 绘图区刻度文字（照 HTML 原型）：底部 6 个时间刻度、左侧 5 个电压刻度 */
     if(s_plot_scope && S.use_real && s_real_sc > 0.f) {
@@ -1391,39 +1398,71 @@ static void update_axis_label(void)
         plot_set_ticks(s_plot_scope, xp, 6, yp, 5);
     }
 
-    /* 顶部信息行（照 HTML 原型）：A1=… A2=… Time/Div=… Trig=… */
-    if(s_plot_scope && S.use_real) {
-        char info[96], a1[16], a2[16], td[16];
+    /*
+     * 顶部信息行（照 scope_proto_1024.html 的 drawInfoBar）：
+     *   A1=…/格  A2=…/格  Time/Div=…  Trig=A1::自动 电平
+     * 分段配色：标签绿、数值白、A2 琥珀、触发洋红（plot.c 里逐段画）。
+     */
+    if(s_plot_scope) {
+        char a1[16], a2[16], td[16], tr[20], lv[16], cur[56];
+        plot_info_seg_t segs[12];
+        int n = 0;
+#define V32_SEG(s_, c_) do { \
+            snprintf(segs[n].txt, sizeof segs[n].txt, "%s", (s_)); \
+            segs[n].color = (c_); n++; } while(0)
+
+        if(!S.running) V32_SEG("⏸已冻结 ", V32_C_WARN);
+
         if(s_real_sc > 0.f) {
             const float mv = (1.0f / s_real_sc) / (float)V32_GRID_Y / s_gain * V32_ADC_MV_PER_LSB;
-            if(mv < 1000.f) snprintf(a1, sizeof a1, "%.2fV", (double)(mv / 1000.f));
-            else            snprintf(a1, sizeof a1, "%.1fV", (double)(mv / 1000.f));
-        } else snprintf(a1, sizeof a1, "--");
+            snprintf(a1, sizeof a1, "%.3fV/格", (double)(mv / 1000.f));
+        } else snprintf(a1, sizeof a1, "--/格");
+        V32_SEG("A1=", V32_C_LABEL);
+        V32_SEG(a1, V32_C_METRIC_VALUE);
+
         snprintf(a2, sizeof a2, "%s", S.ch2 ? a1 : "GND");
+        V32_SEG("  A2=", V32_C_LABEL);
+        V32_SEG(a2, S.ch2 ? V32_C_CH2 : V32_C_LABEL);
+
         if(us_div < 1.f)         snprintf(td, sizeof td, "%.0fns", (double)(us_div * 1000.f));
         else if(us_div < 1000.f) snprintf(td, sizeof td, "%.0fµs", (double)us_div);
         else                     snprintf(td, sizeof td, "%.1fms", (double)(us_div / 1000.f));
-        char curv[40] = "";
+        V32_SEG("  Time/Div=", V32_C_LABEL);
+        V32_SEG(td, V32_C_METRIC_VALUE);
+
+        if(s_trig_mode == 0) snprintf(tr, sizeof tr, "关");
+        else snprintf(tr, sizeof tr, "A1::%s%s", s_trig_mode == 1 ? "自动" : "正常",
+                      s_trig_edge ? "↓" : "↑");
+        V32_SEG("  Trig=", V32_C_LABEL);
+        V32_SEG(tr, V32_C_TRIGGER);
+        if(s_trig_mode != 0 && s_real_sc > 0.f && s_m1.vmax > s_m1.vmin) {
+            const float k3 = V32_ADC_MV_PER_LSB / 1000.0f;
+            const float lvv = (s_m1.vmin + (s_m1.vmax - s_m1.vmin) * s_trig_lev) * k3;
+            fmt_mv(lv, sizeof lv, lvv * 1000.f);
+            V32_SEG(" ", V32_C_TRIGGER);
+            V32_SEG(lv, V32_C_TRIGGER);
+        }
+
         if(s_cur_on && s_real_sc > 0.f) {
             const float dts = fabsf(s_cur_x[1] - s_cur_x[0]) * (float)span / fs;
             const float dvm = fabsf(s_cur_y[1] - s_cur_y[0]) * (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;
-            if(dts < 1e-3f) snprintf(curv, sizeof curv, "  ΔT %.1fµs ΔV %.0fmV", (double)(dts*1e6f), (double)dvm);
-            else            snprintf(curv, sizeof curv, "  ΔT %.2fms ΔV %.0fmV", (double)(dts*1e3f), (double)dvm);
+            char b1[16], b2[16];
+            fmt_time_s(b1, sizeof b1, dts);
+            fmt_mv(b2, sizeof b2, dvm);
+            snprintf(cur, sizeof cur, "ΔT%s ΔV%s", b1, b2);
+            V32_SEG("  ", V32_C_TRIGGER);
+            V32_SEG(cur, V32_C_TRIGGER);
         }
-        snprintf(info, sizeof info, "A1=%s A2=%s %s/格 Trig=%s%s%s",
-                 a1, a2, td,
-                 s_trig_mode == 0 ? "关" : (s_trig_mode == 1 ? "Auto" : "Norm"),
-                 s_trig_mode ? (s_trig_edge ? "↓" : "↑") : "", curv);
-        /* 直接写进左下角那行标签（它自带底板，压在波形上也读得清）；
-           plot 内的信息行已关闭，避免同一行字画两遍。 */
-        if(s_lbl_scope_axis) lv_label_set_text(s_lbl_scope_axis, info);
+#undef V32_SEG
+        plot_set_info_segs(s_plot_scope, segs, n);
     }
 
+    /* 时基芯片：值嵌在芯片里（照 scope_proto 的「时基 500µs」） */
     if(s_chip_tb) {
-        char tb[16];
-        if(us_div < 1.f)       snprintf(tb, sizeof tb, "%.2fµs", (double)us_div);
-        else if(us_div < 1000.f) snprintf(tb, sizeof tb, "%.0fµs", (double)us_div);
-        else                   snprintf(tb, sizeof tb, "%.1fms", (double)(us_div / 1000.f));
+        char tb[20];
+        if(us_div < 1.f)         snprintf(tb, sizeof tb, "时基 %.2fµs", (double)us_div);
+        else if(us_div < 1000.f) snprintf(tb, sizeof tb, "时基 %.0fµs", (double)us_div);
+        else                     snprintf(tb, sizeof tb, "时基 %.1fms", (double)(us_div / 1000.f));
         lv_label_set_text(lv_obj_get_child(s_chip_tb, 0), tb);
     }
     sync_timebase_dd(us_div);
@@ -1652,20 +1691,6 @@ static void build_scope(lv_obj_t *pg)
        所以把这行整行藏掉，让画面跟原型一致 */
     lv_obj_add_flag(tr, LV_OBJ_FLAG_HIDDEN);
 
-    s_lbl_scope_axis = mk_label(s_plot_scope, 0, 0, "",
-                                V32_FONT_SMALL, V32_C_PLOT_FOOT);
-    /* 垫一块和画布同色的底板：这行字压在左下角，波形经常从它上面穿过去，
-     * 白底主题下不垫就读不出来（FFT 页的角标同理，见 plot.c 的 text_plated）。 */
-    lv_obj_set_style_bg_color(s_lbl_scope_axis, V32_C_PLOT, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_lbl_scope_axis, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_lbl_scope_axis, 3, LV_PART_MAIN);
-    lv_obj_set_style_pad_hor(s_lbl_scope_axis, 4, LV_PART_MAIN);
-    lv_obj_set_style_pad_ver(s_lbl_scope_axis, 1, LV_PART_MAIN);
-    /* 信息行放在**左上角**（HTML 原型的位置），并垫一块画布色底板压住网格 */
-    lv_obj_set_width(s_lbl_scope_axis, 620);
-    lv_label_set_long_mode(s_lbl_scope_axis, LV_LABEL_LONG_CLIP);
-    lv_obj_align(s_lbl_scope_axis, LV_ALIGN_TOP_LEFT, 8, 4);
-
     /* ---- 右侧读数栏 ---- */
     lv_obj_t *aside = mk(pg, 0, 0, ASIDE_W, MAIN_H);
     s_aside[UI_PAGE_SCOPE] = aside;
@@ -1687,11 +1712,14 @@ static void build_scope(lv_obj_t *pg)
     s_lbl_scope_freq = mk_metric(p1, TITLE_H + METRIC_H * 7, "频率 f",      "--", V32_C_METRIC_VALUE);
     s_lbl_m_duty     = mk_metric(p1, TITLE_H + METRIC_H * 8, "占空比",      "--", V32_C_METRIC_VALUE);
     s_lbl_m_rise     = mk_metric(p1, TITLE_H + METRIC_H * 9, "上升时间",    "--", V32_C_METRIC_VALUE);
-    /* 光标段：洋红（照 HTML） */
-    s_lbl_cur_t      = mk_metric(p1, TITLE_H + METRIC_H * 10, "T1 / T2",     "--", V32_C_TRIGGER);
-    s_lbl_cur_dt     = mk_metric(p1, TITLE_H + METRIC_H * 11, "ΔT / 1/ΔT",   "--", V32_C_TRIGGER);
-    s_lbl_cur_v      = mk_metric(p1, TITLE_H + METRIC_H * 12, "V1 / V2",     "--", V32_C_TRIGGER);
-    s_lbl_cur_dv     = mk_metric(p1, TITLE_H + METRIC_H * 13, "ΔV",          "--", V32_C_TRIGGER);
+    /* 光标段：洋红（照 scope_proto：T1 T2 ΔT 1/ΔT V1 V2 ΔV 各占一行） */
+    s_lbl_cur_t1  = mk_metric(p1, TITLE_H + METRIC_H * 10, "T1",   "--", V32_C_TRIGGER);
+    s_lbl_cur_t2  = mk_metric(p1, TITLE_H + METRIC_H * 11, "T2",   "--", V32_C_TRIGGER);
+    s_lbl_cur_dt  = mk_metric(p1, TITLE_H + METRIC_H * 12, "ΔT",   "--", V32_C_TRIGGER);
+    s_lbl_cur_idt = mk_metric(p1, TITLE_H + METRIC_H * 13, "1/ΔT", "--", V32_C_TRIGGER);
+    s_lbl_cur_v1  = mk_metric(p1, TITLE_H + METRIC_H * 14, "V1",   "--", V32_C_TRIGGER);
+    s_lbl_cur_v2  = mk_metric(p1, TITLE_H + METRIC_H * 15, "V2",   "--", V32_C_TRIGGER);
+    s_lbl_cur_dv  = mk_metric(p1, TITLE_H + METRIC_H * 16, "ΔV",   "--", V32_C_TRIGGER);
 
     /* CH2 峰峰值 / 相位差已并入上面 10 项（HTML 里没有这两行，A2 在信息条里），
        但 tick_scope 还在写这两个句柄 —— 建在面板外，别让它们露出来。 */
@@ -2241,8 +2269,7 @@ static void cb_timebase(lv_event_t *e)
         S.auto_fit   = false;        /* 手动改时基就退出 AUTO 跟踪 */
         update_axis_label();
     } else {
-        lv_label_set_text_fmt(s_lbl_scope_axis, "%g µs/格 · 触发 自动",
-                              (double)TIMEBASE_US[S.tb_idx]);
+        update_axis_label();     /* 演示源：信息行统一走分段绘制 */
     }
     ui_tick();
 }
@@ -2355,12 +2382,16 @@ static void cb_tb_auto(lv_event_t *e){ LV_UNUSED(e); int d; tb_default(&d); tb_a
 static void vg_label(void)
 {
     if(!s_chip_vg) return;
-    if(s_vdiv_idx == 0) { chip_set_text(s_chip_vg, "自动"); chip_selected(s_chip_vg, false); return; }
-    char b[12];
-    if(VDIVS_MV[s_vdiv_idx] >= 1000.f) snprintf(b, sizeof b, "%.1fV", (double)(VDIVS_MV[s_vdiv_idx] / 1000.f));
-    else                               snprintf(b, sizeof b, "%.0fmV", (double)VDIVS_MV[s_vdiv_idx]);
+    char b[16];
+    if(s_vdiv_idx == 0) {
+        chip_set_text(s_chip_vg, "档位 自动");
+        chip_selected(s_chip_vg, true);      /* 照 scope_proto：auto 档高亮 */
+        return;
+    }
+    if(VDIVS_MV[s_vdiv_idx] >= 1000.f) snprintf(b, sizeof b, "档位 %.1fV", (double)(VDIVS_MV[s_vdiv_idx] / 1000.f));
+    else                               snprintf(b, sizeof b, "档位 %.0fmV", (double)VDIVS_MV[s_vdiv_idx]);
     chip_set_text(s_chip_vg, b);
-    chip_selected(s_chip_vg, true);
+    chip_selected(s_chip_vg, false);
 }
 static void cb_vg_dec(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx > 0) s_vdiv_idx--; s_vdiv_mv = VDIVS_MV[s_vdiv_idx]; vg_label(); }
 static void cb_vg_inc(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx < 9) s_vdiv_idx++; s_vdiv_mv = VDIVS_MV[s_vdiv_idx]; vg_label(); }
@@ -2370,24 +2401,33 @@ static void cb_cur_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
     s_cur_on = !s_cur_on;
-    if(s_chip_cur) { chip_set_text(s_chip_cur, s_cur_on ? "开" : "关");
-                     chip_selected(s_chip_cur, s_cur_on != 0); }
+    if(s_chip_cur) { chip_set_text(s_chip_cur, s_cur_on ? "光标 开" : "光标 关");
+                     chip_selected_c(s_chip_cur, s_cur_on != 0, V32_C_TRIGGER); }
     ui_tick();
 }
 
 static void trig_refresh(void)
 {
     static const char *nm[3] = { "关", "自动", "正常" };
-    if(s_chip_trig) { chip_set_text(s_chip_trig, nm[s_trig_mode]);
-                      chip_selected(s_chip_trig, s_trig_mode != 0); }
-    if(s_chip_edge) chip_set_text(s_chip_edge, s_trig_edge ? "↓" : "↑");
+    char b[20];
+    if(s_chip_trig) {
+        snprintf(b, sizeof b, "触发 %s", nm[s_trig_mode]);
+        chip_set_text(s_chip_trig, b);
+        chip_selected_c(s_chip_trig, s_trig_mode != 0, V32_C_TRIGGER);
+    }
+    if(s_chip_edge) {
+        chip_set_text(s_chip_edge, s_trig_edge ? "边沿 ↓" : "边沿 ↑");
+        chip_selected_c(s_chip_edge, true, V32_C_TRIGGER);
+    }
     if(s_chip_lev) {
         /* 显示电压而不是百分比：50% 对用户没有意义，
            示波器上这个旋钮标的永远是伏特 */
         const float k3 = V32_ADC_MV_PER_LSB / 1000.0f;
         const float lv = (s_m1.vmin + (s_m1.vmax - s_m1.vmin) * s_trig_lev) * k3;
-        if(fabsf(lv) < 1.f) lv_label_set_text_fmt(lv_obj_get_child(s_chip_lev, 0), "%.0fmV", (double)(lv*1000.f));
-        else                lv_label_set_text_fmt(lv_obj_get_child(s_chip_lev, 0), "%.2fV", (double)lv);
+        if(fabsf(lv) < 1.f) snprintf(b, sizeof b, "电平 %.0fmV", (double)(lv*1000.f));
+        else                snprintf(b, sizeof b, "电平 %.2fV", (double)lv);
+        chip_set_text(s_chip_lev, b);
+        chip_selected_c(s_chip_lev, true, V32_C_TRIGGER);
     }
 }
 static void cb_trig_mode(lv_event_t *e) { LV_UNUSED(e); s_trig_mode = (s_trig_mode + 1) % 3; trig_refresh(); ui_tick(); }
@@ -2401,8 +2441,12 @@ static void cb_math_cycle(lv_event_t *e)
     LV_UNUSED(e);
     s_math_mode = (s_math_mode + 1) % 4;
     static const char *nm[4] = { "关", "A+B", "A-B", "XY" };
-    if(s_chip_math) { chip_set_text(s_chip_math, nm[s_math_mode]);
-                      chip_selected(s_chip_math, s_math_mode != 0); }
+    if(s_chip_math) {
+        char b[16];
+        snprintf(b, sizeof b, "数学 %s", nm[s_math_mode]);
+        chip_set_text(s_chip_math, b);
+        chip_selected_c(s_chip_math, s_math_mode != 0, V32_C_MATH);
+    }
     /*
      * XY（李萨如）：把绘图控件切成 XY 模式 —— trace0 当 X 轴、trace1 当 Y 轴。
      * 两条迹线的归一化用的是同一套 s_real_lo/s_real_sc（两路共用纵向量程），
@@ -2646,45 +2690,53 @@ static void build_controls(lv_obj_t *root)
     lv_obj_set_flex_flow(gsc, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(gsc, V32_GROUP_GAP, LV_PART_MAIN);
 
-    /* Math：关 / A+B / A-B（点一下换一个）—— 放在时基组前面，最容易被看到 */
-    {
-        lv_obj_t *gm = mk_group(gsc, "Math");
-        s_chip_math = mk_chip(gm, "A-B", cb_math_cycle);
-        chip_selected(s_chip_math, true);
-    }
-
+    /*
+     * 示波器页控件照 scope_proto_1024.html 的控制条重排：
+     *   时基 ◀值▶ · 档位 ◀值▶ · 触发 · 边沿 · 电平 ◀值▶ · 光标 · 数学
+     * 标签直接嵌在芯片文字里（原型没有组标签），省出来的宽度正好补上
+     * 右端那几个全局按钮。
+     */
     /* 时基：◀ 值 ▶（点中间 = 自动） */
     {
-        lv_obj_t *gs3 = mk_group(gsc, "时基");
+        lv_obj_t *gs3 = mk_group(gsc, NULL);
         mk_chip(gs3, "◀", cb_tb_dec);
-        s_chip_tb = mk_chip(gs3, "2us", cb_tb_auto);
+        s_chip_tb = mk_chip(gs3, "时基 --", cb_tb_auto);
         mk_chip(gs3, "▶", cb_tb_inc);
     }
 
-    /* 垂直档位：◀ 值 ▶（点中间 = 自动 1×） */
+    /* 垂直档位：◀ 值 ▶（点中间 = 自动量程） */
     {
-        lv_obj_t *gv = mk_group(gsc, "档位");
+        lv_obj_t *gv = mk_group(gsc, NULL);
         mk_chip(gv, "◀", cb_vg_dec);
-        s_chip_vg = mk_chip(gv, "自动", cb_vg_auto);
+        s_chip_vg = mk_chip(gv, "档位 自动", cb_vg_auto);
         mk_chip(gv, "▶", cb_vg_inc);
     }
 
-    /* 光标开/关 */
+    /* 触发：模式 / 边沿 / 电平◀值▶（洋红，照 scope_proto 的 C.trig） */
     {
-        lv_obj_t *gcu = mk_group(gsc, "光标");
-        s_chip_cur = mk_chip(gcu, "关", cb_cur_cycle);
-        chip_selected(s_chip_cur, false);
+        lv_obj_t *gt = mk_group(gsc, NULL);
+        s_chip_trig = mk_chip(gt, "触发 关", cb_trig_mode);
+        s_chip_edge = mk_chip(gt, "边沿 ↑", cb_trig_edge);
+        mk_chip(gt, "◀", cb_trig_lev_dec);
+        s_chip_lev  = mk_chip(gt, "电平 --", cb_trig_lev_auto);
+        mk_chip(gt, "▶", cb_trig_lev_inc);
+        chip_selected_c(s_chip_trig, false, V32_C_TRIGGER);
+        chip_selected_c(s_chip_edge, true,  V32_C_TRIGGER);
+        chip_selected_c(s_chip_lev,  true,  V32_C_TRIGGER);
     }
 
-    /* 触发：模式 / 边沿 / 电平◀值▶ 各管一件事，别塞成一个 */
+    /* 光标开/关（洋红） */
     {
-        lv_obj_t *gt = mk_group(gsc, "触发");
-        s_chip_trig = mk_chip(gt, "关", cb_trig_mode);
-        s_chip_edge = mk_chip(gt, "↑", cb_trig_edge);
-        mk_chip(gt, "◀", cb_trig_lev_dec);
-        s_chip_lev  = mk_chip(gt, "50%", cb_trig_lev_auto);
-        mk_chip(gt, "▶", cb_trig_lev_inc);
-        chip_selected(s_chip_trig, false);
+        lv_obj_t *gcu = mk_group(gsc, NULL);
+        s_chip_cur = mk_chip(gcu, "光标 关", cb_cur_cycle);
+        chip_selected_c(s_chip_cur, false, V32_C_TRIGGER);
+    }
+
+    /* Math：关 / A+B / A-B / XY（点一下换一个，亮绿） */
+    {
+        lv_obj_t *gm = mk_group(gsc, NULL);
+        s_chip_math = mk_chip(gm, "数学 A-B", cb_math_cycle);
+        chip_selected_c(s_chip_math, true, V32_C_MATH);
     }
 
     /* 旧的时基下拉框不再创建：已被上面的 ◀ 值 ▶ 三段式取代。
@@ -2749,10 +2801,10 @@ static void build_controls(lv_obj_t *root)
      * 挨着的两个常用键，捏乱了之后第一反应就是先按自动。 */
     s_chip_ai = mk_chip(bar, "重建 开", cb_ai);   /* 全局开关 */
     chip_selected(s_chip_ai, S.ai);              /* S.ai 初始为 true，补一次选中色 */
-    s_chip_run = mk_chip(bar, "⏸ 暂停", cb_run);
     mk_chip(bar, "⊞ 自动", cb_auto);
     mk_chip(bar, "↺ 复位", cb_reset);
     mk_chip(bar, "⛶ 全屏", cb_fullscreen);
+    s_chip_run = mk_chip(bar, "⏸暂停", cb_run);   /* 暂停放最右（照 scope_proto） */
 }
 
 /* =========================================================
@@ -2761,18 +2813,14 @@ static void build_controls(lv_obj_t *root)
 static void nav_selected(lv_obj_t *b, bool on)
 {
     /*
-     * ⚠️ 未选中的导航按钮**必须有底色**，不能透明。
-     *    CSS 里 `.chip,.nav button{ background:#1c3043 }` 是一条共用规则，
-     *    选中态才是 `.nav button.active{ background:#205268 }`。
-     *    之前这里写的是 bg_opa = TRAMP/TRANSP，于是除当前页之外的 4 个按钮
-     *    变成透出导航条底的 #0a111c —— 整个导航条分区均值 ΔL1 = 58，
-     *    是全屏最大的一处色差，但单看截图只觉得"导航条有点发暗"。
+     * scope_proto 的导航条：整条近黑（#020602），选中项是一块
+     * #0d3a1a 圆角矩形 + 白字，未选中的就是暗绿字平铺在条上。
+     * 未选中的底色给导航条自己的色（不透明），避免透出意外层次。
      */
-    lv_obj_set_style_bg_color(b, on ? V32_C_NAV_ON_BG : V32_C_CHIP_BG, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(b, on ? V32_C_NAV_ON_BG : V32_C_NAV_BG, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_color(b, V32_C_NAV_ON_BAR, LV_PART_MAIN);
-    lv_obj_set_style_border_width(b, on ? V32_NAV_ACTIVE_BW : 0, LV_PART_MAIN);
-    lv_obj_set_style_border_side(b, LV_BORDER_SIDE_BOTTOM, LV_PART_MAIN);
+    lv_obj_set_style_border_width(b, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(b, 5, LV_PART_MAIN);
 
     lv_obj_t *l = lv_obj_get_child(b, 0);
     if(l) lv_obj_set_style_text_color(l, on ? V32_C_NAV_ON_FG : V32_C_NAV_FG, LV_PART_MAIN);
@@ -2781,7 +2829,7 @@ static void nav_selected(lv_obj_t *b, bool on)
 static void build_nav(lv_obj_t *root)
 {
     static const char *TXT[UI_PAGE_COUNT] = {
-        "⌁ 示波器", "▥ 频谱", "◎ 锁相", "✧ 重建", "⚙ 系统"
+        "示波器", "频谱", "锁相", "重建", "系统"      /* scope_proto：纯文字无图标 */
     };
 
     lv_obj_t *nav = mk(root, 0, NAV_Y0, V32_SHELL_W, V32_ROW_NAV);
@@ -2866,7 +2914,10 @@ static void tick_scope(void)
         plot_hide_trace(s_plot_scope, 2);
     }
 
-    plot_set_trigger(s_plot_scope, true, 0.46f);
+    /* scope_proto：位置 = 顶部小三角（波形被钉在 20% 处），
+       电平 = 贯穿绘图区的洋红虚线，随 s_trig_lev 动 */
+    plot_set_trigger(s_plot_scope, true, 0.2f);
+    plot_set_trigger_level(s_plot_scope, true, s_trig_lev);
 
     const bool use_real = S.use_real;
     const bool real = (use_real && s_real_valid);
@@ -2920,23 +2971,30 @@ static void tick_scope(void)
         const wave_source_t *cs = wave_source_get();
         const float cfs = (cs && cs->sample_rate > 0) ? (float)cs->sample_rate : 65000000.0f;
         const float span_s = (float)(s_zoom_span > 0 ? s_zoom_span : 1024) / cfs;
-        const float t1 = (s_cur_x[0] - 0.5f) * span_s * 1e6f;      /* µs */
-        const float t2 = (s_cur_x[1] - 0.5f) * span_s * 1e6f;
+        const float t1 = (s_cur_x[0] - 0.5f) * span_s;             /* 秒（原型: (t-.5)*DX*tdiv) */
+        const float t2 = (s_cur_x[1] - 0.5f) * span_s;
         const float dts = fabsf(t2 - t1);
         const float vr = (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;  /* 满屏 mV */
         const float v1 = (0.5f - s_cur_y[0]) * vr;
         const float v2 = (0.5f - s_cur_y[1]) * vr;
         const float dvm = fabsf(v2 - v1);
-        lv_label_set_text_fmt(s_lbl_cur_t, "%.0f/%.0fµs", (double)t1, (double)t2);
-        lv_label_set_text_fmt(s_lbl_cur_dt, "%.0fµs/%.1fk",
-                              (double)dts, (double)(dts > 0.f ? 1.0f/(dts*1e-6f)/1000.0f : 0.f));
-        lv_label_set_text_fmt(s_lbl_cur_v, "%.0f/%.0fmV", (double)v1, (double)v2);
-        lv_label_set_text_fmt(s_lbl_cur_dv, "%.0f mV", (double)dvm);
+        char b1[16], b2[16];
+        fmt_time_s(b1, sizeof b1, t1);           lv_label_set_text(s_lbl_cur_t1, b1);
+        fmt_time_s(b2, sizeof b2, t2);           lv_label_set_text(s_lbl_cur_t2, b2);
+        fmt_time_s(b1, sizeof b1, t2 - t1);      lv_label_set_text(s_lbl_cur_dt, b1);
+        fmt_hz(b2, sizeof b2, dts > 0.f ? 1.f / dts : 0.f);
+                                                 lv_label_set_text(s_lbl_cur_idt, b2);
+        fmt_mv(b1, sizeof b1, v1);               lv_label_set_text(s_lbl_cur_v1, b1);
+        fmt_mv(b2, sizeof b2, v2);               lv_label_set_text(s_lbl_cur_v2, b2);
+        fmt_mv(b1, sizeof b1, dvm);              lv_label_set_text(s_lbl_cur_dv, b1);
     } else {
-        lv_label_set_text(s_lbl_cur_t,  "—");
-        lv_label_set_text(s_lbl_cur_dt, "—");
-        lv_label_set_text(s_lbl_cur_v,  "—");
-        lv_label_set_text(s_lbl_cur_dv, "—");
+        lv_label_set_text(s_lbl_cur_t1,  "—");
+        lv_label_set_text(s_lbl_cur_t2,  "—");
+        lv_label_set_text(s_lbl_cur_dt,  "—");
+        lv_label_set_text(s_lbl_cur_idt, "—");
+        lv_label_set_text(s_lbl_cur_v1,  "—");
+        lv_label_set_text(s_lbl_cur_v2,  "—");
+        lv_label_set_text(s_lbl_cur_dv,  "—");
     }
 
     /* 自动测量：单位换算统一在这里，面板只管排版 */

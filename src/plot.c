@@ -17,6 +17,7 @@
 #include "theme.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ==================== 内部状态 ==================== */
@@ -44,7 +45,13 @@ typedef struct {
     trace_t tr[PLOT_MAX_TRACE];
 
     bool  trig_vis;
-    float trig_x;            /* 0..1 */
+    float trig_x;            /* 0..1 触发位置（水平轴） */
+    bool  trig_lev_vis;
+    float trig_y;            /* 0..1 触发电平（0=底 1=顶） */
+
+    /* 顶部信息行分段（照 scope_proto：标签绿/数值白/触发洋红） */
+    plot_info_seg_t info_seg[12];
+    int             info_n;
 
     bool  peak_vis;
     float peak_x;            /* 0..1 */
@@ -91,14 +98,16 @@ lv_obj_t *plot_create(lv_obj_t *parent, plot_mode_t mode)
     p->obj = obj;
     p->grid_color   = V32_C_GRID;
     p->center_color = V32_C_GRID_CENTER;
+    p->trig_y       = 0.5f;
 
     /* .plot{ background:#0a1522; border:1px solid #2a3c4c; border-radius:7px } */
     lv_obj_remove_style_all(obj);
     lv_obj_set_style_bg_color(obj, V32_C_PLOT, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_color(obj, V32_C_PLOT_BORDER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(obj, 1, LV_PART_MAIN);
-    lv_obj_set_style_radius(obj, V32_PLOT_RADIUS, LV_PART_MAIN);
+    /* scope_proto：亮绿外框是**紧贴网格**的 2px 直角框，刻度文字在框外。
+     * 对象边框关掉，框在 draw_cb 里绕网格区画（见 plot_draw_cb 末尾）。 */
+    lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(obj, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(obj, 0, LV_PART_MAIN);
     lv_obj_set_style_clip_corner(obj, true, LV_PART_MAIN);
     lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
@@ -191,6 +200,15 @@ void plot_set_trigger(lv_obj_t *plot, bool vis, float x)
     lv_obj_invalidate(plot);
 }
 
+void plot_set_trigger_level(lv_obj_t *plot, bool vis, float y01)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    p->trig_lev_vis = vis;
+    p->trig_y = (y01 < 0.f) ? 0.f : (y01 > 1.f ? 1.f : y01);
+    lv_obj_invalidate(plot);
+}
+
 void plot_set_peak(lv_obj_t *plot, bool vis, float x, const char *txt)
 {
     plot_t *p = PLOT_OF(plot);
@@ -236,6 +254,24 @@ void plot_set_info(lv_obj_t *plot, const char *line)
     if(strcmp(p->info, line) == 0) return;      /* 没变就别重绘 */
     snprintf(p->info, sizeof p->info, "%s", line);
     lv_obj_invalidate(plot);
+}
+
+void plot_set_info_segs(lv_obj_t *plot, const plot_info_seg_t *segs, int n)
+{
+    if(plot == NULL) return;
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    if(n < 0) n = 0;
+    if(n > 12) n = 12;
+    int changed = (p->info_n != n);
+    for(int i = 0; i < n; i++) {
+        if(strcmp(p->info_seg[i].txt, segs[i].txt) != 0) changed = 1;
+        p->info_seg[i].color = segs[i].color;
+        snprintf(p->info_seg[i].txt, sizeof p->info_seg[i].txt, "%s",
+                 segs[i].txt ? segs[i].txt : "");
+    }
+    p->info_n = n;
+    if(changed) lv_obj_invalidate(plot);
 }
 
 void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, bool show)
@@ -517,17 +553,23 @@ static void draw_ticks(lv_layer_t *layer, plot_t *p,
                        int32_t gx, int32_t gy, int32_t gw, int32_t gh)
 {
     (void)oy;
+    /* scope_proto：刻度字是标签绿（C.label），不是芯片选中色 */
     if(p->tk_nx > 0) {
         for(int i = 0; i < p->tk_nx && i < 6; i++) {
             const int32_t cx = gx + (int32_t)((long)i * 2 * gw / (long)p->divx);
-            text_w(layer, cx - 28, gy + gh + 2, 56, p->tk_x[i], V32_C_CHIP_ON_FG, V32_FONT_SMALL);
+            /* 框下 4px（框本身 2px）居中 */
+            lv_point_t sz;
+            lv_text_get_size(&sz, p->tk_x[i], V32_FONT_SMALL, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            text_w(layer, cx - sz.x / 2, gy + gh + 4, sz.x + 8, p->tk_x[i], V32_C_LABEL, V32_FONT_SMALL);
         }
     }
     if(p->tk_ny > 0) {
         for(int j = 0; j < p->tk_ny && j < 5; j++) {
-            int32_t cy = gy + (int32_t)((long)j * 2 * gh / (long)p->divy);
-            if(j == 0) cy += 10;      /* 第一个刻度往下挪，别压在顶部信息行上 */
-            text_w(layer, ox + 2, cy - 8, 60, p->tk_y[j], V32_C_CHIP_ON_FG, V32_FONT_SMALL);
+            const int32_t cy = gy + (int32_t)((long)j * 2 * gh / (long)p->divy);
+            /* 右对齐贴在框左侧 8px（scope_proto: textAlign='right', x=PL.x-8） */
+            lv_point_t sz;
+            lv_text_get_size(&sz, p->tk_y[j], V32_FONT_SMALL, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            text_w(layer, gx - 8 - sz.x, cy - sz.y / 2, sz.x + 8, p->tk_y[j], V32_C_LABEL, V32_FONT_SMALL);
         }
     }
     (void)ow;
@@ -547,19 +589,32 @@ static void draw_cursors(lv_layer_t *layer, plot_t *p,
     ld.width = 1;
     ld.opa   = LV_OPA_COVER;
 
+    int32_t vx[2] = {0, 0}, hy[2] = {0, 0};
+    int nv = 0, nh = 0;
     for(int i = 0; i < p->cur_n && i < 4; i++) {
         if(i < 2) {                              /* 竖线：时间光标 */
             const int32_t x = x0 + (int32_t)(p->cur_x[i] * (float)(w - 1));
             for(int32_t y = y0; y < y0 + h - 1; y += 8)
                 line(layer, &ld, x, y, x, (y + 4 < y0 + h - 1) ? y + 4 : y0 + h - 1);
-            text(layer, x + 3, y0 + 6, (i == 0) ? "T1" : "T2", V32_C_TRIGGER, V32_FONT_SMALL);
+            if(nv < 2) vx[nv++] = x;
         } else {                                 /* 横线：电压光标 */
             const int32_t y = y0 + (int32_t)(p->cur_y[i - 2] * (float)(h - 1));   /* i-2：cur_y[] 只有 2 个 */
             for(int32_t x = x0; x < x0 + w - 1; x += 8)
                 line(layer, &ld, x, y, (x + 4 < x0 + w - 1) ? x + 4 : x0 + w - 1, y);
-            text(layer, x0 + 4, y - 16, (i == 2) ? "V1" : "V2", V32_C_TRIGGER, V32_FONT_SMALL);
+            if(nh < 2) hy[nh++] = y;
         }
     }
+    /* 交点小方块（scope_proto: 4×4 实心方块） */
+    lv_draw_rect_dsc_t rd;
+    lv_draw_rect_dsc_init(&rd);
+    rd.bg_color = V32_C_TRIGGER;
+    rd.bg_opa   = LV_OPA_COVER;
+    rd.radius   = 1;
+    for(int a = 0; a < nv; a++)
+        for(int b = 0; b < nh; b++) {
+            lv_area_t r = { vx[a] - 2, hy[b] - 2, vx[a] + 1, hy[b] + 1 };
+            lv_draw_rect(layer, &rd, &r);
+        }
 }
 
 /* XY 模式（李萨如）：trace0 当 X、trace1 当 Y，逐点连线。
@@ -594,15 +649,53 @@ static void draw_xy(lv_layer_t *layer, plot_t *p,
 static void draw_trigger(lv_layer_t *layer, plot_t *p,
                          int32_t x0, int32_t y0, int32_t w, int32_t h)
 {
-    if(!p->trig_vis) return;
-
-    const int32_t x = x0 + (int32_t)(p->trig_x * (float)(w - 1));
-
     lv_draw_line_dsc_t ld;
     lv_draw_line_dsc_init(&ld);
     ld.color = V32_C_TRIGGER;
     ld.width = 1;
     ld.opa   = LV_OPA_COVER;
+
+    if(p->mode == PLOT_SCOPE) {
+        /* scope_proto 的画法：
+         *  - 触发电平 = 贯穿绘图区的洋红细虚线（透明度低），两端 22px 实线头，
+         *    左端一个小三角提示"可以拖"
+         *  - 触发位置 = 顶部一个小三角（不再画整根竖线，免得糊住波形） */
+        if(p->trig_lev_vis) {
+            const int32_t y = y0 + (int32_t)((1.f - p->trig_y) * (float)(h - 1));
+            if(y >= y0 && y <= y0 + h - 1) {
+                ld.opa = (lv_opa_t)(LV_OPA_COVER * 28 / 100);
+                for(int32_t x = x0 + 24; x < x0 + w - 24; x += 10)
+                    line(layer, &ld, x, y, (x + 4 < x0 + w - 24) ? x + 4 : x0 + w - 24, y);
+                ld.opa = LV_OPA_COVER;
+                line(layer, &ld, x0, y, x0 + 22, y);
+                line(layer, &ld, x0 + w - 23, y, x0 + w - 1, y);
+                lv_draw_triangle_dsc_t td;
+                lv_draw_triangle_dsc_init(&td);
+                td.bg_color = V32_C_TRIGGER;
+                td.bg_opa   = LV_OPA_COVER;
+                td.p[0].x = x0 + 2;  td.p[0].y = y;
+                td.p[1].x = x0 + 11; td.p[1].y = y - 6;
+                td.p[2].x = x0 + 11; td.p[2].y = y + 6;
+                lv_draw_triangle(layer, &td);
+            }
+        }
+        if(p->trig_vis) {
+            const int32_t x = x0 + (int32_t)(p->trig_x * (float)(w - 1));
+            lv_draw_triangle_dsc_t td;
+            lv_draw_triangle_dsc_init(&td);
+            td.bg_color = V32_C_TRIGGER;
+            td.bg_opa   = LV_OPA_COVER;
+            td.p[0].x = x;     td.p[0].y = y0 + 2;
+            td.p[1].x = x - 6; td.p[1].y = y0 + 11;
+            td.p[2].x = x + 6; td.p[2].y = y0 + 11;
+            lv_draw_triangle(layer, &td);
+        }
+        return;
+    }
+
+    if(!p->trig_vis) return;
+
+    const int32_t x = x0 + (int32_t)(p->trig_x * (float)(w - 1));
     line(layer, &ld, x, y0, x, y0 + h - 1);
 
     /* JS: ctx.fillText('T', w*.46+4, 28) */
@@ -710,6 +803,21 @@ static void plot_draw_cb(lv_event_t *e)
     if(p->tk_nx > 0 || p->tk_ny > 0)
         draw_ticks(layer, p, ox, oy, ow, oh, x0, y0, w, h);
 
+    /* 顶部信息行（scope_proto 的 A1=… A2=… Time/Div=… Trig=…）：
+     * 分段配色画在框上方的留白里（tk_ny>0 时顶部留了 20px）。 */
+    if(p->info_n > 0 && p->tk_ny > 0) {
+        const int32_t iy = oy + (20 - V32_FONT_INFO->line_height) / 2;
+        int32_t ix = x0;
+        for(int i = 0; i < p->info_n && i < 12; i++) {
+            lv_point_t sz;
+            lv_text_get_size(&sz, p->info_seg[i].txt, V32_FONT_INFO, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            if(sz.x <= 0) continue;
+            text_w(layer, ix, iy, sz.x + 8, p->info_seg[i].txt, p->info_seg[i].color, V32_FONT_INFO);
+            ix += sz.x;
+            if(ix > x0 + w - 40) break;     /* 超出绘图区宽度就截断 */
+        }
+    }
+
     /* 角落坐标文字（参考稿 FFT 页画在画布左下角）。
      * 用 text_plated：这两处会被曲线穿过，白底上不垫底板就读不清。 */
     if(p->axis_l[0]) text_plated(layer, x0 + 8,   y0 + h - 20, p->axis_l, V32_C_TEXT, V32_FONT_SMALL);
@@ -718,6 +826,19 @@ static void plot_draw_cb(lv_event_t *e)
     /* 曲线右端的小图例 */
     if(p->leg0[0]) text(layer, x0 + w - 60, y0 + 6,      p->leg0, V32_C_CH1, V32_FONT_SMALL);
     if(p->leg1[0]) text(layer, x0 + w - 60, y0 + 6 + 15, p->leg1, V32_C_CH2, V32_FONT_SMALL);
+
+    /* scope_proto：亮绿 2px 直角外框**紧贴网格区**，刻度文字在框外。
+     * 最后画，压住网格和曲线的毛边。 */
+    {
+        lv_draw_rect_dsc_t fd;
+        lv_draw_rect_dsc_init(&fd);
+        fd.bg_opa       = LV_OPA_TRANSP;
+        fd.border_color = V32_C_PLOT_BORDER;
+        fd.border_width = 2;
+        fd.border_opa   = LV_OPA_COVER;
+        lv_area_t fr = { x0, y0, x0 + w - 1, y0 + h - 1 };
+        lv_draw_rect(layer, &fd, &fr);
+    }
 }
 
 /* ==================== 归一化 ==================== */
