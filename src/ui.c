@@ -894,6 +894,14 @@ static void classify_wave(void)
  * 命令发出去没有任何副作用；靠帧头的 decimation 字段判断有没有被采纳，
  * 连续 3 次没变就认为对面不支持，不再发，直到频率变化超过 2 倍再重试。
  */
+/*
+ * 手动时基模式：用户点过 ◀ 时基 ▶ 之后就置位 —— 抽取档跟着时基走
+ * （tb_apply 下发），auto_decimation 的「一帧 2~30 周期」目标会让位，
+ * 否则你拉长时基它又把 dec 拉回去，时基永远「拉不上去」。
+ * 点「时基中键/自动/复位」回到自动。
+ */
+static int s_tb_manual;
+
 static void auto_decimation(void)
 {
     static uint32_t s_next_ms;
@@ -901,6 +909,7 @@ static void auto_decimation(void)
     static int      s_blind;      /* 连续「测不准」而加大抽取的次数 */
     static float    s_last_f;
 
+    if(s_tb_manual) return;                      /* 手动时基：抽取由 tb_apply 管 */
     if(!S.use_real || s_real_peak_hz <= 0.0f || s_full_n < 2) return;
 
     const int cur = v32_last_decimation();
@@ -1064,6 +1073,76 @@ static float s_math_y[PLOT_MAX_PTS];
  */
 static int  s_zero_seq;       /* 连续零帧计数 */
 static int  s_zero_on;        /* 1 = 当前处于零帧状态 */
+
+/*
+ * ===== 滚动缓冲（roll）：深时基窗口由屏端跨帧拼接 =====
+ *
+ * FPGA 一帧只有 fn 点 × (1/fs_eff) 的时间跨度（dec=1 时 63 µs），
+ * 深时基（span > 帧长）的窗口不依赖 FPGA 加抽取 —— 屏端把每帧按
+ * 记录抽取 R 压成 min/max 对追加进环形缓冲，显示时取「最近」一段。
+ * 这是示波器 roll 模式的标准做法：帧间死区被等效压缩（时间轴是
+ * 「等效时间」不是绝对时间），但 AM 包络这类慢变特征完全正确。
+ * 换时基档改变 R 时缓冲清空重新积累（几百 ms 就能铺满一屏）。
+ */
+#define ROLL_N 16384                   /* 桶点数/通道（64 KB × 2） */
+static float s_roll0[ROLL_N], s_roll1[ROLL_N];
+static int   s_roll_len;               /* 有效点数（≤ ROLL_N） */
+static int   s_roll_R = 1;             /* 记录抽取：帧内 R 点压成 1 对 min/max */
+
+/* 追加一对极值桶点（min 在前 max 在后，与 map_window 分桶的时序约定一致）。
+ * 缓冲满时丢掉前半段（memmove），比环形回绕好读也好写。 */
+static void roll_push(float a0, float a1, float b0, float b1)
+{
+    if(s_roll_len + 2 > ROLL_N) {
+        const int drop = ROLL_N / 2;
+        memmove(s_roll0, s_roll0 + drop, (size_t)(ROLL_N - drop) * sizeof(float));
+        memmove(s_roll1, s_roll1 + drop, (size_t)(ROLL_N - drop) * sizeof(float));
+        s_roll_len -= drop;
+    }
+    s_roll0[s_roll_len] = a0;  s_roll1[s_roll_len] = b0;  s_roll_len++;
+    s_roll0[s_roll_len] = a1;  s_roll1[s_roll_len] = b1;  s_roll_len++;
+}
+
+/*
+ * 滚动缓冲 -> 屏幕映射：取最近 s_roll_len 点，min/max 分桶到 n 点，
+ * 两路**联合**归一（和帧模式同一个哲学：CH1/CH2 共刻度，谁大谁小是真的）。
+ */
+static void map_roll(float *a, float *b, int n)
+{
+    if(s_roll_len < 4 || n < 8) return;
+    float mn = 1e30f, mx = -1e30f;
+    for(int i = 0; i < s_roll_len; i++) {
+        if(s_roll0[i] < mn) mn = s_roll0[i];
+        if(s_roll0[i] > mx) mx = s_roll0[i];
+        if(s_roll1[i] < mn) mn = s_roll1[i];
+        if(s_roll1[i] > mx) mx = s_roll1[i];
+    }
+    float span = mx - mn;
+    if(span < 1e-3f) span = 1e-3f;
+    const float sc = 1.0f / span;
+
+    const int buckets = n / 2;
+    for(int bk = 0; bk < buckets; bk++) {
+        const int st = (int)((long)bk * s_roll_len / buckets);
+        int en = (int)((long)(bk + 1) * s_roll_len / buckets);
+        if(en <= st) en = st + 1;
+        if(en > s_roll_len) en = s_roll_len;
+        int ia = st, iA = st, ib = st, iB = st;
+        for(int k = st; k < en; k++) {
+            if(s_roll0[k] < s_roll0[ia]) ia = k;
+            if(s_roll0[k] > s_roll0[iA]) iA = k;
+            if(s_roll1[k] < s_roll1[ib]) ib = k;
+            if(s_roll1[k] > s_roll1[iB]) iB = k;
+        }
+        /* 极值按时间先后输出（和 map_window 一样，避免画成锯齿） */
+        const float va0 = (s_roll0[ia < iA ? ia : iA] - mn) * sc;
+        const float va1 = (s_roll0[ia < iA ? iA : ia] - mn) * sc;
+        const float vb0 = (s_roll1[ib < iB ? ib : iB] - mn) * sc;
+        const float vb1 = (s_roll1[ib < iB ? iB : ib] - mn) * sc;
+        a[2 * bk] = va0; a[2 * bk + 1] = va1;
+        b[2 * bk] = vb0; b[2 * bk + 1] = vb1;
+    }
+}
 
 static void real_update(void)
 {
@@ -1282,6 +1361,31 @@ static void real_update(void)
     classify_wave();
 
     s_real_fid   = st->last_frame_id;
+    /*
+     * 滚动缓冲记录：窗口超过一帧（深时基档）时，按 R = span/ROLL_N
+     * （上取 2 的幂）把本帧压成 min/max 对追加。换档 R 变化即清空
+     * 重新积累 —— R 一变，旧数据的点间距就不再代表新窗口的时间轴。
+     */
+    if(s_zoom_span > fn) {
+        int R = 1;
+        while(s_zoom_span / R > ROLL_N && R < (1 << 20)) R <<= 1;
+        if(R != s_roll_R) {
+            s_roll_R = R;
+            s_roll_len = 0;
+        }
+        for(int st = 0; st < fn; st += R) {
+            int en = st + R;
+            if(en > fn) en = fn;
+            float a0 = 1e30f, a1 = -1e30f, b0 = 1e30f, b1 = -1e30f;
+            for(int k = st; k < en; k++) {
+                const float va = s_full0[k], vb = s_full1[k];
+                if(va < a0) a0 = va;  if(va > a1) a1 = va;
+                if(vb < b0) b0 = vb;  if(vb > b1) b1 = vb;
+            }
+            roll_push(a0, a1, b0, b1);
+        }
+    }
+
     s_real_t_last = lv_tick_get();
     s_real_valid = true;
 
@@ -2473,25 +2577,27 @@ static void tb_apply(int idx)
     if(idx < 0) idx = 0;
     if(idx > TB_N - 1) idx = TB_N - 1;
     s_tb_idx = idx;
+
     int span = (int)(TB_US[idx] * 1e-6f * (float)V32_GRID_X * fs + 0.5f);
     if(span < 8) span = 8;
     /*
-     * 窗口最多只取整帧的 3/4。
-     * 触发是靠在帧内挪窗口起点实现的；如果窗口等于整帧，起点只能是 0，
-     * 波形永远推不动 —— 这就是"触发看起来完全没用"的真正原因。
-     * 留出 1/4 帧的余量，触发点才有地方把波形钉到屏幕 20% 处。
+     * 窗口在**一帧以内**时最多取整帧的 3/4（触发靠帧内挪窗口起点，
+     * 占满整帧波形就推不动，这是"触发看起来没用"的老坑）。
+     * 目标窗口超过一帧的深时基档不 cap：那扇窗由屏端的滚动缓冲
+     * （s_roll，见 real_update）跨帧拼接提供，span 是「等效点数」，
+     * 允许大于帧长 —— 不依赖 FPGA 加抽取，屏端自己攒。
      */
-    {
+    if(span < fn) {
         const int cap = fn - fn / 4;
         if(span > cap) span = cap;
     }
     s_zoom_span  = span;
-    s_zoom_start = (fn - span) / 2;
+    s_zoom_start = (span < fn) ? ((fn - span) / 2) : 0;
     update_axis_label();
 }
-static void cb_tb_dec(lv_event_t *e) { LV_UNUSED(e); tb_apply(s_tb_idx - 1); }
-static void cb_tb_inc(lv_event_t *e) { LV_UNUSED(e); tb_apply(s_tb_idx + 1); }
-static void cb_tb_auto(lv_event_t *e){ LV_UNUSED(e); int d; tb_default(&d); tb_apply(d); }
+static void cb_tb_dec(lv_event_t *e) { LV_UNUSED(e); s_tb_manual = 1; tb_apply(s_tb_idx - 1); }
+static void cb_tb_inc(lv_event_t *e) { LV_UNUSED(e); s_tb_manual = 1; tb_apply(s_tb_idx + 1); }
+static void cb_tb_auto(lv_event_t *e){ LV_UNUSED(e); s_tb_manual = 0; int d; tb_default(&d); tb_apply(d); }
 
 static void vg_label(void)
 {
@@ -2690,6 +2796,7 @@ static void cb_run(lv_event_t *e)
 static void cb_auto(lv_event_t *e)
 {
     LV_UNUSED(e);
+    s_tb_manual = 0;      /* 自动设置 = 交回 auto_decimation 管 */
 
     if(dbg_on()) fprintf(stderr, "[auto] pressed use_real=%d full_n=%d\n", (int)S.use_real, s_full_n);
     if(S.use_real) {
@@ -2720,6 +2827,7 @@ static void cb_auto(lv_event_t *e)
 static void cb_reset(lv_event_t *e)
 {
     LV_UNUSED(e);
+    s_tb_manual = 0;
 
     S.running = true; S.ch1 = true; S.ch2 = true; S.ai = true;
     S.noise = DEMO_NOISE_PCT;
@@ -3043,8 +3151,19 @@ static void tick_scope(void)
 
     real_update();
 
-    fetch_scope(0, ch1, n);
-    fetch_scope(1, ch2, n);
+    /*
+     * 深时基（窗口 > 一帧）：改从滚动缓冲取最近一段。
+     * Math 迹线在 roll 模式下隐藏 —— 它是帧内逐点运算，跨帧拼接
+     * 的桶点上做加减乘除没有物理意义。
+     */
+    const bool roll_mode = S.use_real && s_real_valid
+                         && s_zoom_span > s_full_n && s_roll_len >= n;
+    if(roll_mode) {
+        map_roll(ch1, ch2, n);
+    } else {
+        fetch_scope(0, ch1, n);
+        fetch_scope(1, ch2, n);
+    }
 
     /* 手动垂直档位：在 0..1 归一化之后按倍数放大/缩小，围绕中心线缩放。
        超出 0..1 的部分被裁掉 —— 真示波器超出屏幕也是这样，不会偷偷重新缩放。 */
@@ -3073,7 +3192,8 @@ static void tick_scope(void)
      * 量纲不同（×B 是 V²），跟 CH1 共量程要么裁顶要么压成看不出变化的线。
      * XY 模式（5）不画：那时绘图区整个切成李萨如，trace0/1 已经是 X/Y。
      */
-    if(s_math_mode >= 1 && s_math_mode <= 4 && s_real_valid && s_full_n >= 2) {
+    if(s_math_mode >= 1 && s_math_mode <= 4 && s_real_valid && s_full_n >= 2
+       && !(S.use_real && s_zoom_span > s_full_n)) {
         float mn = 1e30f, mx = -1e30f;
         for(int i = 0; i < s_full_n; i++) {
             if(s_math[i] < mn) mn = s_math[i];
@@ -3203,6 +3323,18 @@ static void tick_scope(void)
         int d = 0; tb_default(&d);
         if(d != s_tb_idx) tb_apply(d);
         s_tb_autodone = 1;
+    }
+
+    /*
+     * FPGA 采纳了抽取命令后帧头 dec 会变（fs_eff 跟着变）。手动时基下
+     * 窗口是按点数存的，不重算的话读数会按旧采样率折算 —— 错 dec 倍。
+     */
+    if(s_tb_manual && S.use_real) {
+        static int s_applied_dec = -1;
+        const int dnow = v32_last_decimation();
+        if(dnow > 0 && s_applied_dec > 0 && dnow != s_applied_dec)
+            tb_apply(s_tb_idx);
+        if(dnow > 0) s_applied_dec = dnow;
     }
 
     trig_refresh();
