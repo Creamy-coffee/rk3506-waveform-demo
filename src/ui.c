@@ -3322,7 +3322,12 @@ static void tick_scope(void)
 
     /* 上电时还不知道信号频率，tb_default 只能按整帧选（大档位）。
        等第一次测出峰值频率后自动再选一次，之后就交给用户手动控制。 */
-    if(!s_tb_autodone && s_real_peak_hz > 100.f) {
+    /*
+     * 上电后按实测频率自动选一次档 —— 但用户手动动过时基
+     * (s_tb_manual)就绝不抢：实测「根本调不上去」的根因就是这里，
+     * 用户拉到深档、几秒后第一帧频率一出就被拽回浅档。
+     */
+    if(!s_tb_autodone && !s_tb_manual && s_real_peak_hz > 100.f) {
         int d = 0; tb_default(&d);
         if(d != s_tb_idx) tb_apply(d);
         s_tb_autodone = 1;
