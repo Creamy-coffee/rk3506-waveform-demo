@@ -1435,7 +1435,8 @@ static void fmt_time_s(char *b, size_t n, float t)
     const float a = fabsf(t);
     if(a < 1e-6f)      snprintf(b, n, "%.0fns",  (double)(t * 1e9f));
     else if(a < 1e-3f) snprintf(b, n, "%.2fµs", (double)(t * 1e6f));
-    else               snprintf(b, n, "%.2fms", (double)(t * 1e3f));
+    else if(a < 1.0f)  snprintf(b, n, "%.2fms", (double)(t * 1e3f));
+    else               snprintf(b, n, "%.2fs",  (double)t);   /* 秒档(5s/格时基) */
 }
 static void fmt_hz(char *b, size_t n, float f)
 {
@@ -1468,7 +1469,8 @@ static void update_axis_label(void)
             if(fabsf(t) < 0.005f)      snprintf(xb[i], 12, "0");
             else if(fabsf(t) < 1.f)    snprintf(xb[i], 12, "%.0fns", (double)(t * 1000.f));
             else if(fabsf(t) < 1000.f) snprintf(xb[i], 12, "%.0fµs", (double)t);
-            else                       snprintf(xb[i], 12, "%.1fms", (double)(t / 1000.f));
+            else if(fabsf(t) < 1e6f)   snprintf(xb[i], 12, "%.1fms", (double)(t / 1000.f));
+            else                       snprintf(xb[i], 12, "%.1fs",  (double)(t / 1e6f));
             xp[i] = xb[i];
         }
         for(int j = 0; j < 5; j++) {
@@ -1526,7 +1528,8 @@ static void update_axis_label(void)
 
         if(us_div < 1.f)         snprintf(td, sizeof td, "%.0fns", (double)(us_div * 1000.f));
         else if(us_div < 1000.f) snprintf(td, sizeof td, "%.0fµs", (double)us_div);
-        else                     snprintf(td, sizeof td, "%.1fms", (double)(us_div / 1000.f));
+        else if(us_div < 1e6f)   snprintf(td, sizeof td, "%.1fms", (double)(us_div / 1000.f));
+        else                     snprintf(td, sizeof td, "%.2fs",  (double)(us_div / 1e6f));
         V32_SEG("  Time/Div=", V32_C_LABEL);
         V32_SEG(td, V32_C_METRIC_VALUE);
 
@@ -1562,7 +1565,8 @@ static void update_axis_label(void)
         char tb[20];
         if(us_div < 1.f)         snprintf(tb, sizeof tb, "时基 %.2fµs", (double)us_div);
         else if(us_div < 1000.f) snprintf(tb, sizeof tb, "时基 %.0fµs", (double)us_div);
-        else                     snprintf(tb, sizeof tb, "时基 %.1fms", (double)(us_div / 1000.f));
+        else if(us_div < 1e6f)   snprintf(tb, sizeof tb, "时基 %.1fms", (double)(us_div / 1000.f));
+        else                     snprintf(tb, sizeof tb, "时基 %.2fs",  (double)(us_div / 1e6f));
         lv_label_set_text(lv_obj_get_child(s_chip_tb, 0), tb);
     }
     sync_timebase_dd(us_div);
@@ -2432,8 +2436,18 @@ static void cb_scope_touch(lv_event_t *e)
 /* 时基档位表（跟 HTML 原型一致） */
 /* 时基档位（µs/格）。原来最小 0.5µs —— 看 10 MHz（周期 0.1µs）时
    一屏 5µs 就是 50 个周期，挤成一片。补上 0.02/0.05/0.1/0.2 四档。 */
-static const float TB_US[16] = { 0.02f,0.05f,0.1f,0.2f,0.5f,1.f,2.f,5.f,10.f,20.f,50.f,100.f,200.f,500.f,1000.f,5000.f };
-#define TB_N 16
+/*
+ * 时基档位（µs/格）0.02µs..5s 共 23 档。10ms 以上的深时基档是为
+ * AM 调制波（1 kHz 调制 → 周期 1 ms，满屏放几个周期要 5~20 ms 窗）
+ * 和低频信号全景准备的；帧内点数不够时 tb_apply 会把窗口 cap 在
+ * 整帧（3/4 帧余量），读数按实际窗口报，不会虚标。
+ */
+static const float TB_US[23] = {
+    0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1.f, 2.f, 5.f, 10.f, 20.f, 50.f,
+    100.f, 200.f, 500.f, 1000.f, 5000.f,               /* 5ms/格 以下（原有） */
+    10000.f, 50000.f, 100000.f, 500000.f, 1000000.f, 5000000.f  /* 10ms..5s/格 */
+};
+#define TB_N 23
 static void tb_default(int *idx)
 {
     const wave_source_t *src = wave_source_get();

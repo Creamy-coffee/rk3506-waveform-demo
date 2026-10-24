@@ -49,17 +49,22 @@ const C = {
   accent:'#35cc45',
 };
 
-const N_PTS = 1024;
+/*
+ * 采样缓冲深度。1024 时 500µs/格以上的深时基每格只剩 ~100 点,
+ * AM 包络(载波混叠填充)锯齿感很重; 4096 与 FPGA 真帧同点数,
+ * 2ms/格(满屏 20ms)下每个 500Hz 包络周期仍有 ~400 点, 调制波看得舒展。
+ */
+const N_PTS = 4096;
 const MV_PER_LSB = 2.441;
 
 /* ---- 状态（全部保留上一版的能力）---- */
 const S = {
   /* 信号源 */
-  wavetype:'sine', freq:10000, ampVpp:5, noise:0.006, offset:0,
+  wavetype:'am', freq:10000, ampVpp:5, noise:0.006, offset:0,
   phase2:90,                 /* CH2 相对 CH1 的相位（XY 模式看李萨如） */
-  ch2En:true, amp2Vpp:4,
+  ch1En:true, ch2En:true, amp2Vpp:4,
   /* 水平 / 垂直 */
-  tdiv:100e-6, hpos:0, vdiv:'auto', vpos:0,
+  tdiv:2e-3, hpos:0, vdiv:'auto', vpos:0,
   /* 触发 */
   trmode:'auto', tredge:'rise', trlev:0, trlevUser:false,
   /* 显示 */
@@ -85,6 +90,7 @@ let phaseT = 0, fps = 60, lastT = 0, fc = 0;
 /* =====================================================================
  * 数据
  * ===================================================================*/
+const WAVE_NAMES = { sine:'SINE', square:'SQUARE', tri:'TRI', saw:'SAW', am:'AM' };
 function wave(type, t, A, ph) {
   const w = 2*Math.PI*S.freq*t + ph;
   switch(type){
@@ -249,7 +255,7 @@ function drawInfoBar(){
     G.fillStyle=C.label; G.fillText(label, x, 24); x += G.measureText(label).width;
     G.fillStyle=valColor||C.value; G.fillText(val, x, 24); x += G.measureText(val).width + 22;
   };
-  put('A1=', fmtV(vdiv)+'/格', C.value);
+  put('A1=', S.ch1En?fmtV(vdiv)+'/格':'GND', S.ch1En?C.value:C.label);
   put('A2=', S.ch2En?fmtV(vscale2().vdiv)+'/格':'GND', S.ch2En?C.trace2:C.label);
   put('Time/Div=', fmtT(S.tdiv), C.value);
   put('Trig=', (isXY() ? 'XY' : ('A1::' + (S.trmode==='auto'?'Auto':S.trmode==='normal'?'Norm':'Single'))),
@@ -260,7 +266,7 @@ function drawInfoBar(){
 
   /* 右上：帧率 / 点数（设备状态） */
   G.textAlign='right'; G.fillStyle=C.dim; G.font='12px Consolas,monospace';
-  G.fillText(`${N_PTS}pts  ${fps.toFixed(0)}fps  ${fmtF(fsEff)}`, W-16, 24);
+  G.fillText(`${WAVE_NAMES[S.wavetype]} · ${N_PTS}pts  ${fps.toFixed(0)}fps  ${fmtF(fsEff)}`, W-16, 24);
 }
 function vscale2(){ const s=vscale(); return {vdiv:s.vdiv}; }
 
@@ -273,6 +279,13 @@ function drawTraces(){
 
   if(isXY()){
     /* ---------- XY：CH1 作 X 轴、CH2 作 Y 轴（李萨如） ---------- */
+    /* CH1 关掉 = 没有 X 轴, 李萨如画不出来了, 画个提示 */
+    if(!S.ch1En || !S.ch2En){
+      G.fillStyle=C.dim; G.font='14px Consolas,monospace';
+      G.textAlign='center'; G.textBaseline='middle';
+      G.fillText('XY 需要 CH1(X) 和 CH2(Y) 都打开', PL.x+PL.w/2, PL.y+PL.h/2);
+      G.restore(); return;
+    }
     const {vdiv:vd2, vmid:vm2} = {vdiv: vscale().vdiv, vmid: vscale().vmid};
     G.strokeStyle=C.trace1; G.lineWidth=1.6;
     G.shadowColor='rgba(207,230,245,.35)'; G.shadowBlur=4;
@@ -305,7 +318,7 @@ function drawTraces(){
       G.stroke();
     };
     if(S.ch2En) draw(ch2, C.trace2, 1.5);
-    draw(ch1, C.trace1, 1.8);
+    if(S.ch1En) draw(ch1, C.trace1, 1.8);
 
     /* 数学迹线：用自己的档位单独画（量纲可能不一样） */
     if(S.math >= 1 && S.math <= 4){
@@ -496,6 +509,28 @@ function drawAside(){
   }
 }
 
+/*
+ * 通道开关（右栏最底部一行, 和设备右栏「通道」面板同位置）。
+ * ⚠️ 必须在 drawControlBar **之后**调用：drawControlBar 开头会 hitList=[]
+ * 整表清空重建 —— 先注册的点击区活不过那一帧, 这就是第一版「点了没用」的原因。
+ */
+function drawChToggles(){
+  const bh = 26, bw = (AS.w - 8) / 2, by = AS.y + AS.h - bh - 4;
+  const tog = (x, on, name, col, flip) => {
+    G.fillStyle = on ? '#0d2a14' : '#061a0a';
+    G.strokeStyle = on ? col : '#123a1c';
+    G.lineWidth = 1.2;
+    G.beginPath(); G.roundRect(x, by, bw, bh, 5); G.fill(); G.stroke();
+    G.fillStyle = on ? col : C.dim;
+    G.font = 'bold 13px Consolas,monospace';
+    G.textAlign = 'center'; G.textBaseline = 'middle';
+    G.fillText(name + (on ? ' ●' : ' 关'), x + bw/2, by + bh/2);
+    hitList.push({x, y:by, w:bw, h:bh, fn:flip});
+  };
+  tog(AS.x,       S.ch1En, 'CH1', C.trace1, ()=>{ S.ch1En=!S.ch1En; });
+  tog(AS.x+bw+8, S.ch2En, 'CH2', C.trace2, ()=>{ S.ch2En=!S.ch2En; });
+}
+
 /* =====================================================================
  * 底部控制条 + 导航（设备上的样子）
  * ===================================================================*/
@@ -582,7 +617,9 @@ function setTrlev(v, byUser){
 function autoSetTdiv(){
   const m = measure(ch1);
   if(isFinite(m.freq) && m.freq>0){
-    const want = 1/(m.freq*2);
+    /* AM: 调制频率 = 载频×0.05(见 wave('am')), 满屏放 ~2.5 个包络周期 */
+    const modf = S.wavetype==='am' ? S.freq*0.05 : m.freq;
+    const want = S.wavetype==='am' ? 2.5/modf/10 : 1/(m.freq*2);
     let best=TDIVS[0], bd=1e9;
     for(const v of TDIVS){ const d=Math.abs(Math.log(v/want)); if(d<bd){bd=d;best=v;} }
     S.tdiv=best; fsEff=N_PTS/(DX*S.tdiv);
@@ -610,7 +647,8 @@ function drawNav(){
 /* =====================================================================
  * 控制逻辑
  * ===================================================================*/
-const TDIVS=[0.5e-6,1e-6,2e-6,5e-6,10e-6,20e-6,50e-6,100e-6,200e-6,500e-6,1e-3,5e-3];
+const TDIVS=[0.5e-6,1e-6,2e-6,5e-6,10e-6,20e-6,50e-6,100e-6,200e-6,500e-6,
+            1e-3,2e-3,5e-3,10e-3,50e-3,100e-3,500e-3];
 function cycleTdiv(dir){
   let i=TDIVS.findIndex(v=>Math.abs(v-S.tdiv)<1e-12);
   if(i<0) i=7;
@@ -628,7 +666,9 @@ function cycleVdiv(dir){
 function autoSet(){
   const m=measure(ch1);
   if(isFinite(m.freq)&&m.freq>0){
-    const want=1/(m.freq*2);
+    /* 与 autoSetTdiv 同理: AM 按「满屏 ~2.5 个包络周期」选, 纯正弦按载频选 */
+    const modf = S.wavetype==='am' ? S.freq*0.05 : m.freq;
+    const want = S.wavetype==='am' ? 2.5/modf/10 : 1/(m.freq*2);
     let best=TDIVS[0], bd=1e9;
     for(const v of TDIVS){ const d=Math.abs(Math.log(v/want)); if(d<bd){bd=d;best=v;} }
     S.tdiv=best; fsEff=N_PTS/(DX*S.tdiv);
@@ -743,6 +783,7 @@ function loop(ts){
     drawScaleText();
     drawAside();
     drawControlBar();
+    drawChToggles();   /* 必须在 drawControlBar 之后（它会清空 hitList） */
   } else {
     drawOtherPage();
   }

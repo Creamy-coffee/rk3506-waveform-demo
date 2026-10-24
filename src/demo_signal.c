@@ -77,6 +77,22 @@ static inline float to_y01(float y_over_h)
  *   ch1: h*.47 - sin(u*PI*2*cyc + t)*h*.26 - noiseFn(x+t)*h*.055*n
  *   ch2: h*.55 - sin(u*PI*2*cyc + t + phase*PI/180)*h*.22 - noiseFn(x+t+10)*h*.045*n
  * （x 是像素列号，u = x/w） */
+/*
+ * AM 调制波（2026-10-24 起默认）：载波乘 (1 + 0.6·sin(包络)) 的包络，
+ * 满屏放 2.5 个调制周期 —— 与原型 scope_proto_1024.html 的 wave('am')
+ * （载频×0.05 调制、深度 0.6、500µs/格 视角）一致。
+ * 峰值 0.26×1.6 = 0.416，0.47±0.416 = 0.054..0.886，仍在 0..1 画布内。
+ * 发生器实测台当前就是 1 kHz 载频 + 1 kHz AM 50% 的信号，demo 也对齐成 AM。
+ */
+#define DEMO_AM_MOD_CYC   2.5f    /* 满屏调制周期数 */
+#define DEMO_AM_DEPTH     0.6f    /* 调制深度 */
+#define DEMO_AM_MPH       0.8f    /* 包络相位速度（t 的系数） */
+
+static float am_env(float u, float t, float mph)
+{
+    return 1.0f + DEMO_AM_DEPTH * sinf(u * 6.2831853f * DEMO_AM_MOD_CYC + t * mph);
+}
+
 void demo_scope_ch1(const demo_sig_t *c, float *y01, int n)
 {
     if(y01 == NULL || n < 2) return;
@@ -88,7 +104,7 @@ void demo_scope_ch1(const demo_sig_t *c, float *y01, int n)
         const float u = (float)i / (float)(n - 1);
         const float x = u * DEMO_REF_W;
         const float y = 0.47f
-                      - sinf(u * 6.2831853f * cyc + t) * 0.26f
+                      - sinf(u * 6.2831853f * cyc + t) * 0.26f * am_env(u, t, DEMO_AM_MPH)
                       - noise_fn(x + t, 0.0f) * 0.055f * amp;
         y01[i] = to_y01(y);
     }
@@ -105,8 +121,10 @@ void demo_scope_ch2(const demo_sig_t *c, float *y01, int n)
     for(int i = 0; i < n; i++) {
         const float u = (float)i / (float)(n - 1);
         const float x = u * DEMO_REF_W;
+        /* 两路包络相位错开 1/4 周期，像两路独立的 AM，XY 档看也不重合 */
         const float y = 0.55f
                       - sinf(u * 6.2831853f * cyc + t + ph) * 0.22f
+                        * am_env(u, t, DEMO_AM_MPH + 1.5708f)
                       - noise_fn(x + t + 10.0f, 0.0f) * 0.045f * amp;
         y01[i] = to_y01(y);
     }
