@@ -1601,6 +1601,9 @@ static void update_axis_label(void)
             segs[n].color = (c_); n++; } while(0)
 
         if(s_zero_on) V32_SEG("●零帧 ", V32_C_WARN);
+        /* 无新帧：链路活着与否看这里 —— 0 fps 时波形是最后一帧的残影，
+           不标出来会和「正常的深时基」混淆（FPGA 改动停发时踩过）。 */
+        if(S.use_real && !s_real_valid) V32_SEG("○无新帧 ", V32_C_WARN);
         if(!S.running) V32_SEG("⏸已冻结 ", V32_C_WARN);
 
         /*
