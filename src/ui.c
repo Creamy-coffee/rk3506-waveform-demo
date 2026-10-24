@@ -1090,6 +1090,12 @@ static float s_roll0[ROLL_N], s_roll1[ROLL_N];
 static int   s_roll_len;               /* 有效点数（≤ ROLL_N） */
 static int   s_roll_R = 1;             /* 记录抽取：帧内 R 点压成 1 对 min/max */
 
+/* 解调 I/Q 滚动缓冲：解调点率恒定（fs/decim），直接整帧追加、无需抽取。
+ * 深时基档（窗口 > 一帧 16ms）从这取最近一段 —— 时基全程有效，
+ * 不再「到 1ms 就到顶、点了没变化」。等效时间语义与波形 roll 相同。 */
+static int16_t s_riq_i[ROLL_N], s_riq_q[ROLL_N];
+static int     s_riq_len;
+
 /* 追加一对极值桶点（min 在前 max 在后，与 map_window 分桶的时序约定一致）。
  * 缓冲满时丢掉前半段（memmove），比环形回绕好读也好写。 */
 static void roll_push(float a0, float a1, float b0, float b1)
@@ -1582,7 +1588,11 @@ static void update_axis_label(void)
         if(S.use_real && v32_get_iq(&ivq) && ivq.points >= 2u && ivq.decim) {
             fs = (float)ivq.fs_hz / (float)ivq.decim;
             span = (int)(TB_US[s_tb_idx] * 1e-6f * 10.0f * fs + 0.5f);
-            if(span > (int)ivq.points) span = (int)ivq.points;
+            /* 深档由滚动缓冲支撑：窗口上限=已拼接的点数（一帧起） */
+            {
+                const int mx = (s_riq_len > (int)ivq.points) ? s_riq_len : (int)ivq.points;
+                if(span > mx) span = mx;
+            }
         }
     }
     const float us_div = (float)span / fs * 1e6f / (float)V32_GRID_X;
@@ -2613,24 +2623,7 @@ static void tb_apply(int idx)
     const int   fn = (src && src->frame_len > 0) ? src->frame_len : V32_POINTS;
     if(idx < 0) idx = 0;
     if(idx > TB_N - 1) idx = TB_N - 1;
-    /*
-     * 解调模式：一帧只有 256 点（fs_iq≈15.87 kHz 时 ≈16 ms）。比这更深的
-     * 时基档全部被 cap 成满屏 —— 点了只剩数字变、波形纹丝不动（实测
-     * 「数字在变根本看不到变化」就是踩进了这段无效区间）。这里把档位
-     * 上限压到「窗口仍装得进一帧」的最大档，▶ 到头就停。
-     */
-    {
-        v32_iq_view_t ivt;
-        if(S.use_real && v32_get_iq(&ivt) && ivt.points >= 2u && ivt.decim) {
-            const float fs_iq = (float)ivt.fs_hz / (float)ivt.decim;
-            int cap_idx = 0;
-            for(int i = 0; i < TB_N; i++) {
-                const int w = (int)(TB_US[i] * 1e-6f * 10.0f * fs_iq + 0.5f);
-                if(w <= (int)ivt.points) cap_idx = i;
-            }
-            if(idx > cap_idx) idx = cap_idx;
-        }
-    }
+    /* 解调模式不再限制档位：深档由解调滚动缓冲（s_riq）拼接支撑。 */
     s_tb_idx = idx;
 
     int span = (int)(TB_US[idx] * 1e-6f * (float)V32_GRID_X * fs + 0.5f);
@@ -3250,28 +3243,84 @@ static void tick_scope(void)
             int want = (int)(TB_US[s_tb_idx] * 1e-6f * 10.0f * fs_iq + 0.5f);
             if(want < 8) want = 8;
             const int pts = (int)ivs.points;
-            if(want > pts) want = pts;
-            const int w0 = pts - want;                    /* 窗口起点（取末尾） */
 
-            float peak = 1.0f;
-            for(int k = w0; k < pts; k++) {
-                const float ai = fabsf((float)ivs.i[k]);
-                const float aq = fabsf((float)ivs.q[k]);
-                if(ai > peak) peak = ai;
-                if(aq > peak) peak = aq;
+            /* 追加进解调滚动缓冲（满丢前半） */
+            {
+                if(s_riq_len + pts > ROLL_N) {
+                    const int drop = ROLL_N / 2;
+                    memmove(s_riq_i, s_riq_i + drop, (size_t)(ROLL_N - drop) * sizeof(int16_t));
+                    memmove(s_riq_q, s_riq_q + drop, (size_t)(ROLL_N - drop) * sizeof(int16_t));
+                    s_riq_len -= drop;
+                }
+                const int cp = pts < (ROLL_N - s_riq_len) ? pts : (ROLL_N - s_riq_len);
+                memcpy(s_riq_i + s_riq_len, ivs.i, (size_t)cp * sizeof(int16_t));
+                memcpy(s_riq_q + s_riq_len, ivs.q, (size_t)cp * sizeof(int16_t));
+                s_riq_len += cp;
             }
-            for(int k = 0; k < n; k++) {                  /* 窗口线性映射到满屏 */
-                const float t = (float)k * (float)(want - 1) / (float)(n - 1);
-                const int a0 = w0 + (int)t;
-                const int a1 = (a0 + 1 < pts) ? a0 + 1 : a0;
-                const float fr = t - (float)(int)t;
-                const float yi = (float)ivs.i[a0] * (1.f - fr) + (float)ivs.i[a1] * fr;
-                const float yq = (float)ivs.q[a0] * (1.f - fr) + (float)ivs.q[a1] * fr;
-                float ya = 0.5f + yi / (2.0f * peak);
-                float yb = 0.5f + yq / (2.0f * peak);
-                if(ya < 0.f) ya = 0.f;  if(ya > 1.f) ya = 1.f;
-                if(yb < 0.f) yb = 0.f;  if(yb > 1.f) yb = 1.f;
-                ch1[k] = ya;  ch2[k] = yb;
+
+            if(want > pts && s_riq_len >= n) {
+                /*
+                 * 深时基：从解调滚动缓冲取最近一段（等效时间，帧死区压缩）。
+                 * min/max 分桶映射满屏，I/Q 联合归一 —— 包络慢变特征正确。
+                 */
+                const int take = (want < s_riq_len) ? want : s_riq_len;
+                const int st0  = s_riq_len - take;
+                float peak = 1.0f;
+                for(int k = st0; k < s_riq_len; k++) {
+                    const float ai = fabsf((float)s_riq_i[k]);
+                    const float aq = fabsf((float)s_riq_q[k]);
+                    if(ai > peak) peak = ai;
+                    if(aq > peak) peak = aq;
+                }
+                const int buckets = n / 2;
+                for(int bk = 0; bk < buckets; bk++) {
+                    int st = st0 + (int)((long)bk * take / buckets);
+                    int en = st0 + (int)((long)(bk + 1) * take / buckets);
+                    if(en <= st) en = st + 1;
+                    if(en > s_riq_len) en = s_riq_len;
+                    int ii = st, iI = st, qq = st, qQ = st;
+                    for(int k = st; k < en; k++) {
+                        if(s_riq_i[k] < s_riq_i[ii]) ii = k;
+                        if(s_riq_i[k] > s_riq_i[iI]) iI = k;
+                        if(s_riq_q[k] < s_riq_q[qq]) qq = k;
+                        if(s_riq_q[k] > s_riq_q[qQ]) qQ = k;
+                    }
+                    float ya0 = 0.5f + (float)s_riq_i[ii < iI ? ii : iI] / (2.0f * peak);
+                    float ya1 = 0.5f + (float)s_riq_i[ii < iI ? iI : ii] / (2.0f * peak);
+                    float yb0 = 0.5f + (float)s_riq_q[qq < qQ ? qq : qQ] / (2.0f * peak);
+                    float yb1 = 0.5f + (float)s_riq_q[qq < qQ ? qQ : qq] / (2.0f * peak);
+                    if(ya0 < 0.f) ya0 = 0.f;  if(ya0 > 1.f) ya0 = 1.f;
+                    if(ya1 < 0.f) ya1 = 0.f;  if(ya1 > 1.f) ya1 = 1.f;
+                    if(yb0 < 0.f) yb0 = 0.f;  if(yb0 > 1.f) yb0 = 1.f;
+                    if(yb1 < 0.f) yb1 = 0.f;  if(yb1 > 1.f) yb1 = 1.f;
+                    ch1[2 * bk] = ya0;  ch1[2 * bk + 1] = ya1;
+                    ch2[2 * bk] = yb0;  ch2[2 * bk + 1] = yb1;
+                }
+            } else {
+                /* 帧内窗口（浅档）：取末尾最新一段线性映射满屏 */
+                if(want > pts) want = pts;
+                const int w0 = pts - want;
+
+                float peak = 1.0f;
+                for(int k = w0; k < pts; k++) {
+                    const float ai = fabsf((float)ivs.i[k]);
+                    const float aq = fabsf((float)ivs.q[k]);
+                    if(ai > peak) peak = ai;
+                    if(aq > peak) peak = aq;
+                }
+                for(int k = 0; k < n; k++) {
+                    const float t = (float)k * (float)(want - 1) / (float)(n - 1);
+                    const int a0 = w0 + (int)t;
+                    const int a1 = (a0 + 1 < pts) ? a0 + 1 : a0;
+                    const float fr = t - (float)(int)t;
+                    const float yi = (float)ivs.i[a0] * (1.f - fr) + (float)ivs.i[a1] * fr;
+                    const float yq = (float)ivs.q[a0] * (1.f - fr) + (float)ivs.q[a1] * fr;
+                    float ya = 0.5f + yi / (2.0f * peak);
+                    float yb = 0.5f + yq / (2.0f * peak);
+                    if(ya < 0.f) ya = 0.f;  if(ya > 1.f) ya = 1.f;
+                    if(yb < 0.f) yb = 0.f;  if(yb > 1.f) yb = 1.f;
+                    ch1[k] = ya;  ch2[k] = yb;
+                }
             }
             plot_set_trace(s_plot_scope, 0, ch1, n, V32_C_CH1, 2);    /* I */
             plot_set_trace(s_plot_scope, 1, ch2, n, V32_C_CH2, 2);    /* Q */
