@@ -64,7 +64,11 @@
 #define V32_VERSION          3u
 #define V32_ADC_FS_HZ        65000000u
 #define V32_DECIMATION       1u      /* 默认；运行时允许 1..256 的 2 的幂 */
-#define V32_DECIMATION_MAX   256u
+/* 抽取比上限。FPGA 侧权威规定（linux_ab5_receiver_handoff）：
+   「V32CAP3 的 decimation 允许双向、逐帧变化，合法值为 1..32768 的 2 的幂」。
+   之前写死 256，实测帧 dec=512 会被当头错误整帧丢弃 —— 外在表现就是
+   "串口助手有数据、屏幕全是 —"。上限必须按协议来，不能按经验猜。 */
+#define V32_DECIMATION_MAX   32768u
 #define V32_ADC_MIN          (-2048)
 #define V32_ADC_MAX          2047
 
@@ -88,6 +92,7 @@ typedef struct {
     uint32_t sample_errors;    /* 样点越界（不在 −2048..2047） */
     uint32_t sequence_errors;  /* 重复帧号 / 倒序 / 样点窗口重叠 */
     uint32_t missing_frames;   /* 帧号跳号累计 */
+    uint32_t eagain_cnt;      /* 非阻塞轮询空转次数（阻塞读应为 0） */
     uint32_t discarded_bytes;  /* 为了找魔数扔掉的字节 */
     uint32_t trailing_bytes;   /* 缓冲区里尚未成帧的尾巴 */
     uint32_t last_frame_id;

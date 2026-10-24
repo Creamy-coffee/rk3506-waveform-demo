@@ -13,6 +13,7 @@
 #
 # 产物：out/waveform_demo
 set -e
+set -o pipefail   # 管道里 build.sh 失败也要让整个脚本失败，别再把旧产物当成功拉回来
 cd "$(dirname "$0")"
 
 BUILD_HOST=${BUILD_HOST:-192.168.8.130}

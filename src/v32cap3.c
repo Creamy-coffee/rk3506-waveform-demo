@@ -30,7 +30,14 @@
 #include <unistd.h>
 
 /* 两帧多一点，保证即使一次读进来一帧半也能装下 */
-#define V32_RXBUF   (V32_PACKET_BYTES * 2)
+/*
+ * 接收缓冲按**最大帧长的 4 倍**开，且读线程每次 read 不超过它的一半。
+ * 之前开成 2 倍（32856），而我把 read 缓冲调到 64 KB —— v32_feed() 在
+ * 装不下时会静默截断本次数据，n=65536 > 32856 意味着**每次 read 都被截**，
+ * 长帧（WAVE 4140 B）永远拼不完整，短帧（MEAS 128 / SPEC 2096）却能在
+ * 截断前解析掉 —— 现象就是"MEAS/SPEC 正常、唯独没有波形"。
+ */
+#define V32_RXBUF   (V32_PACKET_BYTES * 4)
 
 static const uint8_t s_magic[V32_MAGIC_LEN] = {
     'V', '3', '2', 'C', 'A', 'P', '3', '!'
@@ -601,19 +608,43 @@ static void v32_feed(const uint8_t *data, int n)
 
 static void *reader_main(void *arg)
 {
-    uint8_t tmp[4096];
+    uint8_t tmp[V32_RXBUF / 2];   /* 一次读不超过缓冲一半，绝不会被截断 */
     (void)arg;
+    if(getenv("WAVE_MEASDBG")) fprintf(stderr, "[rx] 读线程已启动 fd=%d\n", s_fd);
 
     while (!s_stop) {
         const ssize_t n = read(s_fd, tmp, sizeof tmp);
         if (n > 0) {
             v32_feed(tmp, (int)n);
+            /* 每 2 秒打一次接收统计：帧死在哪一步（头/CRC/序列/样点）一眼看到，
+               不用再靠猜。WAVE_MEASDBG=1 时输出。 */
+            {
+                static int dbg_rx = -1;
+                static struct timespec last;
+                if (dbg_rx < 0) { dbg_rx = getenv("WAVE_MEASDBG") ? 1 : 0;
+                                  clock_gettime(CLOCK_MONOTONIC, &last); }
+                if (dbg_rx) {
+                    struct timespec now;
+                    clock_gettime(CLOCK_MONOTONIC, &now);
+                    if (now.tv_sec - last.tv_sec >= 2) {
+                        last = now;
+                        fprintf(stderr, "[rx] 帧=%u fps=%.1f 头错=%u CRC错=%u 序列错=%u 样点错=%u EAGAIN=%u 丢弃字节=%u 尾巴=%u\n",
+                                s_st.frames_ok, s_st.fps_milli / 1000.0,
+                                s_st.header_errors, s_st.crc_errors,
+                                s_st.sequence_errors, s_st.sample_errors,
+                                s_st.eagain_cnt, s_st.discarded_bytes,
+                                s_st.trailing_bytes);
+                    }
+                }
+            }
         } else if (n == 0) {
             usleep(5000);
         } else if (errno == EINTR) {
             continue;
         } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            usleep(2000);          /* 2 ms 轮询一次，CPU 占用可忽略 */
+            /* 阻塞模式下不该频繁到这；老实现靠它轮询，159 kB/s 下会丢字节 */
+            s_st.eagain_cnt++;
+            usleep(2000);
         } else {
             /* EIO 等：USB 串口拔掉会走到这里，别把线程打死 */
             usleep(20000);
@@ -740,6 +771,23 @@ int v32_init_uart(const char *dev, int baud)
         s_fd = -1;
         return -1;
     }
+    /*
+     * 关键：这里必须把 fd 切回**阻塞**模式。
+     * 打开时用了 O_NONBLOCK，而读线程原来靠 EAGAIN + 2 ms 轮询。
+     * 2 Mbaud 下三帧组持续约 159 kB/s（25 组/秒），两轮轮询之间
+     * 内核 tty 接收缓冲就会溢出 —— 字节一丢，整帧 CRC 立即错，
+     * 接着魔数反复重新同步，绝大多数帧被丢，外在表现就是
+     * "串口助手能看到数据、屏上却全是 —"。
+     * 改成阻塞读后，内核一有数据就唤醒读线程，读取端不再成为瓶颈。
+     */
+    {
+        int fl = fcntl(s_fd, F_GETFL, 0);
+        if (fl >= 0) fcntl(s_fd, F_SETFL, fl & ~O_NONBLOCK);
+    }
+    /* VMIN=0 + 阻塞读：read 在有数据时立即返回，不会死等 */
+    tio.c_cc[VMIN]  = 0;
+    tio.c_cc[VTIME] = 0;
+
     tcflush(s_fd, TCIFLUSH);
 
     /* 读回真正生效的速率：UART 时钟分频凑不齐时内核会往下取整，
