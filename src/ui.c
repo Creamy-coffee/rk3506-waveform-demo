@@ -95,10 +95,45 @@ static const char  TIMEBASE_OPTS[] =
     "\n20 µs/格\n50 µs/格\n100 µs/格\n200 µs/格\n500 µs/格";
 static const int   TIMEBASE_DEF    = 2;    /* 2 µs/div */
 
-/* 只提供交付包里验证过的三种窗：Hamming / 矩形窗不提供，
- * 免得菜单里出现"选了但没验证"的选项。 */
-static const char *WIN_NAME[3]     = { "HANN", "BLACKMAN", "FLAT TOP" };
-static const int   WIN_DEF         = 0;
+/*
+ * 窗函数：20261024 协作包把枚举扩到 7 种（RECT..NUTTALL），并给了下行
+ * AA5 SET_WINDOW 命令。S.win_idx 现在存的是**协议 id**（0..6，见 v32cap3.h），
+ * 显示名用 v32_aa5_win_name()，本地 FFT 用 proto_win_to_fft() 换到 fft.h 的枚举
+ * —— 两套编号不同（协议 HANN=1，fft.h HANN=0），不映射会张冠李戴。
+ */
+static const int   WIN_DEF         = V32_WIN_HANN;   /* 协议 id：1 = HANN */
+
+/* 协议窗 id -> 本地 fft_win_t */
+static fft_win_t proto_win_to_fft(int id)
+{
+    switch(id) {
+        case V32_WIN_RECT:     return FFT_WIN_RECT;
+        case V32_WIN_HANN:     return FFT_WIN_HANN;
+        case V32_WIN_HAMMING:  return FFT_WIN_HAMMING;
+        case V32_WIN_BLACKMAN: return FFT_WIN_BLACKMAN;
+        case V32_WIN_FLATTOP:  return FFT_WIN_FLATTOP;
+        case V32_WIN_KAISER:   return FFT_WIN_KAISER;
+        case V32_WIN_NUTTALL:  return FFT_WIN_NUTTALL;
+        default:               return FFT_WIN_HANN;
+    }
+}
+
+/* V32SPEC! 帧头 window 字段还是旧 3 档编号（0=Hann 1=Blackman 2=FlatTop），
+ * 换到协议 id 只是为了复用 v32_aa5_win_name() 显示。 */
+static int spec_win_old_to_proto(uint32_t w)
+{
+    switch((int)w) {
+        case 1:  return V32_WIN_BLACKMAN;
+        case 2:  return V32_WIN_FLATTOP;
+        default: return V32_WIN_HANN;
+    }
+}
+
+/* 调制模式（协议 id，循环切换）。中文短名给芯片，AA5 下发用 id。 */
+static const char *MOD_NAME[V32_MOD_COUNT] = {
+    "自动", "AM", "FM", "PM", "锁相", "基带"
+};
+static int s_mod_idx;                    /* 当前选中的调制模式（协议 id） */
 
 static const int   TAU_MS[4]       = { 1, 10, 100, 1000 };
 static const char  TAU_OPTS[]      = "1 ms\n10 ms\n100 ms\n1 s";
@@ -158,6 +193,7 @@ static lv_obj_t *s_chip_trig, *s_chip_edge, *s_chip_lev;
    把控制条塞满、「暂停」被挤出屏幕外。这里显式管起来。 */
 static lv_obj_t *s_g_win, *s_g_tau, *s_g_ai, *s_g_sys;   /* 触发选择芯片 */
 static lv_obj_t *s_chip_math;   /* Math 选择芯片 */
+static lv_obj_t *s_chip_mod;    /* 调制模式选择芯片（AA5 SET_MODULATION） */
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
@@ -1195,7 +1231,7 @@ static void real_update(void)
         const float mean = (float)(sum / (double)fn);
         for(int i = 0; i < fn; i++) s_fft_tmp[i] = spec_src[i] - mean;
         fft_magnitude_spectrum_zero_win(s_fft_tmp, fn, REAL_FFT_N,
-                                        (fft_win_t)S.win_idx, s_real_mag);
+                                        proto_win_to_fft(S.win_idx), s_real_mag);
     }
     s_real_bins = REAL_FFT_N / 2;
 
@@ -2460,12 +2496,51 @@ static void cb_math_cycle(lv_event_t *e)
 static void cb_win_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
-    S.win_idx = (S.win_idx + 1) % 3;
+    S.win_idx = (S.win_idx + 1) % V32_WIN_COUNT;
+    const char *wn = v32_aa5_win_name((unsigned)S.win_idx);
     if(dbg_on())
-        fprintf(stderr, "[win] 窗函数 -> %d (%s)\n", S.win_idx, WIN_NAME[S.win_idx]);
-    if(s_chip_win) chip_set_text(s_chip_win, WIN_NAME[S.win_idx]);
+        fprintf(stderr, "[win] 窗函数 -> %d (%s)\n", S.win_idx, wn);
+    /*
+     * 真实链路：切窗的同时用 AA5 下发（v32_aa5_set_window 内部自动跟
+     * COMMIT）。设备不回 ACK，生效凭据是频谱帧的 window 字段跟着变 ——
+     * tick_fft 里显示窗名时会把 FPGA 实际窗报出来，对不上就看得见。
+     * 本地谱（选 CH2 时）立即按新窗重算。
+     */
+    if(S.use_real) v32_aa5_set_window((uint32_t)S.win_idx);
+    if(s_chip_win) chip_set_text(s_chip_win, wn);
     /* 该页没有下拉框了，窗名由芯片自己显示 */
-    if(s_lbl_fft_win) lv_label_set_text(s_lbl_fft_win, WIN_NAME[S.win_idx]);
+    if(s_lbl_fft_win) lv_label_set_text(s_lbl_fft_win, wn);
+    ui_tick();
+}
+
+/*
+ * 手动调制模式：AA5 SET_MODULATION 下发（自动跟 COMMIT）。
+ * 同时对 AM/FM/PM 补发旧式 A5 E0 命令 —— 现行 FPGA 固件只认旧命令，
+ * 新固件认 AA5；两条都发，哪边生效都有显示。旧命令枚举：
+ *   0=示波 1=AM 2=FM 7=PM；锁相/基带在旧协议里没有对应，只发 AA5。
+ */
+static void cb_mod_cycle(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    s_mod_idx = (s_mod_idx + 1) % V32_MOD_COUNT;
+    if(s_chip_mod) {
+        char b[16];
+        snprintf(b, sizeof b, "调制 %s", MOD_NAME[s_mod_idx]);
+        chip_set_text(s_chip_mod, b);
+        chip_selected(s_chip_mod, s_mod_idx != V32_MOD_AUTO);
+    }
+    if(S.use_real) {
+        v32_aa5_set_modulation((uint32_t)s_mod_idx);
+        switch(s_mod_idx) {
+            case V32_MOD_AUTO: v32_cmd_mode(0); break;   /* 回示波模式 */
+            case V32_MOD_AM:   v32_cmd_mode(1); break;
+            case V32_MOD_FM:   v32_cmd_mode(2); break;
+            case V32_MOD_PM:   v32_cmd_mode(7); break;
+            default: break;      /* 锁相/基带：旧协议无对应 */
+        }
+    }
+    if(dbg_on())
+        fprintf(stderr, "[mod] 调制模式 -> %d (%s)\n", s_mod_idx, MOD_NAME[s_mod_idx]);
     ui_tick();
 }
 
@@ -2590,7 +2665,7 @@ static void cb_reset(lv_event_t *e)
     {
         lv_obj_t *dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_SCOPE], 1);
         if(dd) lv_dropdown_set_selected(dd, (uint32_t)TIMEBASE_DEF);
-        if(s_chip_win) { chip_set_text(s_chip_win, WIN_NAME[WIN_DEF]); chip_selected(s_chip_win, true); }
+        if(s_chip_win) { chip_set_text(s_chip_win, v32_aa5_win_name((unsigned)WIN_DEF)); chip_selected(s_chip_win, true); }
         /* 频谱通道回「自动」 */
         fft_ch_set(0);
         dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_LOCK], 1);
@@ -2606,7 +2681,7 @@ static void cb_reset(lv_event_t *e)
      * 真实链路下写死 "2 µs/格" 会和实际帧长（63 µs 满屏）自相矛盾。 */
     update_axis_label();
     lv_label_set_text(s_lbl_lock_tau, "10 ms");
-    lv_label_set_text(s_lbl_fft_win, WIN_NAME[WIN_DEF]);
+    lv_label_set_text(s_lbl_fft_win, v32_aa5_win_name((unsigned)WIN_DEF));
 
     ui_set_page(UI_PAGE_SCOPE);
 }
@@ -2739,6 +2814,7 @@ static void build_controls(lv_obj_t *root)
         chip_selected_c(s_chip_math, true, V32_C_MATH);
     }
 
+
     /* 旧的时基下拉框不再创建：已被上面的 ◀ 值 ▶ 三段式取代。
        （原来这里还兼职当 s_ctrl_grp[UI_PAGE_SCOPE]，所以只 hide 会被
         ctrl_set_page 又显示回来 —— 必须整个不创建。） */
@@ -2768,12 +2844,20 @@ static void build_controls(lv_obj_t *root)
      *    改成**一个循环切换的芯片**：芯片显示当前窗名，点一下换下一个。
      *    芯片的点击在整个界面里都是可靠的，而且一直看得到当前值。
      */
-    s_chip_win = mk_chip(gf2, WIN_NAME[WIN_DEF], cb_win_cycle);
+    s_chip_win = mk_chip(gf2, v32_aa5_win_name((unsigned)WIN_DEF), cb_win_cycle);
     chip_selected(s_chip_win, true);
 
 
-    lv_obj_t *gl = mk_group(cp, "积分时间");
+    /*
+     * 锁相页参数组：调制模式 + 积分时间。
+     * 调制芯片原来放在示波器控制条，加在那里会让整条溢出（⏸暂停被挤到
+     * x=1123，屏外）—— SET_MODULATION 本来就是解调路径（锁相/NCO/基带）
+     * 的选择，放锁相页语义也对。芯片循环切换：自动/AM/FM/PM/锁相/基带。
+     */
+    lv_obj_t *gl = mk_group(cp, NULL);
     s_g_tau = gl;
+    s_chip_mod = mk_chip(gl, "调制 自动", cb_mod_cycle);
+    chip_selected_c(s_chip_mod, false, V32_C_WARN);
     lv_obj_t *dd_t = mk_dropdown(gl, TAU_OPTS, TAU_DEF, cb_tau);
     lv_obj_set_style_max_width(dd_t, V32_SEL_MAX_W, LV_PART_MAIN);
     s_ctrl_grp[UI_PAGE_LOCK] = gl;
@@ -3122,11 +3206,14 @@ static void tick_fft(void)
      * 只有 Hann），画本地谱才报本地选的那个 —— 两者不能混。
      */
     if(s_spec_in_use) {
+        /* SPEC 帧的 window 是旧 3 档编号（0=Hann 1=Blackman 2=FlatTop）。
+           下发 AA5 新窗后 FPGA 回报什么以实测为准 —— 显示它**实际在用**的窗。 */
         char wb[24];
-        snprintf(wb, sizeof wb, "%s·FPGA", WIN_NAME[(s_spec_win >= 0 && s_spec_win <= 2) ? s_spec_win : 0]);
+        snprintf(wb, sizeof wb, "%s·FPGA",
+                 v32_aa5_win_name((unsigned)spec_win_old_to_proto(s_spec_win)));
         lv_label_set_text(s_lbl_fft_win, wb);
     } else {
-        lv_label_set_text(s_lbl_fft_win, WIN_NAME[S.win_idx]);
+        lv_label_set_text(s_lbl_fft_win, v32_aa5_win_name((unsigned)S.win_idx));
     }
 
     /* 标题写明这条谱是谁算的、多少点 */
@@ -3162,7 +3249,11 @@ static void tick_lock(void)
              * 显示「—」，并用灰色，不能拿上一帧的数凑 —— 那是最容易骗人的地方。
              */
             v32_meas_view_t mm;
-            const bool ok = (v32_get_meas(&mm) != 0) && mm.usable;
+            v32_ddc_view_t  dd;
+            const bool have_meas = (v32_get_meas(&mm) != 0);
+            const bool ok = have_meas && mm.usable;
+            /* 新固件的 V32DDC3!：现行 MEAS 帧没有时，用它顶上（读数来源会标出来） */
+            const bool have_ddc = (v32_get_ddc(&dd) != 0) && dd.frame_id != 0u;
 
             if(ok) {
                 lv_label_set_text_fmt(s_lbl_lock_ref,   "%.4f MHz",
@@ -3177,6 +3268,50 @@ static void tick_lock(void)
                 plot_set_iq(s_plot_iq, (float)(mm.pdiff_millideg / 1000.0));
                 lv_label_set_text(s_lbl_lock_state, "● 锁定");
                 lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_GREEN, LV_PART_MAIN);
+            } else if(have_ddc) {
+                /*
+                 * V32DDC3!（协作包 20261024）：参考频率/幅度/相位差全是它自己的字段。
+                 * 有效性与 MEAS 不同：frame_id==0 = 该配置还没出结果；phase_valid
+                 * 两位不全时相位不可信（协议 §2.2），幅度照常显示。
+                 */
+                lv_label_set_text_fmt(s_lbl_lock_ref, "%.4f MHz",
+                                      (double)dd.ref_hz_x1000 / 1e9);
+                lv_label_set_text_fmt(s_lbl_lock_amp, "%.1f mV",
+                                      (double)dd.ch1_amp_mc / 1000.0 * V32_ADC_MV_PER_LSB);
+                lv_obj_set_style_text_color(s_lbl_lock_ref, V32_C_METRIC_VALUE, LV_PART_MAIN);
+                lv_obj_set_style_text_color(s_lbl_lock_amp,  V32_C_METRIC_VALUE, LV_PART_MAIN);
+                if(dd.phase_valid == 0x3u) {
+                    lv_label_set_text_fmt(s_lbl_lock_phase, "%.2f°",
+                                          (double)(dd.pdiff_millideg / 1000.0));
+                    lv_obj_set_style_text_color(s_lbl_lock_phase, V32_C_GREEN, LV_PART_MAIN);
+                    plot_set_iq(s_plot_iq, (float)(dd.pdiff_millideg / 1000.0));
+                    lv_label_set_text(s_lbl_lock_state, "● 锁定·DDC");
+                    lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_GREEN, LV_PART_MAIN);
+                } else {
+                    lv_label_set_text(s_lbl_lock_phase, "—");
+                    lv_obj_set_style_text_color(s_lbl_lock_phase, V32_C_WARN, LV_PART_MAIN);
+                    plot_set_iq(s_plot_iq, 0.0f);
+                    lv_label_set_text(s_lbl_lock_state,
+                                      (dd.frame_id == 0u) ? "○ DDC 未就绪"
+                                    : (dd.ddc_flags & 0x2u) ? "○ DDC 配置非法"
+                                    : (dd.phase_valid == 0u) ? "○ 相位无效·幅度有效"
+                                    : "○ 单通道相位");
+                    lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_WARN, LV_PART_MAIN);
+                }
+                /* 原始诊断行复用：摊开 DDC 原值（I/Q/两路相位/config_seq） */
+                if(s_lbl_lock_raw) {
+                    char rb[160];
+                    snprintf(rb, sizeof rb,
+                             "DDC cfg%u I/Q %d/%d %d/%d φ %.2f/%.2f° fl%u ts%u",
+                             (unsigned)dd.config_seq,
+                             (int)dd.ch0_i_q12, (int)dd.ch0_q_q12,
+                             (int)dd.ch1_i_q12, (int)dd.ch1_q_q12,
+                             (double)(dd.ch0_phase_millideg / 1000.0),
+                             (double)(dd.ch1_phase_millideg / 1000.0),
+                             (unsigned)dd.ddc_flags, (unsigned)dd.timestamp);
+                    lv_label_set_text(s_lbl_lock_raw, rb);
+                    lv_obj_remove_flag(s_lbl_lock_raw, LV_OBJ_FLAG_HIDDEN);
+                }
             } else {
                 lv_label_set_text(s_lbl_lock_ref,   "—");
                 lv_label_set_text(s_lbl_lock_amp,   "—");
@@ -3187,7 +3322,7 @@ static void tick_lock(void)
                 plot_set_iq(s_plot_iq, 0.0f);
                 /* 把原因也说出来：失锁 / 未稳定 / 没数据 */
                 const char *why = "○ 未锁定";
-                if(v32_get_meas(&mm) == 0)          why = "○ 无锁相数据";
+                if(!have_meas)                     why = "○ 无锁相数据";
                 else if(mm.status & V32_ST_SETTLING) why = "○ 收敛中";
                 else if(mm.status & V32_ST_ADC_OTR)  why = "○ ADC 超量程";
                 else if(mm.status & V32_ST_CAL_CLIP) why = "○ 校准削顶";
@@ -3426,7 +3561,7 @@ void ui_create(void)
     S.sig.timebase_us = TIMEBASE_US[S.tb_idx];
     S.sig.noise_pct   = S.noise;
     S.sig.phase_deg   = S.phase;
-    S.sig.window      = S.win_idx;
+    S.sig.window      = 0;   /* demo_window_t：离线演示固定 HANN（demo 不接 7 窗表） */
     S.sig.t           = 0.f;
 
     lv_obj_t *root = lv_screen_active();
@@ -3536,7 +3671,7 @@ void ui_tick(void)
     S.sig.timebase_us = TIMEBASE_US[S.tb_idx];
     S.sig.noise_pct   = S.noise;
     S.sig.phase_deg   = S.phase;
-    S.sig.window      = S.win_idx;
+    S.sig.window      = 0;
 
     if(getenv("WAVE_TDBG")) { fprintf(stderr, "[tick] page=%d\n", (int)S.page); fflush(stderr); }
     switch(S.page) {

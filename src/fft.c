@@ -70,7 +70,21 @@ void fft_radix2(float *re, float *im, int n)
     }
 }
 
-/* 窗系数（与 FPGA 交付包 linux/spectrum.c 一致） */
+/* 修正贝塞尔 I0 的级数近似（凯撒窗用）。β=8.6 时取前 20 项足够到 1e-7。 */
+static float bessel_i0(float x)
+{
+    float sum = 1.0f, term = 1.0f;
+    const float xx2 = x * x * 0.25f;
+    for (int k = 1; k < 24; k++) {
+        term *= xx2 / (float)(k * k);
+        sum  += term;
+        if (term < 1e-9f * sum) break;
+    }
+    return sum;
+}
+
+/* 窗系数（HANN/BLACKMAN/FLATTOP 与 FPGA 交付包 linux/spectrum.c 一致；
+ * 其余四档按协作包 20261024 §5.1 的枚举补齐，系数取 SciPy 同名窗） */
 static float win_coef(fft_win_t win, int i, int n)
 {
     const float z = 2.0f * (float)M_PI * (float)i / (float)n;
@@ -82,6 +96,22 @@ static float win_coef(fft_win_t win, int i, int n)
                                     0.083578947f, 0.006947368f };
         float w = 0.0f;
         for (int k = 0; k < 5; k++) w += a[k] * cosf((float)k * z);
+        return w;
+    }
+    case FFT_WIN_RECT:
+        return 1.0f;
+    case FFT_WIN_HAMMING:
+        return 0.54f - 0.46f * cosf(z);
+    case FFT_WIN_KAISER: {                       /* β=8.6（SciPy kaiser(8.6) 默认档） */
+        const float beta = 8.6f;
+        const float r = 2.0f * (float)i / (float)n - 1.0f;   /* -1..1 */
+        const float a = sqrtf(fmaxf(0.0f, 1.0f - r * r));
+        return bessel_i0(beta * a) / bessel_i0(beta);
+    }
+    case FFT_WIN_NUTTALL: {                      /* SciPy nuttall 四项 */
+        static const float a[4] = { 0.3635819f, 0.4891775f, 0.1365995f, 0.0106411f };
+        float w = 0.0f;
+        for (int k = 0; k < 4; k++) w += a[k] * cosf((float)k * z);
         return w;
     }
     case FFT_WIN_HANN:

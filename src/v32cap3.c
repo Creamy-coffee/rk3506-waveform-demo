@@ -277,6 +277,80 @@ int v32_get_iq(v32_iq_view_t *out)
     return out->valid;
 }
 
+/* ---------------- 新锁相测量帧 V32DDC3!（协作包 20261024） ---------------- */
+static const char        s_magic_ddc[] = V32_DDC_MAGIC;
+static v32_ddc_view_t    s_ddc;
+static uint32_t          s_ddc_ms;
+
+/*
+ * 相位差 = ch1 - ch0，环形回卷到 ±半圈。
+ * 两路相位都是 i32（整圈 65536），直接相减可能跨 ±180°，
+ * 不回卷会出现 350.0° 这种其实等于 -10° 的读数。
+ */
+static int64_t wrap_millideg(int64_t md)
+{
+    const int64_t HALF = 180000;
+    while(md >  HALF) md -= 2 * HALF;
+    while(md < -HALF) md += 2 * HALF;
+    return md;
+}
+
+static void handle_ddc(const uint8_t *p)
+{
+    if(rd32(p + 8) != V32_DDC_VERSION) return;               /* version */
+    if(crc32_calc(p, 68) != rd32(p + 68)) return;
+
+    v32_ddc_view_t v;
+    memset(&v, 0, sizeof v);
+    v.seq        = s_ddc.seq + 1u;
+    v.frame_id   = rd32(p + 12);
+    v.adc_fs_hz  = rd32(p + 16);
+    v.config_seq = rd32(p + 20);
+    v.fcw        = rd32(p + 24);
+    {
+        /* ref_hz = fcw*fs/2^32，全程整数算成毫 Hz */
+        const int64_t num = (int64_t)v.fcw * (int64_t)v.adc_fs_hz;
+        v.ref_hz_x1000 = num * 1000 / 4294967296LL;
+    }
+    v.ch0_i_q12 = (int32_t)rd32(p + 28);
+    v.ch0_q_q12 = (int32_t)rd32(p + 32);
+    v.ch1_i_q12 = (int32_t)rd32(p + 36);
+    v.ch1_q_q12 = (int32_t)rd32(p + 40);
+    v.ch0_amp_mc = (int64_t)rd32(p + 44) * 1000 / 4096;
+    v.ch1_amp_mc = (int64_t)rd32(p + 48) * 1000 / 4096;
+    v.ch0_phase_millideg = (int64_t)(int32_t)rd32(p + 52) * 360000 / 65536;
+    v.ch1_phase_millideg = (int64_t)(int32_t)rd32(p + 56) * 360000 / 65536;
+    v.pdiff_millideg     = wrap_millideg(v.ch1_phase_millideg - v.ch0_phase_millideg);
+    v.timestamp  = rd32(p + 60);
+    v.ddc_flags  = (uint8_t)(rd32(p + 64) & 0xFFu);
+    v.phase_valid= (uint8_t)((rd32(p + 64) >> 8) & 0x3u);
+    v.valid      = 1;
+
+    s_ddc    = v;
+    s_ddc_ms = mono_ms();
+
+    {
+        static int dbg = -1;
+        if(dbg < 0) dbg = getenv("WAVE_MEASDBG") ? 1 : 0;
+        if(dbg)
+            fprintf(stderr, "[ddc] fid=%u cfg=%u fcw=%u ref=%.3fMHz amp=%lld/%lldmc pdiff=%lldmd pv=%u fl=%u\n",
+                    (unsigned)v.frame_id, (unsigned)v.config_seq, (unsigned)v.fcw,
+                    (double)v.ref_hz_x1000 / 1e9,
+                    (long long)v.ch0_amp_mc, (long long)v.ch1_amp_mc,
+                    (long long)v.pdiff_millideg, (unsigned)v.phase_valid, (unsigned)v.ddc_flags);
+    }
+}
+
+int v32_get_ddc(v32_ddc_view_t *out)
+{
+    if(!out) return 0;
+    *out = s_ddc;
+    if(s_ddc.seq == 0u) return 0;
+    out->valid = ((mono_ms() - s_ddc_ms) <= 1500u) ? 1 : 0;
+    return out->valid;
+}
+
+
 int v32_get_meas(v32_meas_view_t *out)
 {
     if(!out) return 0;
@@ -396,12 +470,13 @@ static void v32_feed(const uint8_t *data, int n)
     for (;;) {
         /* ---- 找魔数 ---- */
         int at = -1;
-        int is_meas = 0;              /* 0=波形 1=锁相 2=频谱 3=IQ */
+        int is_meas = 0;              /* 0=波形 1=锁相 2=频谱 3=IQ 4=DDC3 */
         for (int i = 0; i + V32_MAGIC_LEN <= s_len; i++) {
             if (memcmp(s_buf + i, s_magic, V32_MAGIC_LEN) == 0)      { at = i; is_meas = 0; break; }
             if (memcmp(s_buf + i, s_magic_meas, V32_MAGIC_LEN) == 0) { at = i; is_meas = 1; break; }
             if (memcmp(s_buf + i, s_magic_spec, V32_MAGIC_LEN) == 0) { at = i; is_meas = 2; break; }
             if (memcmp(s_buf + i, s_magic_iq, V32_MAGIC_LEN) == 0)   { at = i; is_meas = 3; break; }
+            if (memcmp(s_buf + i, s_magic_ddc, V32_MAGIC_LEN) == 0)  { at = i; is_meas = 4; break; }
         }
         if (at < 0) {
             /* 保留可能是「被拆开的魔数前缀」的尾巴，其余丢弃 */
@@ -438,6 +513,13 @@ static void v32_feed(const uint8_t *data, int n)
             handle_iq(s_buf, s_len);
             memmove(s_buf, s_buf + len, (size_t)(s_len - len));
             s_len -= len;
+            continue;
+        }
+        if (is_meas == 4) {                                  /* V32DDC3! 新锁相帧 */
+            if (s_len < (int)V32_DDC_BYTES) break;
+            handle_ddc(s_buf);
+            memmove(s_buf, s_buf + V32_DDC_BYTES, (size_t)(s_len - (int)V32_DDC_BYTES));
+            s_len -= (int)V32_DDC_BYTES;
             continue;
         }
         if (is_meas == 1) {
@@ -954,6 +1036,95 @@ const char        *v32_source_name(void) { return s_name[0] ? s_name : "-"; }
 bool               v32_is_live(void) { return s_live; }
 const char        *v32_last_error(void) { return s_err; }
 int                v32_uart_baud(void) { return s_baud_actual; }
+
+/* =========================================================
+ * 下行控制帧 V32AA5C!（协作包 20261024，只发不答）
+ *
+ * 帧结构：24 B 头（magic + version + cmd_id + seq + payload_len）
+ *        + payload + CRC32（覆盖 [0, 24+plen)）。
+ *
+ * ⚠️ 设备不回 ACK —— 写进串口就当「已尽力下发」，生效与否看上行帧：
+ *    DDC 帧的 config_seq 变化、SPEC 帧的 window 字段变化才是凭据。
+ * ⚠️ 配置类命令只写暂存寄存器，必须跟一条 COMMIT —— set_* 帮手
+ *    内部已经把 COMMIT 拼在同一串里连发（命令之间必须连续发送，
+ *    FPGA 对不完整命令会超时丢弃，这是旧 A5 命令文档里的既有约定）。
+ */
+static uint32_t s_aa5_seq;
+
+static int aa5_build(uint8_t *out, uint32_t cmd, const uint8_t *payload, uint32_t plen)
+{
+    if(plen > 32u) return -1;
+    int n = 0;
+    memcpy(out, V32_AA5_MAGIC, 8); n = 8;
+    const uint32_t ver = 3u;
+    memcpy(out + 8,  &ver, 4);
+    memcpy(out + 12, &cmd, 4);
+    const uint32_t seq = ++s_aa5_seq;
+    memcpy(out + 16, &seq, 4);
+    memcpy(out + 20, &plen, 4);
+    n = 24;
+    if(plen) { memcpy(out + n, payload, plen); n += (int)plen; }
+    const uint32_t crc = crc32_calc(out, n);
+    memcpy(out + n, &crc, 4);
+    return n + 4;
+}
+
+static int aa5_send(uint32_t cmd, const uint8_t *payload, uint32_t plen)
+{
+    uint8_t buf[24 + 32 + 4];
+    const int n = aa5_build(buf, cmd, payload, plen);
+    if(n <= 0) return -1;
+    return send_raw(buf, n);
+}
+
+int v32_aa5_commit(void)
+{
+    return aa5_send(V32_AA5_CMD_COMMIT, NULL, 0u);
+}
+
+/* 配置命令 + COMMIT 连发。任一帧写失败都返回 -1（此时配置停在暂存区，
+ * 下一轮任何一次成功的 COMMIT 都会把它一起提交 —— 暂存寄存器语义如此）。 */
+static int aa5_cfg_plus_commit(uint32_t cmd, const uint8_t *payload, uint32_t plen)
+{
+    if(aa5_send(cmd, payload, plen) != 0) return -1;
+    return v32_aa5_commit();
+}
+
+int v32_aa5_set_window(uint32_t window_type_id)
+{
+    if(window_type_id >= (uint32_t)V32_WIN_COUNT) return -1;
+    const uint8_t pl[4] = {
+        (uint8_t)(window_type_id & 0xFFu), 0u, 0u, 0u
+    };
+    return aa5_cfg_plus_commit(V32_AA5_CMD_SET_WINDOW, pl, 4u);
+}
+
+int v32_aa5_set_modulation(uint32_t modulation_mode_id)
+{
+    if(modulation_mode_id >= (uint32_t)V32_MOD_COUNT) return -1;
+    const uint8_t pl[4] = {
+        (uint8_t)(modulation_mode_id & 0xFFu), 0u, 0u, 0u
+    };
+    return aa5_cfg_plus_commit(V32_AA5_CMD_SET_MODULATION, pl, 4u);
+}
+
+int v32_aa5_set_ref_freq(uint32_t fcw)
+{
+    const uint8_t pl[4] = {
+        (uint8_t)(fcw & 0xFFu), (uint8_t)((fcw >> 8) & 0xFFu),
+        (uint8_t)((fcw >> 16) & 0xFFu), (uint8_t)((fcw >> 24) & 0xFFu)
+    };
+    return aa5_cfg_plus_commit(V32_AA5_CMD_SET_REF_FREQ, pl, 4u);
+}
+
+const char *v32_aa5_win_name(unsigned id)
+{
+    static const char *NM[V32_WIN_COUNT] = {
+        "RECT", "HANN", "HAMMING", "BLACKMAN", "FLATTOP", "KAISER", "NUTTALL"
+    };
+    return (id < (unsigned)V32_WIN_COUNT) ? NM[id] : "WIN?";
+}
+
 
 /* =========================================================
  * 环回自检

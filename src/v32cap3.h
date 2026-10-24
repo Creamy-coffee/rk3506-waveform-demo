@@ -248,6 +248,77 @@ typedef struct {
 
 int v32_get_iq(v32_iq_view_t *out);
 
+/* ============ 新锁相测量帧 V32DDC3!（协作包 20261024，72 B）============
+ *
+ * 与 V32MEAS!（AB5 proto 12，128 B）是**两个不同的帧**：
+ *   · V32MEAS!  现行固件在发，字段多、带 usable 判定，与波形帧强关联；
+ *   · V32DDC3!  20261024 协作包新增（字段对齐 SPI 0x10..0x1B），
+ *               魔数/布局为冻结前候选 —— 新固件上线后由它接管锁相读数。
+ * 布局（全部 LE，CRC32 覆盖 [0,68)）：
+ *   0  magic "V32DDC3!"   8  version=3   12 frame_id   16 adc_fs_hz
+ *   20 config_seq（配置提交序号，与 AA5 COMMIT 对齐；不是波形帧号！）
+ *   24 fcw                28 ch0_i  32 ch0_q  36 ch1_i  40 ch1_q  (i32, counts×4096)
+ *   44 ch0_amp  48 ch1_amp (u32, Q12)  52 ch0_phase  56 ch1_phase (i32, 整圈 65536)
+ *   60 timestamp(65MHz 计数,~66 s 回绕)  64 flags_word([9:8]=phase_valid,[7:0]=ddc_flags)
+ *   68 crc32
+ * 换算：幅度码 = amp_q12/4096；相位° = phase_signed*360/65536。
+ */
+#define V32_DDC_MAGIC    "V32DDC3!"
+#define V32_DDC_BYTES    72
+#define V32_DDC_VERSION  3u
+
+typedef struct {
+    int      valid;               /* 1.5 s 内收到过 */
+    uint32_t seq;
+    uint32_t frame_id;            /* ==0 表示当前配置尚未产生完整结果 */
+    uint32_t adc_fs_hz;
+    uint32_t config_seq;
+    uint32_t fcw;
+    int64_t  ref_hz_x1000;        /* fcw × fs / 2^32，毫 Hz */
+    int32_t  ch0_i_q12, ch0_q_q12, ch1_i_q12, ch1_q_q12;
+    int64_t  ch0_amp_mc, ch1_amp_mc;        /* 毫码（amp_q12×1000/4096） */
+    int64_t  ch0_phase_millideg, ch1_phase_millideg;
+    int64_t  pdiff_millideg;      /* (ch1-ch0) 环形差，±180° */
+    uint32_t timestamp;
+    uint8_t  ddc_flags;           /* [0]adc_gap [1]cfg_illegal [2]busy_drop */
+    uint8_t  phase_valid;         /* bit0=CH0 bit1=CH1 */
+} v32_ddc_view_t;
+
+int v32_get_ddc(v32_ddc_view_t *out);
+
+/* ============ 下行控制帧 V32AA5C!（协作包 20261024，只发不答）============
+ * 24 B 头（magic/ver/cmd/seq/plen）+ payload + CRC32。设备不回 ACK；
+ * 配置类命令写暂存寄存器，必须跟一条 COMMIT 才生效 —— 下面的 set_* 帮手
+ * 内部已经自动跟 COMMIT，调用方不用（也不要）再单独发。
+ */
+#define V32_AA5_MAGIC       "V32AA5C!"
+#define V32_AA5_CMD_SET_WINDOW      1u
+#define V32_AA5_CMD_SET_MODULATION  2u
+#define V32_AA5_CMD_SET_REF_FREQ    3u
+#define V32_AA5_CMD_SET_LOCKIN_DECIM 4u
+#define V32_AA5_CMD_SET_RUN_MODE    5u
+#define V32_AA5_CMD_COMMIT          6u
+
+/* 窗函数枚举（协议 id；冻结前候选，与 FPGA 实现对齐后再定稿） */
+enum {
+    V32_WIN_RECT = 0, V32_WIN_HANN = 1, V32_WIN_HAMMING = 2,
+    V32_WIN_BLACKMAN = 3, V32_WIN_FLATTOP = 4, V32_WIN_KAISER = 5,
+    V32_WIN_NUTTALL = 6, V32_WIN_COUNT = 7
+};
+/* 调制/解调模式枚举（协议 id） */
+enum {
+    V32_MOD_AUTO = 0, V32_MOD_AM = 1, V32_MOD_FM = 2, V32_MOD_PM = 3,
+    V32_MOD_LOCKIN_NCO = 4, V32_MOD_RAW_BASEBAND = 5, V32_MOD_COUNT = 6
+};
+
+/* 返回 0 = 两帧（配置+COMMIT）都写进串口；-1 = 串口不可用/写失败 */
+int v32_aa5_set_window(uint32_t window_type_id);
+int v32_aa5_set_modulation(uint32_t modulation_mode_id);
+int v32_aa5_set_ref_freq(uint32_t fcw);
+int v32_aa5_commit(void);
+/* 窗函数协议 id -> 显示名（"HANN"…，未知 id 返回 "WIN?"） */
+const char *v32_aa5_win_name(unsigned id);
+
 /* ============ 控制命令（Linux → FPGA，原始十六进制字节）============
  * 全部无 CRC / 无 ACK。命令之间保持连续发送，FPGA 对不完整命令会超时丢弃。
  * 详见交付包 PROTOCOL.md。

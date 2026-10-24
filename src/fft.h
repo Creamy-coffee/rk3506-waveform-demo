@@ -35,16 +35,21 @@ void fft_magnitude_spectrum(const float *x, int n, float *mag);
  * 「8192 POINTS / BIN WIDTH 7.935 kHz」对得上，峰值读数也更平滑。
  */
 /*
- * 显示/分析用的三种窗（系数取自 SciPy general_cosine，与 FPGA 交付包
- * linux/spectrum.c 完全一致）。**不提供 Hamming / 矩形窗** ——
- * 交付包里没验证过的窗不放进菜单，免得"选了但没验证"。
+ * 显示/分析用的窗（系数取自 SciPy general_cosine，与 FPGA 交付包
+ * linux/spectrum.c 一致）。20261024 协作包把窗函数枚举扩到 7 种
+ * （RECT/HANN/HAMMING/BLACKMAN/FLATTOP/KAISER/NUTTALL），本地这四档
+ * 是照协议补齐的 —— 协议 id 到这里的映射在 ui.c（两套编号不同，别混用）。
  *
  * 统一写成余弦级数 w = Σ a[k]·cos(k·2π·n/N)。
  */
 typedef enum {
     FFT_WIN_HANN = 0,      /* 0.5 - 0.5cos */
     FFT_WIN_BLACKMAN,      /* 0.42 - 0.5cos + 0.08cos2 */
-    FFT_WIN_FLATTOP        /* 5 项 Flat Top */
+    FFT_WIN_FLATTOP,       /* 5 项 Flat Top */
+    FFT_WIN_RECT,          /* 矩形（不加窗） */
+    FFT_WIN_HAMMING,       /* 0.54 - 0.46cos */
+    FFT_WIN_KAISER,        /* β=8.6，I0 级数近似 */
+    FFT_WIN_NUTTALL        /* 4 项最小旁瓣 */
 } fft_win_t;
 
 void fft_magnitude_spectrum_zero_win(const float *x, int n_real, int n_fft,
