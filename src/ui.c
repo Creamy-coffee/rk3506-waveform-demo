@@ -131,6 +131,7 @@ static lv_obj_t *s_lbl_scope_axis;
 static lv_obj_t *s_lbl_fft_peakf, *s_lbl_fft_peakl, *s_lbl_fft_floor, *s_lbl_fft_win;
 static lv_obj_t *s_lbl_lock_ref, *s_lbl_lock_amp, *s_lbl_lock_phase, *s_lbl_lock_tau;
 static lv_obj_t *s_lbl_lock_state;      /* 锁定状态（● 锁定 / ○ 原因） */
+static lv_obj_t *s_lbl_lock_raw;        /* 原始诊断（未认证）行，usable=0 时才显示 */
 static lv_obj_t *s_lbl_ai_stat;
 static lv_obj_t *s_lbl_fps, *s_lbl_uptime;
 static lv_obj_t *s_lbl_v32_rate, *s_lbl_v32_loss;   /* FPGA 链路实时统计 */
@@ -1890,6 +1891,17 @@ static void build_lock(lv_obj_t *pg)
     s_lbl_lock_state = mk_metric(p1, TITLE_H + METRIC_H * 4, "锁定状态", "跟踪中", V32_C_GREEN);
     mk_note(p1, TITLE_H + METRIC_H * 5 + 6, ASIDE_W - V32_PANEL_PAD * 2,
             "数值来自 FPGA 片上锁相；不可用时显示「—」，沿用旧值会误导。");
+    /*
+     * FPGA 侧明确要求分开处理：
+     *   正式读数保持「—」（未通过资格），但**另设一块明确标注「原始诊断·未认证」**
+     *   的区域显示 raw 值，不能当成"降级仍准确"。
+     * 所以这里单独一行，usable=0 时才显示，并写明 guard / status 原值。
+     */
+    s_lbl_lock_raw = mk_label(p1, V32_PANEL_PAD, TITLE_H + METRIC_H * 5 + 48, "",
+                              V32_FONT_SMALL, V32_C_WARN);
+    lv_obj_set_width(s_lbl_lock_raw, ASIDE_W - V32_PANEL_PAD * 2 - 4);
+    lv_label_set_long_mode(s_lbl_lock_raw, LV_LABEL_LONG_WRAP);
+    lv_obj_add_flag(s_lbl_lock_raw, LV_OBJ_FLAG_HIDDEN);
 }
 
 /* =========================================================
@@ -3121,9 +3133,22 @@ static void tick_lock(void)
                 else if(mm.status & V32_ST_SETTLING) why = "○ 收敛中";
                 else if(mm.status & V32_ST_ADC_OTR)  why = "○ ADC 超量程";
                 else if(mm.status & V32_ST_CAL_CLIP) why = "○ 校准削顶";
+                else if((mm.guard0 | mm.guard1) & 0x08) why = "○ 相位变化超限";
+                else if(mm.qual == 0)               why = "○ 两路均未过资格";
                 else if(mm.qual != 3)               why = "○ 单通道";
                 lv_label_set_text(s_lbl_lock_state, why);
                 lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_WARN, LV_PART_MAIN);
+                /* 原始诊断（未认证）：把 FPGA 送来的原值摊开，方便定位资格为什么不过 */
+                if(s_lbl_lock_raw) {
+                    char rb[160];
+                    snprintf(rb, sizeof rb,
+                             "未认证 A %.0f/%.0f 毫码 · Δφ %.2f° · guard %d/%d · st 0x%02X · q%d",
+                             (double)mm.amp0_millicounts, (double)mm.amp1_millicounts,
+                             (double)(mm.pdiff_millideg / 1000.0),
+                             (int)mm.guard0, (int)mm.guard1, (unsigned)mm.status, (int)mm.qual);
+                    lv_label_set_text(s_lbl_lock_raw, rb);
+                    lv_obj_remove_flag(s_lbl_lock_raw, LV_OBJ_FLAG_HIDDEN);
+                }
             }
         } else {
             for(int i = 0; i < n; i++) { a[i] = 0.5f; b[i] = 0.5f; }
@@ -3133,6 +3158,7 @@ static void tick_lock(void)
             lv_label_set_text(s_lbl_lock_ref,   "—");
             lv_label_set_text(s_lbl_lock_amp,   "—");
             lv_label_set_text(s_lbl_lock_phase, "—");
+            if(s_lbl_lock_raw) lv_obj_add_flag(s_lbl_lock_raw, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(s_lbl_lock_state, "○ 无数据");
             lv_obj_set_style_text_color(s_lbl_lock_state, V32_C_WARN, LV_PART_MAIN);
         }
