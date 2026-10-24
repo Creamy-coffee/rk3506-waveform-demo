@@ -3264,7 +3264,21 @@ static void tick_scope(void)
                  * min/max 分桶映射满屏，I/Q 联合归一 —— 包络慢变特征正确。
                  */
                 const int take = (want < s_riq_len) ? want : s_riq_len;
-                const int st0  = s_riq_len - take;
+                int st0  = s_riq_len - take;
+                /* 包络峰对齐（与帧内分支同一套道理）：窗口锚到 |I| 峰 20% 处 */
+                {
+                    int b = s_riq_len - take / 2;
+                    if(b < st0) b = st0;
+                    int best = b, bv = -1;
+                    for(int k = b; k < s_riq_len; k++) {
+                        int v = (int)s_riq_i[k];
+                        if(v < 0) v = -v;
+                        if(v > bv) { bv = v; best = k; }
+                    }
+                    st0 = best - take / 5;
+                    if(st0 < s_riq_len - take) st0 = s_riq_len - take;
+                    if(st0 < 0) st0 = 0;
+                }
                 float peak = 1.0f;
                 for(int k = st0; k < s_riq_len; k++) {
                     const float ai = fabsf((float)s_riq_i[k]);
@@ -3297,9 +3311,27 @@ static void tick_scope(void)
                     ch2[2 * bk] = yb0;  ch2[2 * bk + 1] = yb1;
                 }
             } else {
-                /* 帧内窗口（浅档）：取末尾最新一段线性映射满屏 */
+                /*
+                 * 帧内窗口（浅档）。
+                 * ⚠️ 不做对齐的话每帧起始相位随机 —— 波形每帧乱平移，
+                 * 「看到的变化只是波形在跳」，时基疏密变化全被掩盖。
+                 * 这里把窗口锚到 |I| 峰（AM 包络峰）的 20% 位置：稳态
+                 * 信号下每帧都对齐到同一相位，波形稳定，效果等同触发。
+                 */
                 if(want > pts) want = pts;
-                const int w0 = pts - want;
+                int w0 = pts - want;
+                {
+                    int b = pts - want * 3;  if(b < 0) b = 0;
+                    int best = b, bv = -1;
+                    for(int k = b; k < pts; k++) {
+                        int v = (int)ivs.i[k];
+                        if(v < 0) v = -v;
+                        if(v > bv) { bv = v; best = k; }
+                    }
+                    w0 = best - want / 5;
+                    if(w0 < 0) w0 = 0;
+                    if(w0 > pts - want) w0 = pts - want;
+                }
 
                 float peak = 1.0f;
                 for(int k = w0; k < pts; k++) {
