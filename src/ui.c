@@ -3460,13 +3460,17 @@ static void tick_lock(void)
                 lv_obj_set_style_text_color(s_lbl_lock_amp,   V32_C_WARN, LV_PART_MAIN);
                 lv_obj_set_style_text_color(s_lbl_lock_phase, V32_C_WARN, LV_PART_MAIN);
                 plot_set_iq(s_plot_iq, 0.0f);
-                /* 把原因也说出来：失锁 / 未稳定 / 没数据 */
+                /* 把原因也说出来：失锁 / 未稳定 / 没数据。
+                 * guard 相位变化超限排在 SETTLING 之前 —— 实测（FPGA 端
+                 * 8 s / 39 组诊断）AM 调制下 guard_reason=8 持续、AFC 状态
+                 * 常变：SETTLING 几乎常驻，排前面会把真正的原因盖掉，
+                 * 屏上报的就和 FPGA 抓的 guard=8 对不上。guard 是确定性证据，优先。 */
                 const char *why = "○ 未锁定";
                 if(!have_meas)                     why = "○ 无锁相数据";
+                else if((mm.guard0 | mm.guard1) & 0x08) why = "○ 相位变化超限";
                 else if(mm.status & V32_ST_SETTLING) why = "○ 收敛中";
                 else if(mm.status & V32_ST_ADC_OTR)  why = "○ ADC 超量程";
                 else if(mm.status & V32_ST_CAL_CLIP) why = "○ 校准削顶";
-                else if((mm.guard0 | mm.guard1) & 0x08) why = "○ 相位变化超限";
                 else if(mm.qual == 0)               why = "○ 两路均未过资格";
                 else if(mm.qual != 3)               why = "○ 单通道";
                 lv_label_set_text(s_lbl_lock_state, why);
