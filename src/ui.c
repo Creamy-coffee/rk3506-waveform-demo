@@ -1199,10 +1199,23 @@ static void real_update(void)
         s_full_n = fn;
     }
 
-    /* 帧长变了（换数据源/重启）就让缩放回到整帧 */
-    if(s_zoom_span <= 0 || s_zoom_span > fn) { s_zoom_span = fn; s_zoom_start = 0; }
-    if(s_zoom_start > fn - s_zoom_span) s_zoom_start = fn - s_zoom_span;
-    if(s_zoom_start < 0) s_zoom_start = 0;
+    /*
+     * 「帧长变了（换数据源/重启）才回整帧」。
+     * ⚠️ 不能每帧检查 span>fn：深时基（roll）档的 span 本来就远大于帧长，
+     *    每帧打回=用户拉上去立刻被弹下来（实测「点上去了自己会弹下来」
+     *    的真凶之一）。只在 fn 真的变化时重置一次。
+     */
+    {
+        static int s_prev_fn = -1;
+        if(s_prev_fn != fn) {
+            s_prev_fn = fn;
+            if(s_zoom_span <= 0 || s_zoom_span > fn) { s_zoom_span = fn; s_zoom_start = 0; }
+        }
+        else if(s_zoom_span > 0 && s_zoom_span < fn) {   /* 帧内窗口的常规 clamp */
+            if(s_zoom_start > fn - s_zoom_span) s_zoom_start = fn - s_zoom_span;
+            if(s_zoom_start < 0) s_zoom_start = 0;
+        }
+    }
 
     float a_lo = d0[0], a_hi = d0[0], b_lo = d1[0], b_hi = d1[0];
     for(int i = 1; i < dn; i++) {
@@ -1715,11 +1728,13 @@ void ui_pinch_zoom(float scale, float anchor)
     if(anchor < 0.f) anchor = 0.f;
     if(anchor > 1.f) anchor = 1.f;
 
-    if(s_zoom_span <= 0 || s_zoom_span > total) s_zoom_span = total;
+    /* roll 深档的 span 本来就 > 帧长（total），打回=捏一下就弹回浅档
+       （真手指多点抖动被误判成 pinch 时更是无妄之灾）。只在未初始化时取整帧。 */
+    if(s_zoom_span <= 0) s_zoom_span = total;
 
     int span = (int)((float)s_zoom_span / scale + 0.5f);
     if(span < ZOOM_SPAN_MIN) span = ZOOM_SPAN_MIN;   /* 最小 8 点 ≈ 0.123 µs */
-    if(span > total) span = total;
+    if(span > (1 << 28)) span = 1 << 28;             /* 深档上限（roll 等效点数） */
 
     const int anchor_sample = s_zoom_start + (int)(anchor * (float)s_zoom_span);
 
