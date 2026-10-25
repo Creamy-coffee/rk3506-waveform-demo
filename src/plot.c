@@ -475,20 +475,28 @@ static void draw_one_trace(lv_layer_t *layer, plot_t *p, int ti,
     const int32_t xspan = w - 1;
     const int32_t yspan = h - 1;
 
-    int32_t px=0,py=0;int previous=-1;
+    /*
+     * 亚像素步进注意：cx==px 时(多点映射同一像素列)只考察不画,
+     * px/py **保持不动** —— 若跟着推进 py, 中间样点的几何丢失,
+     * 实线变虚线(603695b2 补丁引入、本版修复)。
+     * NaN = 无效样点断口：断口后重锚不画, 不跨断口连线。
+     */
+    int32_t px=0,py=0;int previous=-1;int anchored=0;
     for(int i=0;;) {
-        int gap=!isfinite(t->y[i]);
-        if(previous>=0)for(int k=previous+1;k<i;k++)if(!isfinite(t->y[k]))gap=1;
-        if(!isfinite(t->y[i]))previous=-1;
+        if(!isfinite(t->y[i])) { previous=-1;anchored=0; }
         else {
             float value=t->y[i];if(value<0.f)value=0.f;if(value>1.f)value=1.f;
             int32_t cx=x0+(int32_t)((int64_t)i*xspan/nm1);
             int32_t cy=y0+yspan-(int32_t)(value*yspan);
-            if(previous>=0 && !gap && cx>px) {
+            int gap=0;
+            if(previous>=0)for(int k=previous+1;k<i;k++)if(!isfinite(t->y[k]))gap=1;
+            if(!anchored || gap) { px=cx;py=cy;anchored=1; }
+            else if(cx>px) {
                 ld.p1.x=px;ld.p1.y=py;ld.p2.x=cx;ld.p2.y=cy;
                 lv_draw_line(layer,&ld);
+                px=cx;py=cy;
             }
-            px=cx;py=cy;previous=i;
+            previous=i;
         }
         if(i==nm1)break;
         i=(i+stride<nm1)?i+stride:nm1;
