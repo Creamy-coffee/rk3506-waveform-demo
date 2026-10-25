@@ -129,6 +129,19 @@ static int spec_win_old_to_proto(uint32_t w)
     }
 }
 
+/*
+ * 时基档位（µs/格）0.02µs..5s 共 23 档。10ms 以上的深时基档是为
+ * AM 调制波（1 kHz 调制 → 周期 1 ms，满屏放几个周期要 5~20 ms 窗）
+ * 和低频信号全景准备的；帧内点数不够时 tb_apply 会把窗口 cap 在
+ * 整帧（3/4 帧余量），读数按实际窗口报，不会虚标。
+ */
+static const float TB_US[23] = {
+    0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1.f, 2.f, 5.f, 10.f, 20.f, 50.f,
+    100.f, 200.f, 500.f, 1000.f, 5000.f,               /* 5ms/格 以下（原有） */
+    10000.f, 50000.f, 100000.f, 500000.f, 1000000.f, 5000000.f  /* 10ms..5s/格 */
+};
+#define TB_N 23
+
 /* 调制模式（协议 id，循环切换）。中文短名给芯片，AA5 下发用 id。 */
 static const char *MOD_NAME[V32_MOD_COUNT] = {
     "自动", "AM", "FM", "PM", "锁相", "基带"
@@ -195,7 +208,6 @@ static lv_obj_t *s_g_win, *s_g_tau, *s_g_ai, *s_g_sys;   /* 触发选择芯片 *
 static lv_obj_t *s_chip_math;   /* Math 选择芯片 */
 static lv_obj_t *s_chip_mod;    /* 调制模式选择芯片（AA5 SET_MODULATION） */
 static lv_obj_t *s_chip_demod; /* 示波器页解调显示开关（右栏通道面板第二行） */
-
 /* ===== 调制分析页（交付包 603695b2：V32ANA1! + A5 E0..E5 命令族）===== */
 static lv_obj_t *s_plot_modraw;   /* 上图：RAW 原始波形 */
 static lv_obj_t *s_plot_modana;   /* 下图：分析曲线 / 星座轨迹 */
@@ -207,62 +219,8 @@ static lv_obj_t *s_chip_mt, *s_chip_mc, *s_chip_mr;  /* 制式/通道/档位 芯
  * type 0=关 1AM 2FM 3FSK 4QPSK 5OOK 6BPSK 7PM（A5 E0 枚举） */
 static int s_an_type = 0, s_an_ch = 0, s_an_rate = 1;   /* rate 0/1/2 = 8192/4096/2048 */
 
-/* 分析配置整串下发（01_全部帧与发送命令.md 的标准顺序）：
- * E0 关 → FCW(E1+E2) → E3 通道 → E4 档位 → E0 模式 → FF 自动RAW → E5 焦点。
- * 中心频率取 FFT 实测峰值（没有就 10 MHz 兜底）——它是 DDC 参考。 */
-static void analysis_apply(int type, int ch, int rate)
-{
-    if(!S.use_real) return;
-    s_an_type = type; s_an_ch = ch; s_an_rate = rate;
-    const double center = (s_real_peak_hz > 100.0f)
-                        ? (double)s_real_peak_hz : 10000000.0;
-    v32_cmd_mode(0);
-    v32_cmd_fcw(v32_fcw_from_hz(center));
-    v32_cmd_channel(ch);
-    v32_cmd_rate(rate);
-    v32_cmd_mode(type);
-    v32_cmd_auto_dec();
-    v32_cmd_focus(2);
-    if(dbg_on())
-        fprintf(stderr, "[ana-cfg] type=%d ch=%d rate=%d center=%.0fHz%s",
-                type, ch, rate, center, "\n");
-}
 
-static const char *AN_TYPE_NAME[8] = {
-    "关", "AM", "FM", "FSK", "QPSK", "OOK", "BPSK", "PM"
-};
-static const char *AN_RATE_NAME[3] = { "档8k", "标准", "宽档" };
 
-static void an_chips_refresh(void)
-{
-    if(s_chip_mt) { char b[16]; snprintf(b, sizeof b, "制式 %s", AN_TYPE_NAME[s_an_type]);
-                    chip_set_text(s_chip_mt, b);
-                    chip_selected_c(s_chip_mt, s_an_type != 0, V32_C_MATH); }
-    if(s_chip_mc) { char b[16]; snprintf(b, sizeof b, "通道 CH%d", s_an_ch);
-                    chip_set_text(s_chip_mc, b);
-                    chip_selected_c(s_chip_mc, s_an_ch != 0, V32_C_CH2); }
-    if(s_chip_mr) { chip_set_text(s_chip_mr, AN_RATE_NAME[s_an_rate]);
-                    chip_selected_c(s_chip_mr, s_an_rate != 1, V32_C_WARN); }
-}
-
-static void cb_an_type(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    analysis_apply((s_an_type + 1) % 8, s_an_ch, s_an_rate);
-    an_chips_refresh();
-}
-static void cb_an_ch(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    analysis_apply(s_an_type, s_an_ch ^ 1, s_an_rate);
-    an_chips_refresh();
-}
-static void cb_an_rate(lv_event_t *e)
-{
-    LV_UNUSED(e);
-    analysis_apply(s_an_type, s_an_ch, (s_an_rate + 1) % 3);
-    an_chips_refresh();
-}
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
@@ -284,6 +242,10 @@ static lv_obj_t *s_ctrl_grp[UI_PAGE_COUNT];   /* 页内参数的 5 个变体 */
 static lv_obj_t *s_top, *s_ctrlbar, *s_navbar;
 
 /* 事件回调前置声明：页面构造函数（build_scope 等）写在回调定义之前 */
+static void cb_demod_toggle(lv_event_t *e);
+static void cb_an_type(lv_event_t *e);
+static void cb_an_ch(lv_event_t *e);
+static void cb_an_rate(lv_event_t *e);
 static void cb_ch1(lv_event_t *e);
 static void cb_ch2(lv_event_t *e);
 
@@ -2692,18 +2654,6 @@ static void cb_scope_touch(lv_event_t *e)
 /* 时基档位表（跟 HTML 原型一致） */
 /* 时基档位（µs/格）。原来最小 0.5µs —— 看 10 MHz（周期 0.1µs）时
    一屏 5µs 就是 50 个周期，挤成一片。补上 0.02/0.05/0.1/0.2 四档。 */
-/*
- * 时基档位（µs/格）0.02µs..5s 共 23 档。10ms 以上的深时基档是为
- * AM 调制波（1 kHz 调制 → 周期 1 ms，满屏放几个周期要 5~20 ms 窗）
- * 和低频信号全景准备的；帧内点数不够时 tb_apply 会把窗口 cap 在
- * 整帧（3/4 帧余量），读数按实际窗口报，不会虚标。
- */
-static const float TB_US[23] = {
-    0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1.f, 2.f, 5.f, 10.f, 20.f, 50.f,
-    100.f, 200.f, 500.f, 1000.f, 5000.f,               /* 5ms/格 以下（原有） */
-    10000.f, 50000.f, 100000.f, 500000.f, 1000000.f, 5000000.f  /* 10ms..5s/格 */
-};
-#define TB_N 23
 static void tb_default(int *idx)
 {
     const wave_source_t *src = wave_source_get();
@@ -2856,6 +2806,63 @@ static void cb_win_cycle(lv_event_t *e)
  * 新固件认 AA5；两条都发，哪边生效都有显示。旧命令枚举：
  *   0=示波 1=AM 2=FM 7=PM；锁相/基带在旧协议里没有对应，只发 AA5。
  */
+/* 分析配置整串下发（01_全部帧与发送命令.md 的标准顺序）：
+ * E0 关 → FCW(E1+E2) → E3 通道 → E4 档位 → E0 模式 → FF 自动RAW → E5 焦点。
+ * 中心频率取 FFT 实测峰值（没有就 10 MHz 兜底）——它是 DDC 参考。 */
+static void analysis_apply(int type, int ch, int rate)
+{
+    if(!S.use_real) return;
+    s_an_type = type; s_an_ch = ch; s_an_rate = rate;
+    const double center = (s_real_peak_hz > 100.0f)
+                        ? (double)s_real_peak_hz : 10000000.0;
+    v32_cmd_mode(0);
+    v32_cmd_fcw(v32_fcw_from_hz(center));
+    v32_cmd_channel(ch);
+    v32_cmd_rate(rate);
+    v32_cmd_mode(type);
+    v32_cmd_auto_dec();
+    v32_cmd_focus(2);
+    if(dbg_on())
+        fprintf(stderr, "[ana-cfg] type=%d ch=%d rate=%d center=%.0fHz%s",
+                type, ch, rate, center, "\n");
+}
+
+static const char *AN_TYPE_NAME[8] = {
+    "关", "AM", "FM", "FSK", "QPSK", "OOK", "BPSK", "PM"
+};
+static const char *AN_RATE_NAME[3] = { "档8k", "标准", "宽档" };
+
+static void an_chips_refresh(void)
+{
+    if(s_chip_mt) { char b[16]; snprintf(b, sizeof b, "制式 %s", AN_TYPE_NAME[s_an_type]);
+                    chip_set_text(s_chip_mt, b);
+                    chip_selected_c(s_chip_mt, s_an_type != 0, V32_C_MATH); }
+    if(s_chip_mc) { char b[16]; snprintf(b, sizeof b, "通道 CH%d", s_an_ch);
+                    chip_set_text(s_chip_mc, b);
+                    chip_selected_c(s_chip_mc, s_an_ch != 0, V32_C_CH2); }
+    if(s_chip_mr) { chip_set_text(s_chip_mr, AN_RATE_NAME[s_an_rate]);
+                    chip_selected_c(s_chip_mr, s_an_rate != 1, V32_C_WARN); }
+}
+
+static void cb_an_type(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    analysis_apply((s_an_type + 1) % 8, s_an_ch, s_an_rate);
+    an_chips_refresh();
+}
+static void cb_an_ch(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    analysis_apply(s_an_type, s_an_ch ^ 1, s_an_rate);
+    an_chips_refresh();
+}
+static void cb_an_rate(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    analysis_apply(s_an_type, s_an_ch, (s_an_rate + 1) % 3);
+    an_chips_refresh();
+}
+
 /* 解调显示开关：开 = FPGA 切 AM 解调（示波器页画解调 I/Q），
  * 关 = 回示波模式（恢复波形帧）。和锁相页「调制」芯片共用 s_mod_idx，
  * 两处状态同步；AM 是当前发生器的调制制式。 */
