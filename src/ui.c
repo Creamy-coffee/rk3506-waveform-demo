@@ -4398,7 +4398,10 @@ static void tick_mod(void)
     } else if(!match) {
         lv_label_set_text(s_lbl_mst, "○ 切换中");
         lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
-        lv_label_set_text(s_lbl_modhint, "○ 切换中 · 等待 FPGA 回显匹配帧…");
+        /* FPGA 真实重配存在预热盲区（实测 6~10 秒帧停发）—— 把预期
+           时长告诉用户，否则「什么都没有」会被当成坏了 */
+        lv_label_set_text(s_lbl_modhint,
+            "○ 切换中 · FPGA 重配预热约 5~10 秒，请稍候…");
         lv_obj_remove_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);
         plot_hide_trace(s_plot_modana, 0);
         lv_label_set_text(s_lbl_m4, "--");
