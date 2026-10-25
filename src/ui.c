@@ -4248,6 +4248,25 @@ static void tick_mod(void)
        (uint32_t)(lv_tick_get() - s_an_last_tap_ms) >= 250u)
         analysis_send_now();
 
+    /*
+     * 状态认领：服务重启后屏端制式归「关」，但 FPGA 往往还在跑
+     * 用户最后点的配置（cfg 不清零）—— 直接认领回显的 mode/channel，
+     * 芯片同步显示、画面直出，且不重配 FPGA（幂等友好）。
+     * 只有用户显式点「关」后才不认领（那时 FPGA 也会停发分析帧）。
+     */
+    {
+        v32_ana_view_t avc;
+        static int s_claimed_off = 0;
+        if(s_an_type == 0 && !s_an_send_pending &&
+           (v32_get_ana(&avc) != 0) && avc.mode != 0u && !s_claimed_off) {
+            s_an_type = (int)avc.mode;
+            s_an_ch   = (int)avc.channel;
+            an_chips_refresh();
+        }
+        if(s_an_type == 0 && s_an_send_pending) s_claimed_off = 1;   /* 用户主动关 */
+        if(s_an_type != 0) s_claimed_off = 0;
+    }
+
     v32_ana_view_t av;
     const bool have_ana = (v32_get_ana(&av) != 0);
 
@@ -4367,7 +4386,11 @@ static void tick_mod(void)
     }
 
     lv_obj_add_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);   /* 有数据了，藏指引 */
-    /* 回显匹配检查 */
+    /*
+     * 回显匹配检查。不匹配（正在切换 / FPGA 在跑别的配置）时**下图不画**：
+     * 把不匹配的数据画出来就是「旧模式数据混进新曲线」—— 交付包 02
+     * 明令禁止。给明确提示等匹配帧。
+     */
     const bool match = ((int)av.mode == s_an_type) && ((int)av.channel == s_an_ch);
     if(av.flags != 0u) {
         lv_label_set_text(s_lbl_mst, "○ 诊断·丢样");
@@ -4375,6 +4398,12 @@ static void tick_mod(void)
     } else if(!match) {
         lv_label_set_text(s_lbl_mst, "○ 切换中");
         lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
+        lv_label_set_text(s_lbl_modhint, "○ 切换中 · 等待 FPGA 回显匹配帧…");
+        lv_obj_remove_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);
+        plot_hide_trace(s_plot_modana, 0);
+        lv_label_set_text(s_lbl_m4, "--");
+        lv_label_set_text(s_lbl_m5, "--");
+        return;                       /* 不画不匹配的数据 */
     } else {
         lv_label_set_text(s_lbl_mst, "● 分析有效");
         lv_obj_set_style_text_color(s_lbl_mst, V32_C_GREEN, LV_PART_MAIN);
