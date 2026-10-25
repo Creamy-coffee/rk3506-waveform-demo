@@ -214,6 +214,7 @@ static lv_obj_t *s_plot_modana;   /* 下图：分析曲线 / 星座轨迹 */
 static lv_obj_t *s_lbl_mst;       /* 状态行 */
 static lv_obj_t *s_lbl_m1, *s_lbl_m2, *s_lbl_m3, *s_lbl_m4;
 static lv_obj_t *s_lbl_m5, *s_lbl_m6;
+static lv_obj_t *s_lbl_mf1, *s_lbl_mf2, *s_lbl_mf3, *s_lbl_mf4;  /* 帧诊断 */
 static lv_obj_t *s_chip_mt, *s_chip_mc, *s_chip_mr;  /* 制式/通道/档位 芯片 */
 /* 当前下发的分析配置（回显匹配以此为准）：
  * type 0=关 1AM 2FM 3FSK 4QPSK 5OOK 6BPSK 7PM（A5 E0 枚举） */
@@ -2301,9 +2302,12 @@ static void build_mod(lv_obj_t *pg)
     lv_obj_set_height(s_plot_modana, MAIN_H / 2 - 3);
     mk_label(s_plot_modana, 8, 6, "调制分析", V32_FONT_SMALL, V32_C_PLOT_TITLE);
 
-    /* 右栏：测量与判决 */
+    /* 右栏：测量与判决 + 分析帧诊断（交付包验收：持续记录帧率/配置/过期） */
     lv_obj_t *aside = mk(pg, 0, 0, ASIDE_W, MAIN_H);
     s_aside[UI_PAGE_MOD] = aside;
+    lv_obj_set_flex_flow(aside, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(aside, V32_RIGHT_GAP, LV_PART_MAIN);
+
     lv_obj_t *p1 = mk_panel(aside, 0, 0, 0, 0);
     lv_obj_set_width(p1, LV_PCT(100));
     lv_obj_set_flex_grow(p1, 1);
@@ -2316,6 +2320,15 @@ static void build_mod(lv_obj_t *pg)
     s_lbl_m5  = mk_metric(p1, TITLE_H + METRIC_H * 5, "调制度",   "--", V32_C_METRIC_VALUE);
     s_lbl_m6  = mk_metric(p1, TITLE_H + METRIC_H * 6, "有效样点", "--", V32_C_METRIC_VALUE);
     mk_metric(p1, TITLE_H + METRIC_H * 7, "符号率",   "—", V32_C_METRIC_VALUE);
+
+    lv_obj_t *p2 = mk_panel(aside, 0, 0, 0,
+                            TITLE_H + METRIC_H * 4 + V32_PANEL_PAD * 2 + V32_PANEL_BW * 2);
+    lv_obj_set_width(p2, LV_PCT(100));
+    mk_title(p2, 0, 0, "分析帧");
+    s_lbl_mf1 = mk_metric(p2, TITLE_H + METRIC_H * 0, "帧号/配置", "--", V32_C_METRIC_VALUE);
+    s_lbl_mf2 = mk_metric(p2, TITLE_H + METRIC_H * 1, "样点类型",   "--", V32_C_METRIC_VALUE);
+    s_lbl_mf3 = mk_metric(p2, TITLE_H + METRIC_H * 2, "抽取率",     "--", V32_C_METRIC_VALUE);
+    s_lbl_mf4 = mk_metric(p2, TITLE_H + METRIC_H * 3, "更新",       "--", V32_C_METRIC_VALUE);
 }
 
 static void build_system(lv_obj_t *pg)
@@ -4163,6 +4176,28 @@ static void tick_mod(void)
     } else {
         lv_label_set_text(s_lbl_mst, "● 分析有效");
         lv_obj_set_style_text_color(s_lbl_mst, V32_C_GREEN, LV_PART_MAIN);
+    }
+
+    /* 分析帧诊断（交付包验收：帧号/配置/类型/抽取率/新鲜度可见） */
+    {
+        static const char *KN[4] = { "I/Q 星座", "包络 Q8", "相位差 Hz", "相位 deg" };
+        static uint32_t last_seq = 0;
+        static uint32_t acc = 0, t0ms = 0;
+        if(av.seq != last_seq) { acc++; last_seq = av.seq; }
+        const uint32_t now = lv_tick_get();
+        if(t0ms == 0u) t0ms = now;
+        if(now - t0ms >= 1000u) {
+            char fb[20];
+            snprintf(fb, sizeof fb, "%.1f 帧/秒", (double)acc * 1000.0 / (double)(now - t0ms));
+            lv_label_set_text(s_lbl_mf4, fb);
+            acc = 0; t0ms = now;
+        }
+        lv_label_set_text_fmt(s_lbl_mf1, "%u / cfg%u",
+                              (unsigned)av.frame_id, (unsigned)av.cfg_id);
+        lv_label_set_text_fmt(s_lbl_mf2, "kind%u %s",
+                              (unsigned)av.kind,
+                              (av.kind < 4u) ? KN[av.kind] : "?");
+        lv_label_set_text_fmt(s_lbl_mf3, "R=%u", (unsigned)av.decim);
     }
 
     char b[24];
