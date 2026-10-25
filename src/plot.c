@@ -161,35 +161,35 @@ void plot_set_grid(lv_obj_t *plot, int divx, int divy, bool center_dash)
 
 /* ==================== 数据设置 ==================== */
 
-static void set_trace(lv_obj_t *plot, int idx, const float *y, int n,
-                      lv_color_t color, int32_t width, bool vis)
+/* 返回 1 = 数据真的变了（已拷贝），0 = 数据相同跳过（没拷） */
+static int set_trace(lv_obj_t *plot, int idx, const float *y, int n,
+                     lv_color_t color, int32_t width, bool vis)
 {
     plot_t *p = PLOT_OF(plot);
-    if(p == NULL || idx < 0 || idx >= PLOT_MAX_TRACE) return;
+    if(p == NULL || idx < 0 || idx >= PLOT_MAX_TRACE) return 0;
 
     trace_t *t = &p->tr[idx];
     t->color = color;
     t->width = width;
     t->vis   = vis;
 
-    if(y == NULL || n <= 0) { t->n = 0; return; }
+    if(y == NULL || n <= 0) { t->n = 0; return 1; }
     if(n > PLOT_MAX_PTS) n = PLOT_MAX_PTS;
     /* 数据完全一致（暂停/锚定后的稳态帧）就不重绘 —— 高频 set_trace
        的场景下这一下 memcmp 能省掉整块 plot 的软件渲染。 */
-    if(t->n == n && memcmp(t->y, y, (size_t)n * sizeof(float)) == 0) return;
+    if(t->n == n && memcmp(t->y, y, (size_t)n * sizeof(float)) == 0) return 0;
     memcpy(t->y, y, (size_t)n * sizeof(float));
     t->n = n;
+    return 1;
 }
 
 void plot_set_trace(lv_obj_t *plot, int idx, const float *y, int n,
                     lv_color_t color, int32_t width)
 {
-    trace_t *t = &PLOT_OF(plot)->tr[idx];
-    const int old_n = t->n;
-    set_trace(plot, idx, y, n, color, width, true);
-    /* set_trace 内部 memcmp 相同会早退（t->n 不变、数据没拷）——
-       只有数据真的变了才 invalidate，高频 set_trace 场景省一半渲染 */
-    if(t->n != old_n || memcmp(t->y, y, (size_t)t->n * sizeof(float)) != 0)
+    /* 只有数据真的变了才 invalidate —— 上一版在拷贝**之后**比较，
+       t->y 已是新数据，memcmp 恒等、永不 invalidate：没有触发线等
+       附加重绘源的页面（重建页）整幅冻结，就是它。 */
+    if(set_trace(plot, idx, y, n, color, width, true))
         lv_obj_invalidate(plot);
 }
 
