@@ -96,38 +96,14 @@ static const char  TIMEBASE_OPTS[] =
 static const int   TIMEBASE_DEF    = 2;    /* 2 µs/div */
 
 /*
- * 窗函数：20261024 协作包把枚举扩到 7 种（RECT..NUTTALL），并给了下行
- * AA5 SET_WINDOW 命令。S.win_idx 现在存的是**协议 id**（0..6，见 v32cap3.h），
- * 显示名用 v32_aa5_win_name()，本地 FFT 用 proto_win_to_fft() 换到 fft.h 的枚举
- * —— 两套编号不同（协议 HANN=1，fft.h HANN=0），不映射会张冠李戴。
+ * 窗函数三档（FPGA 20261025 反馈明确：SPEC 保持 0=Hann/1=Blackman/2=FlatTop
+ * **不扩展七窗**，当前候选 SPEC 固定输出 Hann、不回显切窗；20261024 包的
+ * 七窗枚举仅归档候选，不是本项目功能）。S.win_idx 存 fft.h 枚举（0..2），
+ * 只作用于**本地 FFT**（选 CH2 时屏端自己算的谱）；FPGA 谱的窗以 SPEC 帧
+ * window 字段照实显示。
  */
-static const int   WIN_DEF         = V32_WIN_HANN;   /* 协议 id：1 = HANN */
-
-/* 协议窗 id -> 本地 fft_win_t */
-static fft_win_t proto_win_to_fft(int id)
-{
-    switch(id) {
-        case V32_WIN_RECT:     return FFT_WIN_RECT;
-        case V32_WIN_HANN:     return FFT_WIN_HANN;
-        case V32_WIN_HAMMING:  return FFT_WIN_HAMMING;
-        case V32_WIN_BLACKMAN: return FFT_WIN_BLACKMAN;
-        case V32_WIN_FLATTOP:  return FFT_WIN_FLATTOP;
-        case V32_WIN_KAISER:   return FFT_WIN_KAISER;
-        case V32_WIN_NUTTALL:  return FFT_WIN_NUTTALL;
-        default:               return FFT_WIN_HANN;
-    }
-}
-
-/* V32SPEC! 帧头 window 字段还是旧 3 档编号（0=Hann 1=Blackman 2=FlatTop），
- * 换到协议 id 只是为了复用 v32_aa5_win_name() 显示。 */
-static int spec_win_old_to_proto(uint32_t w)
-{
-    switch((int)w) {
-        case 1:  return V32_WIN_BLACKMAN;
-        case 2:  return V32_WIN_FLATTOP;
-        default: return V32_WIN_HANN;
-    }
-}
+static const int   WIN_DEF         = FFT_WIN_HANN;
+static const char *WIN_NAME[3]     = { "HANN", "BLACKMAN", "FLATTOP" };
 
 /*
  * 时基档位（µs/格）0.02µs..5s 共 23 档。10ms 以上的深时基档是为
@@ -1405,7 +1381,7 @@ static void real_update(void)
         const float mean = (float)(sum / (double)fn);
         for(int i = 0; i < fn; i++) s_fft_tmp[i] = spec_src[i] - mean;
         fft_magnitude_spectrum_zero_win(s_fft_tmp, fn, REAL_FFT_N,
-                                        proto_win_to_fft(S.win_idx), s_real_mag);
+                                        (fft_win_t)S.win_idx, s_real_mag);
     }
     s_real_bins = REAL_FFT_N / 2;
 
@@ -2821,17 +2797,11 @@ static void cb_math_cycle(lv_event_t *e)
 static void cb_win_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
-    S.win_idx = (S.win_idx + 1) % V32_WIN_COUNT;
-    const char *wn = v32_aa5_win_name((unsigned)S.win_idx);
+    S.win_idx = (S.win_idx + 1) % 3;
+    const char *wn = WIN_NAME[S.win_idx];
     if(dbg_on())
         fprintf(stderr, "[win] 窗函数 -> %d (%s)\n", S.win_idx, wn);
-    /*
-     * 真实链路：切窗的同时用 AA5 下发（v32_aa5_set_window 内部自动跟
-     * COMMIT）。设备不回 ACK，生效凭据是频谱帧的 window 字段跟着变 ——
-     * tick_fft 里显示窗名时会把 FPGA 实际窗报出来，对不上就看得见。
-     * 本地谱（选 CH2 时）立即按新窗重算。
-     */
-    if(S.use_real) v32_aa5_set_window((uint32_t)S.win_idx);
+    /* 只改本地 FFT 的窗（FPGA 谱固定 Hann，不提供远程切窗） */
     if(s_chip_win) chip_set_text(s_chip_win, wn);
     /* 该页没有下拉框了，窗名由芯片自己显示 */
     if(s_lbl_fft_win) lv_label_set_text(s_lbl_fft_win, wn);
@@ -2869,7 +2839,19 @@ static void analysis_send_now(void)
     if(!S.use_real) return;
     const double center = (s_real_peak_hz > 100.0f)
                         ? (double)s_real_peak_hz : 10000000.0;
-    v32_cmd_mode(0);
+    /*
+     * 幂等 Apply（FPGA 20261025 反馈明确要求）：不再惯例先发 E0 0 ——
+     * 关→开是两次真实状态变化，都会触发 DDC/滤波预热。只有用户把
+     * 制式切到「关」时才发 off；开分析时直接 E1/E2(FCW)→E3→E4→E0→FF→E5。
+     * FPGA 侧同值命令不递增 cfg、不重配；屏端靠回显匹配确认，不靠 cfg。
+     */
+    if(s_an_type == 0) {
+        v32_cmd_mode(0);
+        v32_cmd_auto_dec();
+        v32_cmd_focus(2);
+        s_an_send_pending = 0;
+        return;
+    }
     v32_cmd_fcw(v32_fcw_from_hz(center));
     v32_cmd_channel(s_an_ch);
     v32_cmd_rate(s_an_rate);
@@ -3089,7 +3071,7 @@ static void cb_reset(lv_event_t *e)
     {
         lv_obj_t *dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_SCOPE], 1);
         if(dd) lv_dropdown_set_selected(dd, (uint32_t)TIMEBASE_DEF);
-        if(s_chip_win) { chip_set_text(s_chip_win, v32_aa5_win_name((unsigned)WIN_DEF)); chip_selected(s_chip_win, true); }
+        if(s_chip_win) { chip_set_text(s_chip_win, WIN_NAME[WIN_DEF]); chip_selected(s_chip_win, true); }
         /* 频谱通道回「自动」 */
         fft_ch_set(0);
         dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_LOCK], 1);
@@ -3105,7 +3087,7 @@ static void cb_reset(lv_event_t *e)
      * 真实链路下写死 "2 µs/格" 会和实际帧长（63 µs 满屏）自相矛盾。 */
     update_axis_label();
     lv_label_set_text(s_lbl_lock_tau, "10 ms");
-    lv_label_set_text(s_lbl_fft_win, v32_aa5_win_name((unsigned)WIN_DEF));
+    lv_label_set_text(s_lbl_fft_win, WIN_NAME[WIN_DEF]);
 
     ui_set_page(UI_PAGE_SCOPE);
 }
@@ -3268,7 +3250,7 @@ static void build_controls(lv_obj_t *root)
      *    改成**一个循环切换的芯片**：芯片显示当前窗名，点一下换下一个。
      *    芯片的点击在整个界面里都是可靠的，而且一直看得到当前值。
      */
-    s_chip_win = mk_chip(gf2, v32_aa5_win_name((unsigned)WIN_DEF), cb_win_cycle);
+    s_chip_win = mk_chip(gf2, WIN_NAME[WIN_DEF], cb_win_cycle);
     chip_selected(s_chip_win, true);
 
 
@@ -3920,14 +3902,13 @@ static void tick_fft(void)
      * 只有 Hann），画本地谱才报本地选的那个 —— 两者不能混。
      */
     if(s_spec_in_use) {
-        /* SPEC 帧的 window 是旧 3 档编号（0=Hann 1=Blackman 2=FlatTop）。
-           下发 AA5 新窗后 FPGA 回报什么以实测为准 —— 显示它**实际在用**的窗。 */
+        /* FPGA 谱固定 Hann（三窗编号 0=Hann/1=Blackman/2=FlatTop，照实显示） */
         char wb[24];
-        snprintf(wb, sizeof wb, "%s·FPGA",
-                 v32_aa5_win_name((unsigned)spec_win_old_to_proto(s_spec_win)));
+        const uint32_t w3 = (s_spec_win <= 2u) ? s_spec_win : 0u;
+        snprintf(wb, sizeof wb, "%s·FPGA", WIN_NAME[w3]);
         lv_label_set_text(s_lbl_fft_win, wb);
     } else {
-        lv_label_set_text(s_lbl_fft_win, v32_aa5_win_name((unsigned)S.win_idx));
+        lv_label_set_text(s_lbl_fft_win, WIN_NAME[S.win_idx]);
     }
 
     /* 标题写明这条谱是谁算的、多少点 */

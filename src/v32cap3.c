@@ -1065,10 +1065,11 @@ int v32_last_decimation(void) { return s_last_dec; }
 int v32_send_decimation(int dec)
 {
     if(s_fd < 0 || !s_live) return -1;
-    if(dec < 1)   dec = 1;
-    if(dec > 256) dec = 256;
+    /* FPGA 20261025：A5 k 开放 k=0..15（R=2^k 上限 32768，1024 点窗最大 0.516s）*/
+    if(dec < 1)     dec = 1;
+    if(dec > 32768) dec = 32768;
     int k = 0;
-    while((1 << k) < dec && k < 16) k++;
+    while((1 << k) < dec && k < 15) k++;
     uint8_t cmd[2];
     cmd[0] = 0xA5;            /* 命令头 */
     cmd[1] = (uint8_t)k;      /* dec = 2^k */
