@@ -345,6 +345,10 @@ static void handle_ddc(const uint8_t *p)
 static const char     s_magic_ana[] = V32_ANA_MAGIC;
 static v32_ana_view_t s_ana;
 static uint32_t       s_ana_ms;
+#define ANA_QUEUE_CAPACITY 64
+static v32_ana_view_t s_ana_queue[ANA_QUEUE_CAPACITY];
+static uint32_t s_ana_queue_ms[ANA_QUEUE_CAPACITY];
+static unsigned s_ana_head, s_ana_count;
 
 /*
  * kind 样点解码（ANALYSIS_PROTOCOL.md）：
@@ -357,9 +361,8 @@ static uint32_t       s_ana_ms;
  */
 static void handle_ana(const uint8_t *p)
 {
-    if(rd32(p + 8) != V32_ANA_VERSION) return;
-    if(rd32(p + 44) != 0u) return;                        /* 保留必须 0 */
-    if(crc32_calc(p, V32_ANA_BYTES - 4) != rd32(p + V32_ANA_BYTES - 4)) return;
+    if(crc32_calc(p, V32_ANA_BYTES - 4) != rd32(p + V32_ANA_BYTES - 4)) { s_st.crc_errors++;return; }
+    if(rd32(p + 8) != V32_ANA_VERSION || rd32(p+16)!=65000000u || rd32(p+44)!=0u) { s_st.header_errors++;return; }
 
     v32_ana_view_t v;
     memset(&v, 0, sizeof v);
@@ -375,12 +378,20 @@ static void handle_ana(const uint8_t *p)
     if((kindch >> 24) != 0u) return;                      /* bits31:24 必须 0 */
     if(rd32(p + 24) != (uint32_t)V32_ANA_POINTS) return;  /* 样点数 */
     v.fcw       = rd32(p + 40);
+    static const uint8_t expected_kind[8]={255,1,2,2,0,1,0,3};
+    if(v.mode<1u || v.mode>7u || v.channel>1u || v.kind!=expected_kind[v.mode] ||
+       (v.decim!=8192u && v.decim!=4096u && v.decim!=2048u) ||
+       v.fcw>=0x80000000u || (v.flags&~5u)) { s_st.header_errors++;return; }
     v.center_hz = (float)((double)v.fcw * 65000000.0 / 4294967296.0);
 
-    int prev_phase = 0, have_prev = 0;
     v.nvalid = 0;
     for(int k = 0; k < V32_ANA_POINTS; k++) {
         const uint32_t raw = rd32(p + 48 + k * 4);
+        if(v.kind && (raw&0x7f000000u)) { s_st.header_errors++;return; }
+        if(v.kind>=2u) {
+            int32_t phase_word=((int32_t)(raw<<8))>>8;
+            if(phase_word< -32768 || phase_word>32767) { s_st.header_errors++;return; }
+        }
         int ok = 1;
         if(v.kind == 0u) {
             const int32_t iq = (int32_t)raw;
@@ -393,11 +404,7 @@ static void handle_ana(const uint8_t *p)
             ok = (raw & 0x80000000u) ? 0 : 1;
             const int32_t d24 = ((int32_t)(raw << 8)) >> 8; /* signed24 符号扩展 */
             /* 相位跳变保护：|Δphase|>29491 码也无效 */
-            if(ok && have_prev) {
-                int d = d24 - prev_phase;
-                if(d > 29491 || d < -29491) ok = 0;
-            }
-            prev_phase = d24; have_prev = 1;
+            if(d24 > 29491 || d24 < -29491) ok = 0;
             const float r = (v.decim > 0u) ? (float)v.decim : 4096.0f;
             v.y[k] = (float)d24 * (65000000.0f / r) / 65536.0f;  /* Hz */
         } else if(v.kind == 3u) {
@@ -411,28 +418,52 @@ static void handle_ana(const uint8_t *p)
         if(ok) v.nvalid++;
     }
     v.valid = 1;
-    s_ana    = v;
-    s_ana_ms = mono_ms();
+    const uint32_t received_ms=mono_ms();
+    pthread_mutex_lock(&s_lock);
+    s_ana=v;s_ana_ms=received_ms;
+    if(s_ana_count==ANA_QUEUE_CAPACITY) {
+        s_ana_head=(s_ana_head+1u)%ANA_QUEUE_CAPACITY;s_ana_count--;
+    }
+    unsigned tail=(s_ana_head+s_ana_count)%ANA_QUEUE_CAPACITY;
+    s_ana_queue[tail]=v;s_ana_queue_ms[tail]=received_ms;s_ana_count++;
+    pthread_mutex_unlock(&s_lock);
 
     {
         static int dbg = -1;
         if(dbg < 0) dbg = getenv("WAVE_MEASDBG") ? 1 : 0;
-        if(dbg && (v.seq % 8u) == 1u)
-            fprintf(stderr, "[ana] fid=%u cfg=%u mode=%u ch=%u kind=%u R=%u fcw=%u(%.0fHz) flags=%u nvalid=%d y0=%.1f\n",
-                    (unsigned)v.frame_id, (unsigned)v.cfg_id, (unsigned)v.mode,
+        static uint32_t last_debug_cfg=0xffffffffu;
+        if(dbg && (v.cfg_id!=last_debug_cfg || (v.seq % 8u) == 1u)) {
+            last_debug_cfg=v.cfg_id;
+            fprintf(stderr, "[ana] t_ms=%u fid=%u cfg=%u mode=%u ch=%u kind=%u R=%u fcw=%u(%.0fHz) flags=%u nvalid=%d y0=%.1f\n",
+                    (unsigned)received_ms,(unsigned)v.frame_id, (unsigned)v.cfg_id, (unsigned)v.mode,
                     (unsigned)v.channel, (unsigned)v.kind, (unsigned)v.decim,
                     (unsigned)v.fcw, (double)v.center_hz, (unsigned)v.flags,
                     v.nvalid, (double)v.y[0]);
+        }
     }
 }
 
 int v32_get_ana(v32_ana_view_t *out)
 {
     if(!out) return 0;
+    pthread_mutex_lock(&s_lock);
     *out = s_ana;
-    if(s_ana.seq == 0u) return 0;
-    out->valid = ((mono_ms() - s_ana_ms) <= 1000u) ? 1 : 0;   /* 1 s 过期撤回 */
+    const uint32_t stamp=s_ana_ms;
+    pthread_mutex_unlock(&s_lock);
+    if(out->seq == 0u) return 0;
+    out->valid = ((mono_ms() - stamp) <= 1000u) ? 1 : 0;
     return out->valid;
+}
+
+int v32_pop_ana(v32_ana_view_t *out)
+{
+    if(!out)return 0;
+    pthread_mutex_lock(&s_lock);
+    if(!s_ana_count) { pthread_mutex_unlock(&s_lock);return 0; }
+    *out=s_ana_queue[s_ana_head];const uint32_t stamp=s_ana_queue_ms[s_ana_head];
+    s_ana_head=(s_ana_head+1u)%ANA_QUEUE_CAPACITY;s_ana_count--;
+    pthread_mutex_unlock(&s_lock);
+    out->valid=((mono_ms()-stamp)<=1000u);return 1;
 }
 
 int v32_get_ddc(v32_ddc_view_t *out)
@@ -612,6 +643,10 @@ static void v32_feed(const uint8_t *data, int n)
         }
         if (is_meas == 5) {                                  /* V32ANA1! 调制分析帧 */
             if (s_len < (int)V32_ANA_BYTES) break;
+            if(crc32_calc(s_buf,V32_ANA_BYTES-4)!=rd32(s_buf+V32_ANA_BYTES-4)) {
+                s_st.crc_errors++;s_st.discarded_bytes++;
+                memmove(s_buf,s_buf+1,(size_t)(s_len-1));s_len--;continue;
+            }
             handle_ana(s_buf);
             memmove(s_buf, s_buf + V32_ANA_BYTES, (size_t)(s_len - (int)V32_ANA_BYTES));
             s_len -= (int)V32_ANA_BYTES;
@@ -1106,7 +1141,7 @@ int v32_cmd_rate(int rr)
 
 int v32_cmd_dec(int k)
 {
-    if(k < 0 || k > 8) return -1;
+    if(k < 0 || k > 15) return -1;
     const uint8_t c[2] = { 0xA5, (uint8_t)k };
     return send_raw(c, 2);
 }
@@ -1144,6 +1179,16 @@ int v32_cmd_fcw(uint32_t fcw)
                             (uint8_t)((fcw >> 8) & 0xFF) };
     if(send_raw(hi, 4) != 0) return -1;
     return send_raw(lo, 4);
+}
+
+int v32_cmd_apply(int mode,int channel,int rate,uint32_t fcw,int focus)
+{
+    if(mode<0 || mode>7 || channel<0 || channel>1 || rate<0 || rate>2 ||
+       focus<0 || focus>2 || fcw>=0x80000000u)return -1;
+    const uint8_t data[]={0xa5,0xe1,(uint8_t)(fcw>>16),(uint8_t)(fcw>>24),
+        0xa5,0xe2,(uint8_t)fcw,(uint8_t)(fcw>>8),0xa5,0xe3,(uint8_t)channel,
+        0xa5,0xe4,(uint8_t)rate,0xa5,0xe0,(uint8_t)mode,0xa5,0xff,0xa5,0xe5,(uint8_t)focus};
+    return send_raw(data,(int)sizeof(data));
 }
 
 const v32_stats_t *v32_get_stats(void) { return &s_st; }
@@ -1365,3 +1410,4 @@ int v32_uart_loopback_test(const char *dev, int baud, int bytes)
            total, (double)total / 1000.0 / sec, (double)baud / 10.0);
     return 0;
 }
+

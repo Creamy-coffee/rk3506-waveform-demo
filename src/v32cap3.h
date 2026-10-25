@@ -372,9 +372,12 @@ const char *v32_aa5_win_name(unsigned id);
 int v32_cmd_mode(int mode);            /* A5 E0 mm  0=示波 1..7=调制 */
 int v32_cmd_channel(int ch);           /* A5 E3 cc  cc=0/1 */
 int v32_cmd_rate(int rr);              /* A5 E4 rr  rr=0/1/2 -> 8192/4096/2048 */
-int v32_cmd_dec(int k);                /* A5 kk     k=0..8，普通波形抽取 2^k */
+int v32_cmd_dec(int k);                /* A5 kk     k=0..15，普通波形抽取 2^k */
 int v32_cmd_auto_dec(void);            /* A5 FF     恢复普通波形自动抽取 */
 int v32_cmd_fcw(uint32_t fcw);         /* A5 E1 hi16 + A5 E2 lo16（分两帧发） */
 uint32_t v32_fcw_from_hz(double hz);   /* round(hz * 2^32 / 65e6) */
+int v32_pop_ana(v32_ana_view_t *out); /* queued frame; out->valid reports receive freshness */
+int v32_cmd_apply(int mode,int channel,int rate,uint32_t fcw,int focus); /* one write, no implicit OFF */
 
 #endif /* V32CAP3_H */
+

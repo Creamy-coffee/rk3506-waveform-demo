@@ -291,9 +291,10 @@ void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, b
     if(n > 4) n = 4;
     p->cur_n   = n;
     p->cur_vis = show && n > 0;
+    memset(p->cur_x,0,sizeof p->cur_x);memset(p->cur_y,0,sizeof p->cur_y);
     for(int i = 0; i < n; i++) {
-        p->cur_x[i] = xs ? xs[i] : 0.5f;
-        p->cur_y[i] = ys ? ys[i] : 0.5f;
+        if(i<2)p->cur_x[i]=xs?xs[i]:0.5f;
+        else p->cur_y[i-2]=ys?ys[i-2]:0.5f;
     }
     lv_obj_invalidate(plot);
 }
@@ -474,35 +475,25 @@ static void draw_one_trace(lv_layer_t *layer, plot_t *p, int ti,
     const int32_t xspan = w - 1;
     const int32_t yspan = h - 1;
 
-    int32_t px = x0 + 0;
-    int32_t py = y0 + yspan - (int32_t)(t->y[0] * yspan);
-    if(py < y0) py = y0;
-    if(py > y0 + yspan) py = y0 + yspan;
-
-    int i;
-    for(i = stride; i <= nm1; i += stride) {
-        int32_t cx = x0 + (int32_t)((int64_t)i * xspan / nm1);
-        int32_t cy = y0 + yspan - (int32_t)(t->y[i] * yspan);
-        if(cy < y0) cy = y0;
-        if(cy > y0 + yspan) cy = y0 + yspan;
-        if(cx <= px) continue;
-
-        ld.p1.x = px; ld.p1.y = py;
-        ld.p2.x = cx; ld.p2.y = cy;
-        lv_draw_line(layer, &ld);
-        px = cx; py = cy;
+    int32_t px=0,py=0;int previous=-1;
+    for(int i=0;;) {
+        int gap=!isfinite(t->y[i]);
+        if(previous>=0)for(int k=previous+1;k<i;k++)if(!isfinite(t->y[k]))gap=1;
+        if(!isfinite(t->y[i]))previous=-1;
+        else {
+            float value=t->y[i];if(value<0.f)value=0.f;if(value>1.f)value=1.f;
+            int32_t cx=x0+(int32_t)((int64_t)i*xspan/nm1);
+            int32_t cy=y0+yspan-(int32_t)(value*yspan);
+            if(previous>=0 && !gap && cx>px) {
+                ld.p1.x=px;ld.p1.y=py;ld.p2.x=cx;ld.p2.y=cy;
+                lv_draw_line(layer,&ld);
+            }
+            px=cx;py=cy;previous=i;
+        }
+        if(i==nm1)break;
+        i=(i+stride<nm1)?i+stride:nm1;
     }
 
-    /* 收尾：一定画到最后一列，否则右边缘会缺一小段 */
-    const int32_t lx = x0 + xspan;
-    int32_t ly = y0 + yspan - (int32_t)(t->y[nm1] * yspan);
-    if(ly < y0) ly = y0;
-    if(ly > y0 + yspan) ly = y0 + yspan;
-    if(lx > px) {
-        ld.p1.x = px; ld.p1.y = py;
-        ld.p2.x = lx; ld.p2.y = ly;
-        lv_draw_line(layer, &ld);
-    }
 }
 
 static void draw_iq(lv_layer_t *layer, plot_t *p,
@@ -639,12 +630,17 @@ static void draw_xy(lv_layer_t *layer, plot_t *p,
     ld.opa   = LV_OPA_COVER;
 
     const int n = (p->tr[0].n < p->tr[1].n) ? p->tr[0].n : p->tr[1].n;
-    int32_t px = 0, py = 0;
-    for(int i = 0; i < n; i++) {
-        const int32_t cx = x0 + (int32_t)(p->tr[0].y[i] * (float)(w - 1));
-        const int32_t cy = y0 + h - 1 - (int32_t)(p->tr[1].y[i] * (float)(h - 1));
-        if(i > 0) line(layer, &ld, px, py, cx, cy);
-        px = cx; py = cy;
+    int32_t px=0,py=0;int have_previous=0;
+    for(int i=0;i<n;i++) {
+        float x=p->tr[0].y[i],y=p->tr[1].y[i];
+        if(!isfinite(x) || !isfinite(y)) { have_previous=0;continue; }
+        if(x<0.f)x=0.f;
+        if(x>1.f)x=1.f;
+        if(y<0.f)y=0.f;
+        if(y>1.f)y=1.f;
+        int32_t cx=x0+(int32_t)(x*(w-1)),cy=y0+h-1-(int32_t)(y*(h-1));
+        if(have_previous)line(layer,&ld,px,py,cx,cy);
+        px=cx;py=cy;have_previous=1;
     }
 
     /* 中心十字（原点 = 两路中点） */
@@ -888,3 +884,4 @@ int plot_norm(const float *src, int n, float *dst, int dst_n, float margin)
     }
     return 0;
 }
+

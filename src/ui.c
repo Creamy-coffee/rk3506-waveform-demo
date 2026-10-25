@@ -21,6 +21,7 @@
 #include "plot.h"
 #include "demo_signal.h"
 #include "wave_source.h"
+#include "analysis_history.h"
 #include "v32cap3.h"       /* SYSTEM 页要读 UART 的帧数/CRC 错误统计 */
 #include "fft.h"
 #include "bl_interp.h"
@@ -200,10 +201,12 @@ static lv_obj_t *s_lbl_modhint;        /* 制式=关 时下图的开始指引 */
  * 靠这个看全景；kind0 数字调制的 I/Q 在这攒累积星座云。
  * kind 或 cfg_id 变化（换制式/重配）即清空 —— 不同解释的样点不能混。
  */
-static float s_aroll[16384];
-static float s_arollq[16384];
-static int   s_aroll_len;
-static uint32_t s_aroll_kind = 0xFFFFFFFFu, s_aroll_cfg = 0xFFFFFFFFu;
+static ana_history_t s_history;
+#define s_aroll s_history.y
+#define s_arollq s_history.q
+#define s_aroll_len s_history.length
+static uint32_t s_an_target_fcw;
+static int s_an_have_target, s_an_tx_failed;
 static lv_obj_t *s_chip_mt, *s_chip_mc, *s_chip_mr;  /* 制式/通道/档位 芯片 */
 /* 当前下发的分析配置（回显匹配以此为准）：
  * type 0=关 1AM 2FM 3FSK 4QPSK 5OOK 6BPSK 7PM（A5 E0 枚举） */
@@ -2286,6 +2289,7 @@ static void build_mod(lv_obj_t *pg)
     lv_obj_set_style_pad_row(col, 6, LV_PART_MAIN);
 
     s_plot_modraw = plot_create(col, PLOT_SCOPE);
+    lv_obj_set_width(s_plot_modraw, LV_PCT(100));
     lv_obj_set_height(s_plot_modraw, MAIN_H / 2 - 3);
     s_lbl_modraw_title = mk_label(s_plot_modraw, 8, 6, "原始波形",
                                    V32_FONT_SMALL, V32_C_PLOT_TITLE);
@@ -2295,6 +2299,7 @@ static void build_mod(lv_obj_t *pg)
     lv_obj_align(s_lbl_rawnote, LV_ALIGN_TOP_RIGHT, -8, 6);
 
     s_plot_modana = plot_create(col, PLOT_SCOPE);
+    lv_obj_set_width(s_plot_modana, LV_PCT(100));
     lv_obj_set_height(s_plot_modana, MAIN_H / 2 - 3);
     mk_label(s_plot_modana, 8, 6, "调制分析", V32_FONT_SMALL, V32_C_PLOT_TITLE);
     /* 制式=关 时的开始指引（否则下图一块空网格，不知道要干什么） */
@@ -2302,6 +2307,8 @@ static void build_mod(lv_obj_t *pg)
                              "制式为「关」 · 点控制条「制式」选 AM/FM/PM/QPSK… 开始分析",
                              V32_FONT_SMALL, V32_C_WARN);
     lv_obj_align(s_lbl_modhint, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_width(s_lbl_modhint,LV_PCT(95));
+    lv_label_set_long_mode(s_lbl_modhint,LV_LABEL_LONG_WRAP);
 
     /* 右栏：测量与判决 + 分析帧诊断（交付包验收：持续记录帧率/配置/过期） */
     lv_obj_t *aside = mk(pg, 0, 0, ASIDE_W, MAIN_H);
@@ -2837,8 +2844,12 @@ static void analysis_apply(int type, int ch, int rate)
 static void analysis_send_now(void)
 {
     if(!S.use_real) return;
-    const double center = (s_real_peak_hz > 100.0f)
-                        ? (double)s_real_peak_hz : 10000000.0;
+    double center = (s_real_peak_hz > 100.0f) ? (double)s_real_peak_hz : 10000000.0;
+    v32_meas_view_t measured;
+    if(v32_get_meas(&measured) && (measured.fft_valid & (1u << s_an_ch))) {
+        uint32_t hz=s_an_ch?measured.fft_hz1:measured.fft_hz0;
+        if(hz>100u && hz<32500000u)center=(double)hz;
+    }
     /*
      * 幂等 Apply（FPGA 20261025 反馈明确要求）：不再惯例先发 E0 0 ——
      * 关→开是两次真实状态变化，都会触发 DDC/滤波预热。只有用户把
@@ -2846,22 +2857,22 @@ static void analysis_send_now(void)
      * FPGA 侧同值命令不递增 cfg、不重配；屏端靠回显匹配确认，不靠 cfg。
      */
     if(s_an_type == 0) {
-        v32_cmd_mode(0);
-        v32_cmd_auto_dec();
-        v32_cmd_focus(2);
+        s_an_tx_failed=(v32_cmd_mode(0)!=0);
+        v32_cmd_auto_dec();v32_cmd_focus(2);s_an_have_target=0;
         s_an_send_pending = 0;
         return;
     }
-    v32_cmd_fcw(v32_fcw_from_hz(center));
-    v32_cmd_channel(s_an_ch);
-    v32_cmd_rate(s_an_rate);
-    v32_cmd_mode(s_an_type);
-    v32_cmd_auto_dec();
-    v32_cmd_focus(2);
+    const uint32_t fcw=v32_fcw_from_hz(center);
+    s_an_tx_failed=(v32_cmd_apply(s_an_type,s_an_ch,s_an_rate,fcw,2)!=0);
+    if(!s_an_tx_failed) { s_an_target_fcw=fcw;s_an_have_target=1; }
+    else fprintf(stderr,"[ana-cfg] write failed; configuration not confirmed\n");
     s_an_send_pending = 0;
-    if(dbg_on())
-        fprintf(stderr, "[ana-cfg] type=%d ch=%d rate=%d center=%.0fHz%s",
-                s_an_type, s_an_ch, s_an_rate, center, "\n");
+    if(dbg_on()) {
+        struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
+        const uint32_t ms=(uint32_t)((uint64_t)ts.tv_sec*1000u+ts.tv_nsec/1000000u);
+        fprintf(stderr,"[ana-cfg] t_ms=%u type=%d ch=%d rate=%d center=%.3fHz fcw=%u result=%d\n",
+                (unsigned)ms,s_an_type,s_an_ch,s_an_rate,center,(unsigned)fcw,s_an_tx_failed?-1:0);
+    }
 }
 
 static const char *AN_TYPE_NAME[8] = {
@@ -4261,6 +4272,8 @@ static void tick_mod(void)
            (v32_get_ana(&avc) != 0) && avc.mode != 0u && !s_claimed_off) {
             s_an_type = (int)avc.mode;
             s_an_ch   = (int)avc.channel;
+            s_an_rate = avc.decim==8192u?0:avc.decim==2048u?2:1;
+            s_an_target_fcw=avc.fcw;s_an_have_target=1;s_an_tx_failed=0;
             an_chips_refresh();
         }
         if(s_an_type == 0 && s_an_send_pending) s_claimed_off = 1;   /* 用户主动关 */
@@ -4269,6 +4282,17 @@ static void tick_mod(void)
 
     v32_ana_view_t av;
     const bool have_ana = (v32_get_ana(&av) != 0);
+    const bool match=have_ana && !s_an_send_pending && !s_an_tx_failed &&
+        ana_echo_matches(&av,s_an_type,s_an_ch,s_an_rate,
+                         s_an_have_target?s_an_target_fcw:av.fcw);
+    v32_ana_view_t queued;
+    while(v32_pop_ana(&queued)) {
+        if(s_an_type && !s_an_send_pending && !s_an_tx_failed &&
+           ana_echo_matches(&queued,s_an_type,s_an_ch,s_an_rate,
+                            s_an_have_target?s_an_target_fcw:av.fcw))
+            ana_history_push(&s_history,&queued);
+        else ana_history_clear(&s_history);
+    }
 
     /*
      * 上图双重身份：
@@ -4281,26 +4305,7 @@ static void tick_mod(void)
      */
     if(s_an_type != 0) {
         lv_label_set_text(s_lbl_modraw_title, "分析历史");
-        if(have_ana) {
-            /* kind/cfg 变化 -> 旧样点解释不同，清空重攒 */
-            if(av.kind != s_aroll_kind || av.cfg_id != s_aroll_cfg) {
-                s_aroll_kind = av.kind;
-                s_aroll_cfg  = av.cfg_id;
-                s_aroll_len  = 0;
-            }
-            if(s_aroll_len + V32_ANA_POINTS > 16384) {
-                const int drop = 8192;
-                memmove(s_aroll,  s_aroll  + drop, (size_t)(16384 - drop) * sizeof(float));
-                memmove(s_arollq, s_arollq + drop, (size_t)(16384 - drop) * sizeof(float));
-                s_aroll_len -= drop;
-            }
-            for(int k = 0; k < V32_ANA_POINTS; k++) {
-                if(s_aroll_len >= 16384) break;
-                s_aroll[s_aroll_len]  = av.y[k];
-                s_arollq[s_aroll_len] = (av.kind == 0u) ? av.q[k] : 0.f;
-                s_aroll_len++;
-            }
-
+        if(have_ana && match && s_aroll_len>0) {
             if(av.kind == 0u) {
                 /* 累积星座云（XY）：最近 1024 点抽出来画轨迹 */
                 plot_set_mode(s_plot_modraw, PLOT_XY);
@@ -4321,14 +4326,16 @@ static void tick_mod(void)
             } else {
                 /* 滚动解调曲线：最近段 min/max 分桶满屏（I/Q 联合同归一） */
                 plot_set_mode(s_plot_modraw, PLOT_SCOPE);
-                const int take = (s_aroll_len < n) ? s_aroll_len : n * 8;
+                plot_hide_trace(s_plot_modraw,1);
+                const int take = ana_history_take(&s_history,n*8);
                 const int st0  = s_aroll_len - take;
                 float mn = 1e30f, mx = -1e30f;
                 for(int k = st0; k < s_aroll_len; k++) {
+                    if(!isfinite(s_aroll[k])) continue;
                     if(s_aroll[k] < mn) mn = s_aroll[k];
                     if(s_aroll[k] > mx) mx = s_aroll[k];
                 }
-                if(mx - mn < 1e-6f) { mn = -1.f; mx = 1.f; }
+                if(!isfinite(mx-mn) || mx<mn || mx-mn<1e-6f) { mn=-1.f;mx=1.f; }
                 const float sc = 1.f / (mx - mn);
                 const int buckets = n / 2;
                 for(int bk = 0; bk < buckets; bk++) {
@@ -4341,19 +4348,25 @@ static void tick_mod(void)
                         if(s_aroll[k] < s_aroll[imn]) imn = k;
                         if(s_aroll[k] > s_aroll[imx]) imx = k;
                     }
+                    int hole=0;
+                    for(int k=st;k<en;k++)if(!isfinite(s_aroll[k]))hole=1;
+                    if(hole) { a[2*bk]=NAN;a[2*bk+1]=NAN;continue; }
                     a[2 * bk]     = (s_aroll[imn < imx ? imn : imx] - mn) * sc;
                     a[2 * bk + 1] = (s_aroll[imn < imx ? imx : imn] - mn) * sc;
                 }
                 plot_set_trace(s_plot_modraw, 0, a, n, V32_C_CH1, 2);
             }
-            lv_label_set_text(s_lbl_rawnote, "最近1秒");
+            const int visible=ana_history_take(&s_history,av.kind==0u?1024:n*8);
+            lv_label_set_text_fmt(s_lbl_rawnote,"%.0f ms",(double)visible*av.decim/65000.0);
             lv_obj_set_style_text_color(s_lbl_rawnote, V32_C_GREEN, LV_PART_MAIN);
         } else {
             lv_label_set_text(s_lbl_rawnote, "等待分析帧");
+            plot_hide_trace(s_plot_modraw,0);plot_hide_trace(s_plot_modraw,1);
             lv_obj_set_style_text_color(s_lbl_rawnote, V32_C_WARN, LV_PART_MAIN);
         }
     } else {
         lv_label_set_text(s_lbl_modraw_title, "原始波形");
+        plot_set_mode(s_plot_modraw,PLOT_SCOPE);plot_hide_trace(s_plot_modraw,1);
         const int raw_ch = have_ana ? (int)av.channel : s_an_ch;
         static int drew_once = 0;
         if(S.use_real && s_real_valid && s_full_n >= 2) {
@@ -4372,7 +4385,7 @@ static void tick_mod(void)
     }
 
     if(!have_ana) {
-        plot_hide_trace(s_plot_modana, 0);
+        plot_hide_trace(s_plot_modana, 0);plot_hide_trace(s_plot_modana,1);
         /* 制式关：给开始指引；切换中：等回显 */
         lv_label_set_text(s_lbl_modhint, s_an_type
             ? "○ 切换中 · 等待 FPGA 回显匹配帧…"
@@ -4386,38 +4399,15 @@ static void tick_mod(void)
     }
 
     lv_obj_add_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);   /* 有数据了，藏指引 */
-    /*
-     * 回显匹配检查。不匹配（正在切换 / FPGA 在跑别的配置）时**下图不画**：
-     * 把不匹配的数据画出来就是「旧模式数据混进新曲线」—— 交付包 02
-     * 明令禁止。给明确提示等匹配帧。
-     */
-    const bool match = ((int)av.mode == s_an_type) && ((int)av.channel == s_an_ch);
-    if(av.flags != 0u) {
-        lv_label_set_text(s_lbl_mst, "○ 诊断·丢样");
-        lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
-    } else if(!match) {
-        lv_label_set_text(s_lbl_mst, "○ 切换中");
-        lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
-        /* FPGA 真实重配存在预热盲区（实测 6~10 秒帧停发）—— 把预期
-           时长告诉用户，否则「什么都没有」会被当成坏了 */
-        lv_label_set_text(s_lbl_modhint,
-            "○ 切换中 · FPGA 重配预热约 5~10 秒，请稍候…");
-        lv_obj_remove_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);
-        plot_hide_trace(s_plot_modana, 0);
-        lv_label_set_text(s_lbl_m4, "--");
-        lv_label_set_text(s_lbl_m5, "--");
-        return;                       /* 不画不匹配的数据 */
-    } else {
-        lv_label_set_text(s_lbl_mst, "● 分析有效");
-        lv_obj_set_style_text_color(s_lbl_mst, V32_C_GREEN, LV_PART_MAIN);
-    }
-
     /* 分析帧诊断（交付包验收：帧号/配置/类型/抽取率/新鲜度可见） */
     {
         static const char *KN[4] = { "I/Q 星座", "包络 Q8", "相位差 Hz", "相位 deg" };
         static uint32_t last_seq = 0;
         static uint32_t acc = 0, t0ms = 0;
-        if(av.seq != last_seq) { acc++; last_seq = av.seq; }
+        if(av.seq != last_seq) {
+            const uint32_t delta=av.seq-last_seq;
+            acc+=(last_seq && delta<0x80000000u)?delta:1u;last_seq=av.seq;
+        }
         const uint32_t now = lv_tick_get();
         if(t0ms == 0u) t0ms = now;
         if(now - t0ms >= 1000u) {
@@ -4442,6 +4432,36 @@ static void tick_mod(void)
     lv_label_set_text_fmt(s_lbl_m3, "CH%u", (unsigned)av.channel + 1u);
     lv_label_set_text_fmt(s_lbl_m6, "%d/%d", av.nvalid, V32_ANA_POINTS);
 
+    /*
+     * 回显匹配检查。不匹配（正在切换 / FPGA 在跑别的配置）时**下图不画**：
+     * 把不匹配的数据画出来就是「旧模式数据混进新曲线」—— 交付包 02
+     * 明令禁止。给明确提示等匹配帧。
+     */
+    if(av.flags != 0u || av.nvalid<=0) {
+        lv_label_set_text(s_lbl_mst, av.flags?"○ 诊断·丢样":"○ 无有效样点");
+        lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
+        plot_hide_trace(s_plot_modana,0);plot_hide_trace(s_plot_modana,1);
+        lv_label_set_text(s_lbl_m4,"--");lv_label_set_text(s_lbl_m5,"--");return;
+    } else if(!match) {
+        lv_label_set_text(s_lbl_mst, "○ 切换中");
+        lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
+        /* Frames exist but their parameter echo differs: show the evidence,
+           never describe this as an assumed 5-10 second FPGA warm-up. */
+        lv_label_set_text_fmt(s_lbl_modhint,
+            "○ 切换中 · RX mode=%u ch=%u R=%u FCW=%08x / TX mode=%d ch=%d R=%u FCW=%08x%s",
+            (unsigned)av.mode,(unsigned)av.channel,(unsigned)av.decim,(unsigned)av.fcw,
+            s_an_type,s_an_ch,(unsigned)((uint32_t[]){8192,4096,2048})[s_an_rate],
+            (unsigned)s_an_target_fcw,s_an_tx_failed?" WRITE_FAILED":"");
+        lv_obj_remove_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);
+        plot_hide_trace(s_plot_modana, 0);plot_hide_trace(s_plot_modana,1);
+        lv_label_set_text(s_lbl_m4, "--");
+        lv_label_set_text(s_lbl_m5, "--");
+        return;                       /* 不画不匹配的数据 */
+    } else {
+        lv_label_set_text(s_lbl_mst, "● 分析有效");
+        lv_obj_set_style_text_color(s_lbl_mst, V32_C_GREEN, LV_PART_MAIN);
+    }
+
     /* 下图：按 kind 画 */
     if(av.kind == 0u) {
         /* I/Q 星座轨迹（XY）：I=X，Q=Y，联合归一 */
@@ -4451,24 +4471,25 @@ static void tick_mod(void)
             if(fabsf(av.y[k]) > peak) peak = fabsf(av.y[k]);
             if(fabsf(av.q[k]) > peak) peak = fabsf(av.q[k]);
         }
-        for(int k = 0; k < V32_ANA_POINTS; k++) {
-            a[k]      = 0.5f + av.y[k] / (2.0f * peak);
-            av.q[k]   = 0.5f + av.q[k] / (2.0f * peak);
+        static float qbuf[V32_ANA_POINTS];float su=0.f;
+        for(int k=0;k<V32_ANA_POINTS;k++) {
+            if(!av.yvalid[k]) { a[k]=NAN;qbuf[k]=NAN;continue; }
+            su+=av.y[k]*av.y[k]+av.q[k]*av.q[k];
+            a[k]=0.5f+av.y[k]/(2.f*peak);qbuf[k]=0.5f+av.q[k]/(2.f*peak);
         }
         plot_set_mode(s_plot_modana, PLOT_XY);
         plot_set_trace(s_plot_modana, 0, a, V32_ANA_POINTS, V32_C_MATH, 2);
         /* PLOT_XY 用 trace1 当 Y 轴 —— 拷一份进静态缓冲 */
-        static float qbuf[V32_ANA_POINTS];
-        memcpy(qbuf, av.q, sizeof qbuf);
+
         plot_set_trace(s_plot_modana, 1, qbuf, V32_ANA_POINTS, V32_C_MATH, 2);
-        float su = 0.f;
-        for(int k = 0; k < V32_ANA_POINTS; k++) su += av.y[k] * av.y[k] + qbuf[k] * qbuf[k];
+
         lv_label_set_text_fmt(s_lbl_m4, "RMS %.0f",
-                              (double)sqrtf(su / (float)V32_ANA_POINTS));
+                              (double)sqrtf(su / (float)av.nvalid));
         lv_label_set_text(s_lbl_m5, "--");
     } else {
         /* 单值曲线：包络(Q8 码)/频偏(Hz)/相位(度)，画成单迹线 */
         plot_set_mode(s_plot_modana, PLOT_SCOPE);
+        plot_hide_trace(s_plot_modana,1);
         float mn = 1e30f, mx = -1e30f;
         for(int k = 0; k < V32_ANA_POINTS; k++) {
             if(!av.yvalid[k]) continue;
@@ -4477,7 +4498,7 @@ static void tick_mod(void)
         }
         if(mx - mn < 1e-6f) { mn = -1.f; mx = 1.f; }
         for(int k = 0; k < V32_ANA_POINTS; k++)
-            a[k] = (av.y[k] - mn) / (mx - mn);
+            a[k] = av.yvalid[k]?(av.y[k]-mn)/(mx-mn):NAN;
         plot_set_trace(s_plot_modana, 0, a, V32_ANA_POINTS, V32_C_MATH, 2);
 
         if(av.kind == 1u) {
@@ -4789,3 +4810,4 @@ void ui_dump_layout(void)
         dump_obj(s_page[S.page], 0);
     fflush(stdout);
 }
+
