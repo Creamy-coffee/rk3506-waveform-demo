@@ -195,6 +195,74 @@ static lv_obj_t *s_g_win, *s_g_tau, *s_g_ai, *s_g_sys;   /* 触发选择芯片 *
 static lv_obj_t *s_chip_math;   /* Math 选择芯片 */
 static lv_obj_t *s_chip_mod;    /* 调制模式选择芯片（AA5 SET_MODULATION） */
 static lv_obj_t *s_chip_demod; /* 示波器页解调显示开关（右栏通道面板第二行） */
+
+/* ===== 调制分析页（交付包 603695b2：V32ANA1! + A5 E0..E5 命令族）===== */
+static lv_obj_t *s_plot_modraw;   /* 上图：RAW 原始波形 */
+static lv_obj_t *s_plot_modana;   /* 下图：分析曲线 / 星座轨迹 */
+static lv_obj_t *s_lbl_mst;       /* 状态行 */
+static lv_obj_t *s_lbl_m1, *s_lbl_m2, *s_lbl_m3, *s_lbl_m4;
+static lv_obj_t *s_lbl_m5, *s_lbl_m6;
+static lv_obj_t *s_chip_mt, *s_chip_mc, *s_chip_mr;  /* 制式/通道/档位 芯片 */
+/* 当前下发的分析配置（回显匹配以此为准）：
+ * type 0=关 1AM 2FM 3FSK 4QPSK 5OOK 6BPSK 7PM（A5 E0 枚举） */
+static int s_an_type = 0, s_an_ch = 0, s_an_rate = 1;   /* rate 0/1/2 = 8192/4096/2048 */
+
+/* 分析配置整串下发（01_全部帧与发送命令.md 的标准顺序）：
+ * E0 关 → FCW(E1+E2) → E3 通道 → E4 档位 → E0 模式 → FF 自动RAW → E5 焦点。
+ * 中心频率取 FFT 实测峰值（没有就 10 MHz 兜底）——它是 DDC 参考。 */
+static void analysis_apply(int type, int ch, int rate)
+{
+    if(!S.use_real) return;
+    s_an_type = type; s_an_ch = ch; s_an_rate = rate;
+    const double center = (s_real_peak_hz > 100.0f)
+                        ? (double)s_real_peak_hz : 10000000.0;
+    v32_cmd_mode(0);
+    v32_cmd_fcw(v32_fcw_from_hz(center));
+    v32_cmd_channel(ch);
+    v32_cmd_rate(rate);
+    v32_cmd_mode(type);
+    v32_cmd_auto_dec();
+    v32_cmd_focus(2);
+    if(dbg_on())
+        fprintf(stderr, "[ana-cfg] type=%d ch=%d rate=%d center=%.0fHz%s",
+                type, ch, rate, center, "\n");
+}
+
+static const char *AN_TYPE_NAME[8] = {
+    "关", "AM", "FM", "FSK", "QPSK", "OOK", "BPSK", "PM"
+};
+static const char *AN_RATE_NAME[3] = { "档8k", "标准", "宽档" };
+
+static void an_chips_refresh(void)
+{
+    if(s_chip_mt) { char b[16]; snprintf(b, sizeof b, "制式 %s", AN_TYPE_NAME[s_an_type]);
+                    chip_set_text(s_chip_mt, b);
+                    chip_selected_c(s_chip_mt, s_an_type != 0, V32_C_MATH); }
+    if(s_chip_mc) { char b[16]; snprintf(b, sizeof b, "通道 CH%d", s_an_ch);
+                    chip_set_text(s_chip_mc, b);
+                    chip_selected_c(s_chip_mc, s_an_ch != 0, V32_C_CH2); }
+    if(s_chip_mr) { chip_set_text(s_chip_mr, AN_RATE_NAME[s_an_rate]);
+                    chip_selected_c(s_chip_mr, s_an_rate != 1, V32_C_WARN); }
+}
+
+static void cb_an_type(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    analysis_apply((s_an_type + 1) % 8, s_an_ch, s_an_rate);
+    an_chips_refresh();
+}
+static void cb_an_ch(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    analysis_apply(s_an_type, s_an_ch ^ 1, s_an_rate);
+    an_chips_refresh();
+}
+static void cb_an_rate(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    analysis_apply(s_an_type, s_an_ch, (s_an_rate + 1) % 3);
+    an_chips_refresh();
+}
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
@@ -2251,6 +2319,43 @@ static void build_ai(lv_obj_t *pg)
 /* =========================================================
  * 页面 5：SYSTEM（这一页显示真实数据）
  * ========================================================= */
+/* ==================== 页面：调制分析（V32ANA1!） ==================== */
+static void build_mod(lv_obj_t *pg)
+{
+    lv_obj_set_flex_flow(pg, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(pg, V32_PAGE_GAP, LV_PART_MAIN);
+
+    /* 左列：上=RAW 原始波形，下=分析曲线/星座 */
+    lv_obj_t *col = mk(pg, 0, 0, 0, MAIN_H);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(col, 6, LV_PART_MAIN);
+
+    s_plot_modraw = plot_create(col, PLOT_SCOPE);
+    lv_obj_set_height(s_plot_modraw, MAIN_H / 2 - 3);
+    mk_label(s_plot_modraw, 8, 6, "原始波形", V32_FONT_SMALL, V32_C_PLOT_TITLE);
+
+    s_plot_modana = plot_create(col, PLOT_SCOPE);
+    lv_obj_set_height(s_plot_modana, MAIN_H / 2 - 3);
+    mk_label(s_plot_modana, 8, 6, "调制分析", V32_FONT_SMALL, V32_C_PLOT_TITLE);
+
+    /* 右栏：测量与判决 */
+    lv_obj_t *aside = mk(pg, 0, 0, ASIDE_W, MAIN_H);
+    s_aside[UI_PAGE_MOD] = aside;
+    lv_obj_t *p1 = mk_panel(aside, 0, 0, 0, 0);
+    lv_obj_set_width(p1, LV_PCT(100));
+    lv_obj_set_flex_grow(p1, 1);
+    mk_title(p1, 0, 0, "测量与判决");
+    s_lbl_mst = mk_metric(p1, TITLE_H + METRIC_H * 0, "状态",     "--", V32_C_GREEN);
+    s_lbl_m1  = mk_metric(p1, TITLE_H + METRIC_H * 1, "中心频率", "--", V32_C_METRIC_VALUE);
+    s_lbl_m2  = mk_metric(p1, TITLE_H + METRIC_H * 2, "回显 模式", "--", V32_C_METRIC_VALUE);
+    s_lbl_m3  = mk_metric(p1, TITLE_H + METRIC_H * 3, "回显 通道", "--", V32_C_METRIC_VALUE);
+    s_lbl_m4  = mk_metric(p1, TITLE_H + METRIC_H * 4, "幅度/频偏", "--", V32_C_METRIC_VALUE);
+    s_lbl_m5  = mk_metric(p1, TITLE_H + METRIC_H * 5, "调制度",   "--", V32_C_METRIC_VALUE);
+    s_lbl_m6  = mk_metric(p1, TITLE_H + METRIC_H * 6, "有效样点", "--", V32_C_METRIC_VALUE);
+    mk_metric(p1, TITLE_H + METRIC_H * 7, "符号率",   "—", V32_C_METRIC_VALUE);
+}
+
 static void build_system(lv_obj_t *pg)
 {
     lv_obj_set_flex_flow(pg, LV_FLEX_FLOW_ROW);
@@ -3124,6 +3229,16 @@ static void build_controls(lv_obj_t *root)
     s_ctrl_grp[UI_PAGE_AI] = ga;
     s_g_ai = ga;
 
+    /* 调制分析页参数：制式 / 通道 / 档位（单芯片循环） */
+    lv_obj_t *gm2 = mk_group(cp, NULL);
+    s_chip_mt = mk_chip(gm2, "制式 关", cb_an_type);
+    s_chip_mc = mk_chip(gm2, "通道 CH0", cb_an_ch);
+    s_chip_mr = mk_chip(gm2, "标准", cb_an_rate);
+    chip_selected_c(s_chip_mt, false, V32_C_MATH);
+    chip_selected_c(s_chip_mc, false, V32_C_CH2);
+    chip_selected_c(s_chip_mr, false, V32_C_WARN);
+    s_ctrl_grp[UI_PAGE_MOD] = gm2;
+
     lv_obj_t *gsys = mk(cp, 0, 0, LV_SIZE_CONTENT, V32_CHIP_H);
     /* 这句原来是写死的「未连接真实硬件」。走真实链路时它会自相矛盾，
      * 所以按数据源切换。 */
@@ -3169,7 +3284,7 @@ static void nav_selected(lv_obj_t *b, bool on)
 static void build_nav(lv_obj_t *root)
 {
     static const char *TXT[UI_PAGE_COUNT] = {
-        "示波器", "频谱", "锁相", "重建", "系统"      /* scope_proto：纯文字无图标 */
+        "示波器", "频谱", "锁相", "重建", "调制", "系统"
     };
 
     lv_obj_t *nav = mk(root, 0, NAV_Y0, V32_SHELL_W, V32_ROW_NAV);
@@ -3996,6 +4111,127 @@ static void tick_ai(void)
     plot_set_trace(s_plot_den, 0, y, n, V32_C_AI_OUT, 2);
 }
 
+/*
+ * 调制分析页刷新：
+ *   上图 = RAW 原始波形（V32CAP3! 的 CH0/CH1，按分析通道选）
+ *   下图 = V32ANA1! 按 kind 画：AM/OOK 包络、FM/FSK 频偏、PM 相位、
+ *          QPSK/BPSK 的 I/Q 星座轨迹（XY 模式）
+ *   回显匹配：帧头 mode/channel 必须等于当前下发配置，否则「切换中」；
+ *   flags≠0 整帧只作诊断（02_双路显示与防卡住.md 的验收要求）。
+ */
+static void tick_mod(void)
+{
+    static float a[PLOT_MAX_PTS];
+    const int n = PLOT_MAX_PTS;
+    real_update();
+
+    /* 上图：RAW 原始波形（分析通道对应的那一路） */
+    v32_ana_view_t av;
+    const bool have_ana = (v32_get_ana(&av) != 0);
+    const int raw_ch = have_ana ? (int)av.channel : s_an_ch;
+    if(S.use_real && s_real_valid && s_full_n >= 2) {
+        map_window(raw_ch ? s_full1 : s_full0, s_full_n, a, n, false);
+        plot_set_trace(s_plot_modraw, 0, a, n, V32_C_CH1, 2);
+    } else {
+        plot_hide_trace(s_plot_modraw, 0);
+    }
+
+    if(!have_ana) {
+        plot_hide_trace(s_plot_modana, 0);
+        lv_label_set_text(s_lbl_mst, s_an_type ? "○ 切换中" : "○ 未开");
+        lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
+        lv_label_set_text(s_lbl_m4, "--");
+        lv_label_set_text(s_lbl_m5, "--");
+        return;
+    }
+
+    /* 回显匹配检查 */
+    const bool match = ((int)av.mode == s_an_type) && ((int)av.channel == s_an_ch);
+    if(av.flags != 0u) {
+        lv_label_set_text(s_lbl_mst, "○ 诊断·丢样");
+        lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
+    } else if(!match) {
+        lv_label_set_text(s_lbl_mst, "○ 切换中");
+        lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
+    } else {
+        lv_label_set_text(s_lbl_mst, "● 分析有效");
+        lv_obj_set_style_text_color(s_lbl_mst, V32_C_GREEN, LV_PART_MAIN);
+    }
+
+    char b[24];
+    if(av.center_hz >= 1e6f) snprintf(b, sizeof b, "%.4f MHz", (double)av.center_hz / 1e6);
+    else                     snprintf(b, sizeof b, "%.1f Hz",  (double)av.center_hz);
+    lv_label_set_text(s_lbl_m1, b);
+    lv_label_set_text_fmt(s_lbl_m2, "%s", AN_TYPE_NAME[av.mode & 7]);
+    lv_label_set_text_fmt(s_lbl_m3, "CH%u", (unsigned)av.channel);
+    lv_label_set_text_fmt(s_lbl_m6, "%d/%d", av.nvalid, V32_ANA_POINTS);
+
+    /* 下图：按 kind 画 */
+    if(av.kind == 0u) {
+        /* I/Q 星座轨迹（XY）：I=X，Q=Y，联合归一 */
+        float peak = 1.0f;
+        for(int k = 0; k < V32_ANA_POINTS; k++) {
+            if(!av.yvalid[k]) continue;
+            if(fabsf(av.y[k]) > peak) peak = fabsf(av.y[k]);
+            if(fabsf(av.q[k]) > peak) peak = fabsf(av.q[k]);
+        }
+        for(int k = 0; k < V32_ANA_POINTS; k++) {
+            a[k]      = 0.5f + av.y[k] / (2.0f * peak);
+            av.q[k]   = 0.5f + av.q[k] / (2.0f * peak);
+        }
+        plot_set_mode(s_plot_modana, PLOT_XY);
+        plot_set_trace(s_plot_modana, 0, a, V32_ANA_POINTS, V32_C_MATH, 2);
+        /* PLOT_XY 用 trace1 当 Y 轴 —— 拷一份进静态缓冲 */
+        static float qbuf[V32_ANA_POINTS];
+        memcpy(qbuf, av.q, sizeof qbuf);
+        plot_set_trace(s_plot_modana, 1, qbuf, V32_ANA_POINTS, V32_C_MATH, 2);
+        float su = 0.f;
+        for(int k = 0; k < V32_ANA_POINTS; k++) su += av.y[k] * av.y[k] + qbuf[k] * qbuf[k];
+        lv_label_set_text_fmt(s_lbl_m4, "RMS %.0f",
+                              (double)sqrtf(su / (float)V32_ANA_POINTS));
+        lv_label_set_text(s_lbl_m5, "--");
+    } else {
+        /* 单值曲线：包络(Q8 码)/频偏(Hz)/相位(度)，画成单迹线 */
+        plot_set_mode(s_plot_modana, PLOT_SCOPE);
+        float mn = 1e30f, mx = -1e30f;
+        for(int k = 0; k < V32_ANA_POINTS; k++) {
+            if(!av.yvalid[k]) continue;
+            if(av.y[k] < mn) mn = av.y[k];
+            if(av.y[k] > mx) mx = av.y[k];
+        }
+        if(mx - mn < 1e-6f) { mn = -1.f; mx = 1.f; }
+        for(int k = 0; k < V32_ANA_POINTS; k++)
+            a[k] = (av.y[k] - mn) / (mx - mn);
+        plot_set_trace(s_plot_modana, 0, a, V32_ANA_POINTS, V32_C_MATH, 2);
+
+        if(av.kind == 1u) {
+            /* AM/OOK：幅度=包络峰峰值(码)，调制度=(max-min)/(max+min) */
+            const float sum = mx + mn;
+            snprintf(b, sizeof b, "%.0f 码", (double)(mx - mn));
+            lv_label_set_text(s_lbl_m4, b);
+            if(sum > 1e-6f)
+                lv_label_set_text_fmt(s_lbl_m5, "%.1f %%", (double)((mx - mn) / sum * 100.0f));
+            else
+                lv_label_set_text(s_lbl_m5, "--");
+        } else if(av.kind == 2u) {
+            /* FM/FSK：峰值频偏 = max|y| */
+            float pk = 0.f;
+            for(int k = 0; k < V32_ANA_POINTS; k++) {
+                if(av.yvalid[k] && fabsf(av.y[k]) > pk) pk = fabsf(av.y[k]);
+            }
+            if(pk >= 1000.f) snprintf(b, sizeof b, "%.2f kHz", (double)pk / 1e3);
+            else             snprintf(b, sizeof b, "%.1f Hz",  (double)pk);
+            lv_label_set_text(s_lbl_m4, b);
+            lv_label_set_text(s_lbl_m5, "--");
+        } else {
+            /* PM：相位峰偏 */
+            snprintf(b, sizeof b, "%.1f°", (double)(mx > -mn ? mx : -mn));
+            lv_label_set_text(s_lbl_m4, b);
+            lv_label_set_text(s_lbl_m5, "--");
+        }
+    }
+}
+
 static void tick_system(void)
 {
     const uint32_t now = lv_tick_get();
@@ -4133,6 +4369,8 @@ void ui_create(void)
     build_lock  (s_page[UI_PAGE_LOCK]);
     if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] ai\n");
     build_ai    (s_page[UI_PAGE_AI]);
+    if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] mod\n");
+    build_mod   (s_page[UI_PAGE_MOD]);
     if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] system\n");
     build_system(s_page[UI_PAGE_SYSTEM]);
 
@@ -4211,6 +4449,7 @@ void ui_tick(void)
         case UI_PAGE_FFT:    tick_fft();    break;
         case UI_PAGE_LOCK:   tick_lock();   break;
         case UI_PAGE_AI:     tick_ai();     break;
+        case UI_PAGE_MOD:    tick_mod();    break;
         case UI_PAGE_SYSTEM: tick_system(); break;
         default: break;
     }

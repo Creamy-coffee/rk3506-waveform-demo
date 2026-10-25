@@ -286,6 +286,43 @@ typedef struct {
 
 int v32_get_ddc(v32_ddc_view_t *out);
 
+/* ============ 调制分析帧 V32ANA1!（交付包 603695b2 v2，20261025）============
+ * 48 B 头 + 256×u32 样点 + CRC32 = 1076 B。样点按 kind 解释：
+ *   kind0 (QPSK/BPSK): 低16=I(i16)，高16=Q(i16) —— 原始 I/Q，非恢复星座
+ *   kind1 (AM/OOK):    低24 无符号 Q8 模长（值/256=DDC 码值）；bit31=无效
+ *   kind2 (FM/2FSK):   低24 是 16 位环绕相位差的符号扩展；Hz=v*65e6/(R*65536)
+ *   kind3 (PM):        低24 相位符号扩展；度=v*360/65536，[-180,180)
+ * flags≠0 整帧只作诊断；cfg_id/mode/channel/R 变化清分析历史。
+ * mode 沿用 A5 E0：1AM 2FM 3FSK 4QPSK 5OOK 6BPSK 7PM。
+ */
+#define V32_ANA_MAGIC     "V32ANA1!"
+#define V32_ANA_BYTES     1076
+#define V32_ANA_VERSION   1u
+#define V32_ANA_POINTS    256
+
+typedef struct {
+    int      valid;            /* 1 s 内收到过 */
+    uint32_t seq;
+    uint32_t frame_id;         /* 配置内帧号 */
+    uint32_t cfg_id;           /* 配置编号（重配变化，复位可复用） */
+    uint32_t mode;             /* 1..7 */
+    uint32_t channel;          /* 0/1 */
+    uint32_t kind;             /* 0..3 */
+    uint32_t decim;            /* 总抽取 R（8192/4096/2048） */
+    uint32_t flags;            /* bit0 结果FIFO丢样 bit2 计算器丢样 */
+    uint32_t fcw;              /* DDC 中心 FCW */
+    float    center_hz;        /* fcw×65e6/2^32 */
+    int      yvalid[V32_ANA_POINTS];  /* 样点有效位（bit31/相位跳变） */
+    float    y[V32_ANA_POINTS];       /* kind 解释后的值（Hz/度/模长/I） */
+    float    q[V32_ANA_POINTS];       /* 仅 kind0 的 Q 分量 */
+    int      nvalid;           /* 有效样点数 */
+} v32_ana_view_t;
+
+int v32_get_ana(v32_ana_view_t *out);
+
+/* RAW 时基焦点：A5 E5 f，f=0/1/2 = CH0/CH1/自动（不改分析通道，不递增 cfg_id） */
+int v32_cmd_focus(int f);
+
 /* ============ 下行控制帧 V32AA5C!（协作包 20261024，只发不答）============
  * 24 B 头（magic/ver/cmd/seq/plen）+ payload + CRC32。设备不回 ACK；
  * 配置类命令写暂存寄存器，必须跟一条 COMMIT 才生效 —— 下面的 set_* 帮手

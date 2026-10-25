@@ -341,6 +341,100 @@ static void handle_ddc(const uint8_t *p)
     }
 }
 
+/* ---------------- 调制分析帧 V32ANA1!（交付包 603695b2 v2） ---------------- */
+static const char     s_magic_ana[] = V32_ANA_MAGIC;
+static v32_ana_view_t s_ana;
+static uint32_t       s_ana_ms;
+
+/*
+ * kind 样点解码（ANALYSIS_PROTOCOL.md）：
+ *   kind0 低16=I(i16) 高16=Q(i16)
+ *   kind1 低24 无符号 Q8 模长；bit31=无效
+ *   kind2 低24 = 16 位环绕相位差符号扩展 → Hz = v*65e6/(R*65536)
+ *   kind3 低24 相位符号扩展 → 度 = v*360/65536
+ * 相位类样点 |Δphase|>29491 码（约 162°/样点）也标无效（协议要求，
+ * 逼近相位歧义边界）。无效样点在 UI 上要画成缺口，绝不当 0。
+ */
+static void handle_ana(const uint8_t *p)
+{
+    if(rd32(p + 8) != V32_ANA_VERSION) return;
+    if(rd32(p + 44) != 0u) return;                        /* 保留必须 0 */
+    if(crc32_calc(p, V32_ANA_BYTES - 4) != rd32(p + V32_ANA_BYTES - 4)) return;
+
+    v32_ana_view_t v;
+    memset(&v, 0, sizeof v);
+    v.seq     = s_ana.seq + 1u;
+    v.frame_id= rd32(p + 12);
+    v.decim   = rd32(p + 20);
+    v.flags   = rd32(p + 28);
+    v.cfg_id  = rd32(p + 32);
+    const uint32_t kindch = rd32(p + 36);
+    v.kind    = kindch & 0xFFu;
+    v.channel = (kindch >> 8) & 0xFFu;
+    v.mode    = (kindch >> 16) & 0xFFu;
+    if((kindch >> 24) != 0u) return;                      /* bits31:24 必须 0 */
+    if(rd32(p + 24) != (uint32_t)V32_ANA_POINTS) return;  /* 样点数 */
+    v.fcw       = rd32(p + 40);
+    v.center_hz = (float)((double)v.fcw * 65000000.0 / 4294967296.0);
+
+    int prev_phase = 0, have_prev = 0;
+    v.nvalid = 0;
+    for(int k = 0; k < V32_ANA_POINTS; k++) {
+        const uint32_t raw = rd32(p + 48 + k * 4);
+        int ok = 1;
+        if(v.kind == 0u) {
+            const int32_t iq = (int32_t)raw;
+            v.y[k] = (float)(int16_t)(iq & 0xFFFF);
+            v.q[k] = (float)(int16_t)(((uint32_t)iq >> 16) & 0xFFFF);
+        } else if(v.kind == 1u) {
+            ok = (raw & 0x80000000u) ? 0 : 1;
+            v.y[k] = (float)(raw & 0x00FFFFFFu) / 256.0f;  /* Q8 模长 → DDC 码值 */
+        } else if(v.kind == 2u) {
+            ok = (raw & 0x80000000u) ? 0 : 1;
+            const int32_t d24 = ((int32_t)(raw << 8)) >> 8; /* signed24 符号扩展 */
+            /* 相位跳变保护：|Δphase|>29491 码也无效 */
+            if(ok && have_prev) {
+                int d = d24 - prev_phase;
+                if(d > 29491 || d < -29491) ok = 0;
+            }
+            prev_phase = d24; have_prev = 1;
+            const float r = (v.decim > 0u) ? (float)v.decim : 4096.0f;
+            v.y[k] = (float)d24 * (65000000.0f / r) / 65536.0f;  /* Hz */
+        } else if(v.kind == 3u) {
+            ok = (raw & 0x80000000u) ? 0 : 1;
+            const int32_t d24 = ((int32_t)(raw << 8)) >> 8;
+            v.y[k] = (float)d24 * 360.0f / 65536.0f;             /* 度 */
+        } else {
+            ok = 0;                                        /* 未知 kind */
+        }
+        v.yvalid[k] = ok;
+        if(ok) v.nvalid++;
+    }
+    v.valid = 1;
+    s_ana    = v;
+    s_ana_ms = mono_ms();
+
+    {
+        static int dbg = -1;
+        if(dbg < 0) dbg = getenv("WAVE_MEASDBG") ? 1 : 0;
+        if(dbg && (v.seq % 8u) == 1u)
+            fprintf(stderr, "[ana] fid=%u cfg=%u mode=%u ch=%u kind=%u R=%u fcw=%u(%.0fHz) flags=%u nvalid=%d y0=%.1f\n",
+                    (unsigned)v.frame_id, (unsigned)v.cfg_id, (unsigned)v.mode,
+                    (unsigned)v.channel, (unsigned)v.kind, (unsigned)v.decim,
+                    (unsigned)v.fcw, (double)v.center_hz, (unsigned)v.flags,
+                    v.nvalid, (double)v.y[0]);
+    }
+}
+
+int v32_get_ana(v32_ana_view_t *out)
+{
+    if(!out) return 0;
+    *out = s_ana;
+    if(s_ana.seq == 0u) return 0;
+    out->valid = ((mono_ms() - s_ana_ms) <= 1000u) ? 1 : 0;   /* 1 s 过期撤回 */
+    return out->valid;
+}
+
 int v32_get_ddc(v32_ddc_view_t *out)
 {
     if(!out) return 0;
@@ -477,6 +571,7 @@ static void v32_feed(const uint8_t *data, int n)
             if (memcmp(s_buf + i, s_magic_spec, V32_MAGIC_LEN) == 0) { at = i; is_meas = 2; break; }
             if (memcmp(s_buf + i, s_magic_iq, V32_MAGIC_LEN) == 0)   { at = i; is_meas = 3; break; }
             if (memcmp(s_buf + i, s_magic_ddc, V32_MAGIC_LEN) == 0)  { at = i; is_meas = 4; break; }
+            if (memcmp(s_buf + i, s_magic_ana, V32_MAGIC_LEN) == 0)  { at = i; is_meas = 5; break; }
         }
         if (at < 0) {
             /* 保留可能是「被拆开的魔数前缀」的尾巴，其余丢弃 */
@@ -513,6 +608,13 @@ static void v32_feed(const uint8_t *data, int n)
             handle_iq(s_buf, s_len);
             memmove(s_buf, s_buf + len, (size_t)(s_len - len));
             s_len -= len;
+            continue;
+        }
+        if (is_meas == 5) {                                  /* V32ANA1! 调制分析帧 */
+            if (s_len < (int)V32_ANA_BYTES) break;
+            handle_ana(s_buf);
+            memmove(s_buf, s_buf + V32_ANA_BYTES, (size_t)(s_len - (int)V32_ANA_BYTES));
+            s_len -= (int)V32_ANA_BYTES;
             continue;
         }
         if (is_meas == 4) {                                  /* V32DDC3! 新锁相帧 */
@@ -1006,6 +1108,13 @@ int v32_cmd_dec(int k)
     if(k < 0 || k > 8) return -1;
     const uint8_t c[2] = { 0xA5, (uint8_t)k };
     return send_raw(c, 2);
+}
+
+int v32_cmd_focus(int f)
+{
+    if(f < 0 || f > 2) return -1;
+    const uint8_t c[3] = { 0xA5, 0xE5, (uint8_t)f };
+    return send_raw(c, 3);
 }
 
 int v32_cmd_auto_dec(void)
