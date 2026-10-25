@@ -2867,7 +2867,8 @@ static void an_chips_refresh(void)
     if(s_chip_mt) { char b[16]; snprintf(b, sizeof b, "制式 %s", AN_TYPE_NAME[s_an_type]);
                     chip_set_text(s_chip_mt, b);
                     chip_selected_c(s_chip_mt, s_an_type != 0, V32_C_MATH); }
-    if(s_chip_mc) { char b[16]; snprintf(b, sizeof b, "通道 CH%d", s_an_ch);
+    /* FPGA 内部 ADC 0/1 -> 界面显示 CH1/CH2（交付包 v3：只在 UI 映射） */
+    if(s_chip_mc) { char b[16]; snprintf(b, sizeof b, "通道 CH%d", s_an_ch + 1);
                     chip_set_text(s_chip_mc, b);
                     chip_selected_c(s_chip_mc, s_an_ch != 0, V32_C_CH2); }
     if(s_chip_mr) { chip_set_text(s_chip_mr, AN_RATE_NAME[s_an_rate]);
@@ -4315,7 +4316,7 @@ static void tick_mod(void)
     else                     snprintf(b, sizeof b, "%.1f Hz",  (double)av.center_hz);
     lv_label_set_text(s_lbl_m1, b);
     lv_label_set_text_fmt(s_lbl_m2, "%s", AN_TYPE_NAME[av.mode & 7]);
-    lv_label_set_text_fmt(s_lbl_m3, "CH%u", (unsigned)av.channel);
+    lv_label_set_text_fmt(s_lbl_m3, "CH%u", (unsigned)av.channel + 1u);
     lv_label_set_text_fmt(s_lbl_m6, "%d/%d", av.nvalid, V32_ANA_POINTS);
 
     /* 下图：按 kind 画 */
