@@ -217,6 +217,7 @@ static lv_obj_t *s_lbl_m5, *s_lbl_m6;
 static lv_obj_t *s_lbl_mf1, *s_lbl_mf2, *s_lbl_mf3, *s_lbl_mf4;  /* 帧诊断 */
 static lv_obj_t *s_lbl_rawnote;   /* 上图 RAW 新鲜度标注（实时/历史快照） */
 static lv_obj_t *s_lbl_modraw_title;   /* 上图标题（原始波形/分析历史 切换） */
+static lv_obj_t *s_lbl_modhint;        /* 制式=关 时下图的开始指引 */
 /*
  * 分析滚动历史：每帧 ANA 样点直接追加（点率恒定 fs/R ≈ 15.9 kHz），
  * 16384 点 ≈ 1 秒。慢调制（如 10 Hz 包络，一帧 16 ms 装不下一个周期）
@@ -2318,6 +2319,11 @@ static void build_mod(lv_obj_t *pg)
     s_plot_modana = plot_create(col, PLOT_SCOPE);
     lv_obj_set_height(s_plot_modana, MAIN_H / 2 - 3);
     mk_label(s_plot_modana, 8, 6, "调制分析", V32_FONT_SMALL, V32_C_PLOT_TITLE);
+    /* 制式=关 时的开始指引（否则下图一块空网格，不知道要干什么） */
+    s_lbl_modhint = mk_label(s_plot_modana, 0, 0,
+                             "制式为「关」 · 点控制条「制式」选 AM/FM/PM/QPSK… 开始分析",
+                             V32_FONT_SMALL, V32_C_WARN);
+    lv_obj_align(s_lbl_modhint, LV_ALIGN_CENTER, 0, 0);
 
     /* 右栏：测量与判决 + 分析帧诊断（交付包验收：持续记录帧率/配置/过期） */
     lv_obj_t *aside = mk(pg, 0, 0, ASIDE_W, MAIN_H);
@@ -4269,6 +4275,11 @@ static void tick_mod(void)
 
     if(!have_ana) {
         plot_hide_trace(s_plot_modana, 0);
+        /* 制式关：给开始指引；切换中：等回显 */
+        lv_label_set_text(s_lbl_modhint, s_an_type
+            ? "○ 切换中 · 等待 FPGA 回显匹配帧…"
+            : "制式为「关」 · 点控制条「制式」选 AM/FM/PM/QPSK… 开始分析");
+        lv_obj_remove_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_lbl_mst, s_an_type ? "○ 切换中" : "○ 未开");
         lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
         lv_label_set_text(s_lbl_m4, "--");
@@ -4276,6 +4287,7 @@ static void tick_mod(void)
         return;
     }
 
+    lv_obj_add_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);   /* 有数据了，藏指引 */
     /* 回显匹配检查 */
     const bool match = ((int)av.mode == s_an_type) && ((int)av.channel == s_an_ch);
     if(av.flags != 0u) {
