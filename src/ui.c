@@ -2845,22 +2845,39 @@ static void cb_win_cycle(lv_event_t *e)
 /* 分析配置整串下发（01_全部帧与发送命令.md 的标准顺序）：
  * E0 关 → FCW(E1+E2) → E3 通道 → E4 档位 → E0 模式 → FF 自动RAW → E5 焦点。
  * 中心频率取 FFT 实测峰值（没有就 10 MHz 兜底）——它是 DDC 参考。 */
+/*
+ * 连点合并（交付包 02 明确要求：合并快速点击，只应用最后目标）：
+ * 每次点击只更新目标并记时间戳，整串命令在最后一次点击 250 ms 后
+ * 才发 —— 连点 8 档循环时 FPGA 不用连环重配（每次重配都有观测盲区，
+ * 实测用户连点期间帧断续、屏幕一直「切换中」就是它）。
+ * tick_mod 每帧检查 pending 并触发真正发送。
+ */
+static uint32_t s_an_last_tap_ms;
+static int s_an_send_pending;
+
 static void analysis_apply(int type, int ch, int rate)
 {
-    if(!S.use_real) return;
     s_an_type = type; s_an_ch = ch; s_an_rate = rate;
+    s_an_last_tap_ms = lv_tick_get();
+    s_an_send_pending = 1;      /* 命令延后 250ms 发（等连点结束） */
+}
+
+static void analysis_send_now(void)
+{
+    if(!S.use_real) return;
     const double center = (s_real_peak_hz > 100.0f)
                         ? (double)s_real_peak_hz : 10000000.0;
     v32_cmd_mode(0);
     v32_cmd_fcw(v32_fcw_from_hz(center));
-    v32_cmd_channel(ch);
-    v32_cmd_rate(rate);
-    v32_cmd_mode(type);
+    v32_cmd_channel(s_an_ch);
+    v32_cmd_rate(s_an_rate);
+    v32_cmd_mode(s_an_type);
     v32_cmd_auto_dec();
     v32_cmd_focus(2);
+    s_an_send_pending = 0;
     if(dbg_on())
         fprintf(stderr, "[ana-cfg] type=%d ch=%d rate=%d center=%.0fHz%s",
-                type, ch, rate, center, "\n");
+                s_an_type, s_an_ch, s_an_rate, center, "\n");
 }
 
 static const char *AN_TYPE_NAME[8] = {
@@ -4168,6 +4185,11 @@ static void tick_mod(void)
     static float a[PLOT_MAX_PTS];
     const int n = PLOT_MAX_PTS;
     real_update();
+
+    /* 连点合并窗口：最后一次点击 250ms 后才真正下发 */
+    if(s_an_send_pending &&
+       (uint32_t)(lv_tick_get() - s_an_last_tap_ms) >= 250u)
+        analysis_send_now();
 
     v32_ana_view_t av;
     const bool have_ana = (v32_get_ana(&av) != 0);
