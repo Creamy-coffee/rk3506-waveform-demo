@@ -23,7 +23,14 @@ curl 示例：
          -d '{"from":"屏端","kind":"finding","text":"单读者 30 秒 25 组/秒，CRC 0 错"}'
 """
 import argparse, json, os, threading, time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
+from http.server import BaseHTTPRequestHandler, HTTPServer
+try:                                        # Python 3.7+
+    from http.server import ThreadingHTTPServer
+except ImportError:                         # Python 3.6（阿里云 Anolis 默认就是）
+    class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STORE = os.path.join(HERE, 'board.jsonl')
@@ -134,7 +141,7 @@ const K={error:'问题',finding:'结论',question:'提问',answer:'回复'};
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 async function pull(){
   try{
-    const r=await fetch('/api/list?since='+last);
+    const r=await fetch('api/list?since='+last);
     const d=await r.json();
     if(d.messages.length){
       const box=document.getElementById('list');
@@ -154,13 +161,13 @@ async function pull(){
     }
     if(first && d.messages.length===0){document.getElementById('list').innerHTML='<div class="tag">还没有记录。先发一条。</div>';}
   }catch(e){}
-  const s=await fetch('/api/stats').then(r=>r.json()).catch(()=>null);
+  const s=await fetch('api/stats').then(r=>r.json()).catch(()=>null);
   if(s) document.getElementById('stat').textContent='共 '+s.total+' 条 · 最近 #'+s.last_id;
 }
 async function send(){
   const t=document.getElementById('text').value.trim();
   if(!t) return;
-  await fetch('/api/post',{method:'POST',headers:{'Content-Type':'application/json'},
+  await fetch('api/post',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({from:document.getElementById('from').value,
       kind:document.getElementById('kind').value,text:t,
       ref:document.getElementById('ref').value.trim()})});
@@ -193,8 +200,16 @@ class H(BaseHTTPRequestHandler):
         self.send_header('Content-Length', '0')
         self.end_headers()
 
+    @staticmethod
+    def _norm(path):
+        """去掉反代前缀，/board/api/list 与 /api/list 等价"""
+        for pre in ('/board', '/ab5'):
+            if path.startswith(pre):
+                path = path[len(pre):] or '/'
+        return path
+
     def do_GET(self):
-        p = self.path.split('?')[0]
+        p = self._norm(self.path.split('?')[0])
         q = {}
         if '?' in self.path:
             for kv in self.path.split('?', 1)[1].split('&'):
@@ -215,7 +230,7 @@ class H(BaseHTTPRequestHandler):
             self._send(404, json.dumps({'error': 'not found'}))
 
     def do_POST(self):
-        if self.path.split('?')[0] != '/api/post':
+        if self._norm(self.path.split('?')[0]) != '/api/post':
             self._send(404, json.dumps({'error': 'not found'}))
             return
         n = int(self.headers.get('Content-Length', 0) or 0)
