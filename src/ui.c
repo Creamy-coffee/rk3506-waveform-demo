@@ -215,6 +215,7 @@ static lv_obj_t *s_lbl_mst;       /* 状态行 */
 static lv_obj_t *s_lbl_m1, *s_lbl_m2, *s_lbl_m3, *s_lbl_m4;
 static lv_obj_t *s_lbl_m5, *s_lbl_m6;
 static lv_obj_t *s_lbl_mf1, *s_lbl_mf2, *s_lbl_mf3, *s_lbl_mf4;  /* 帧诊断 */
+static lv_obj_t *s_lbl_rawnote;   /* 上图 RAW 新鲜度标注（实时/历史快照） */
 static lv_obj_t *s_chip_mt, *s_chip_mc, *s_chip_mr;  /* 制式/通道/档位 芯片 */
 /* 当前下发的分析配置（回显匹配以此为准）：
  * type 0=关 1AM 2FM 3FSK 4QPSK 5OOK 6BPSK 7PM（A5 E0 枚举） */
@@ -2297,6 +2298,10 @@ static void build_mod(lv_obj_t *pg)
     s_plot_modraw = plot_create(col, PLOT_SCOPE);
     lv_obj_set_height(s_plot_modraw, MAIN_H / 2 - 3);
     mk_label(s_plot_modraw, 8, 6, "原始波形", V32_FONT_SMALL, V32_C_PLOT_TITLE);
+    /* RAW 新鲜度标注：分析模式下 FPGA 停发波形流（交付包 02），只能
+       显示历史快照 —— 必须标明，不能让静止曲线被当成实时。 */
+    s_lbl_rawnote = mk_label(s_plot_modraw, 0, 0, "", V32_FONT_SMALL, V32_C_PLOT_FOOT);
+    lv_obj_align(s_lbl_rawnote, LV_ALIGN_TOP_RIGHT, -8, 6);
 
     s_plot_modana = plot_create(col, PLOT_SCOPE);
     lv_obj_set_height(s_plot_modana, MAIN_H / 2 - 3);
@@ -4145,15 +4150,24 @@ static void tick_mod(void)
     const int n = PLOT_MAX_PTS;
     real_update();
 
-    /* 上图：RAW 原始波形（分析通道对应的那一路） */
+    /* 上图：RAW 原始波形。分析模式下 FPGA 停发波形流（交付包 02：只能
+       显示历史快照）—— 停发时不 hide，保留最后一帧快照，标注跟着换。 */
     v32_ana_view_t av;
     const bool have_ana = (v32_get_ana(&av) != 0);
     const int raw_ch = have_ana ? (int)av.channel : s_an_ch;
+    static int drew_once = 0;            /* 画上过至少一条 RAW 曲线 */
     if(S.use_real && s_real_valid && s_full_n >= 2) {
         map_window(raw_ch ? s_full1 : s_full0, s_full_n, a, n, false);
         plot_set_trace(s_plot_modraw, 0, a, n, V32_C_CH1, 2);
+        drew_once = 1;
+        lv_label_set_text(s_lbl_rawnote, "实时");
+        lv_obj_set_style_text_color(s_lbl_rawnote, V32_C_GREEN, LV_PART_MAIN);
+    } else if(drew_once) {
+        lv_label_set_text(s_lbl_rawnote, "历史快照 · 波形帧停发");
+        lv_obj_set_style_text_color(s_lbl_rawnote, V32_C_WARN, LV_PART_MAIN);
     } else {
-        plot_hide_trace(s_plot_modraw, 0);
+        lv_label_set_text(s_lbl_rawnote, "无 RAW 数据");
+        lv_obj_set_style_text_color(s_lbl_rawnote, V32_C_WARN, LV_PART_MAIN);
     }
 
     if(!have_ana) {
