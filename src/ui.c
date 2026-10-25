@@ -1088,6 +1088,7 @@ static void measure_buf(const float *x, int n, float fs, meas_t *m)
 }
 
 static meas_t s_m1;      /* CH1 的测量结果 */
+static meas_t s_m2;      /* CH2 的测量结果 */
 
 /* ===== Math：A+B / A-B（第三条迹线）=====
  * 只做加减：乘除的量纲是 V²/无量纲，跟同一套纵轴放不下（原型里靠独立档位，
@@ -1321,6 +1322,7 @@ static void real_update(void)
         const wave_source_t *ms = wave_source_get();
         const float fse = (ms && ms->sample_rate > 0) ? (float)ms->sample_rate : 65000000.0f;
         measure_buf(s_full0, fn, fse, &s_m1);
+        measure_buf(s_full1, fn, fse, &s_m2);
     }
 
     /*
@@ -1992,7 +1994,7 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_set_width(p1, LV_PCT(100));
     lv_obj_set_flex_grow(p1, 1);
     /* 照 HTML：标题「CH1 测量」绿色小字，10 行「标签左/数值右」无框线 */
-    mk_title(p1, 0, 0, "CH1 测量");
+    mk_title(p1, 0, 0, "通道测量 (CH1 / CH2)");
     s_lbl_v1         = mk_metric(p1, TITLE_H + METRIC_H * 0, "峰峰值 Vpp",  "--", V32_C_METRIC_VALUE);
     s_lbl_m_vmax     = mk_metric(p1, TITLE_H + METRIC_H * 1, "最大值 Vmax", "--", V32_C_METRIC_VALUE);
     s_lbl_m_vmin     = mk_metric(p1, TITLE_H + METRIC_H * 2, "最小值 Vmin", "--", V32_C_METRIC_VALUE);
@@ -2003,10 +2005,14 @@ static void build_scope(lv_obj_t *pg)
     s_lbl_scope_freq = mk_metric(p1, TITLE_H + METRIC_H * 7, "频率 f",      "--", V32_C_METRIC_VALUE);
     s_lbl_m_duty     = mk_metric(p1, TITLE_H + METRIC_H * 8, "占空比",      "--", V32_C_METRIC_VALUE);
     s_lbl_m_rise     = mk_metric(p1, TITLE_H + METRIC_H * 9, "上升时间",    "--", V32_C_METRIC_VALUE);
-    /*
-     * 光标读数段已删（右栏只留 CH1 测量）—— 光标的 ΔT/ΔV 数值仍以
-     * 简版显示在顶部信息行；洋红光标线本身照画。
-     */
+    /* 光标段：洋红（照 scope_proto：T1 T2 ΔT 1/ΔT V1 V2 ΔV 各占一行） */
+    s_lbl_cur_t1  = mk_metric(p1, TITLE_H + METRIC_H * 10, "T1",   "--", V32_C_TRIGGER);
+    s_lbl_cur_t2  = mk_metric(p1, TITLE_H + METRIC_H * 11, "T2",   "--", V32_C_TRIGGER);
+    s_lbl_cur_dt  = mk_metric(p1, TITLE_H + METRIC_H * 12, "ΔT",   "--", V32_C_TRIGGER);
+    s_lbl_cur_idt = mk_metric(p1, TITLE_H + METRIC_H * 13, "1/ΔT", "--", V32_C_TRIGGER);
+    s_lbl_cur_v1  = mk_metric(p1, TITLE_H + METRIC_H * 14, "V1",   "--", V32_C_TRIGGER);
+    s_lbl_cur_v2  = mk_metric(p1, TITLE_H + METRIC_H * 15, "V2",   "--", V32_C_TRIGGER);
+    s_lbl_cur_dv  = mk_metric(p1, TITLE_H + METRIC_H * 16, "ΔV",   "--", V32_C_TRIGGER);
 
     /* CH2 峰峰值 / 相位差已并入上面 10 项（HTML 里没有这两行，A2 在信息条里），
        但 tick_scope 还在写这两个句柄 —— 建在面板外，别让它们露出来。 */
@@ -3415,6 +3421,7 @@ static void tick_scope(void)
             int want = (int)(TB_US[s_tb_idx] * 1e-6f * 10.0f * fs_iq + 0.5f);
             if(want < 8) want = 8;
             const int pts = (int)ivs.points;
+            int w0 = 0;               /* 窗口起点（帧内分支填；math 块要用） */
 
             /* 追加进解调滚动缓冲（满丢前半） */
             {
@@ -3491,7 +3498,7 @@ static void tick_scope(void)
                  * 信号下每帧都对齐到同一相位，波形稳定，效果等同触发。
                  */
                 if(want > pts) want = pts;
-                int w0 = pts - want;
+                w0 = pts - want;
                 {
                     int b = pts - want * 3;  if(b < 0) b = 0;
                     int best = b, bv = -1;
@@ -3538,7 +3545,44 @@ static void tick_scope(void)
                     s_demod_shown = 1;
                 }
             }
-            plot_hide_trace(s_plot_scope, 2);                          /* Math 无意义 */
+            /*
+             * 数学在解调模式下也生效：对 I/Q 码值运算（独立量程归一）。
+             * I±Q 是线性组合（合/差矢量），有物理意义；×÷ 独立归一后
+             * 形状可看。XY 档：I/Q 本身就是 X/Y —— 切李萨如看相位关系。
+             */
+            {
+                static float mbuf[512];
+                if(s_math_mode == 5) {
+                    plot_set_mode(s_plot_scope, PLOT_XY);
+                } else {
+                    plot_set_mode(s_plot_scope, PLOT_SCOPE);
+                    if(s_math_mode >= 1 && s_math_mode <= 4 && want >= 8
+                       && want <= pts) {
+                        float mn = 1e30f, mx = -1e30f;
+                        const int nm = (want < 512) ? want : 512;
+                        for(int k = 0; k < nm; k++) {
+                            const float a = (float)ivs.i[w0 + k];
+                            const float b = (float)ivs.q[w0 + k];
+                            float v;
+                            switch(s_math_mode) {
+                                case 1:  v = a + b; break;
+                                case 2:  v = a - b; break;
+                                case 3:  v = a * b; break;
+                                default: v = (fabsf(b) < 2.0f) ? 0.f : a / b; break;
+                            }
+                            mbuf[k] = v;
+                            if(v < mn) mn = v;
+                            if(v > mx) mx = v;
+                        }
+                        if(mx - mn < 1e-6f) { mn = -1.f; mx = 1.f; }
+                        for(int k = 0; k < nm; k++)
+                            mbuf[k] = (mbuf[k] - mn) / (mx - mn);
+                        plot_set_trace(s_plot_scope, 2, mbuf, nm, V32_C_MATH, 2);
+                    } else {
+                        plot_hide_trace(s_plot_scope, 2);
+                    }
+                }
+            }
             plot_set_cursors(s_plot_scope, 0, NULL, NULL, false);      /* 光标/触发停用 */
             plot_set_trigger(s_plot_scope, false, 0.f);
             plot_set_trigger_level(s_plot_scope, false, 0.5f);
@@ -3626,8 +3670,14 @@ static void tick_scope(void)
     const float v1 = real ? s_real_vpp0_mv : (use_real ? 0.f : demo_vpp_mv(ch1, n, V32_GRID_Y));
     const float v2 = real ? s_real_vpp1_mv : (use_real ? 0.f : demo_vpp_mv(ch2, n, V32_GRID_Y));
 
-    lv_label_set_text_fmt(s_lbl_v1, "%.1f mV", (double)v1);
-    lv_label_set_text_fmt(s_lbl_v2, "%.1f mV", (double)v2);
+    {
+        const float v2m = real ? s_real_vpp1_mv : (use_real ? 0.f : demo_vpp_mv(ch2, n, V32_GRID_Y));
+        char b1[16], b2[16];
+        snprintf(b1, sizeof b1, "%.0f", (double)v1);
+        snprintf(b2, sizeof b2, "%.0f", (double)v2m);
+        lv_label_set_text_fmt(s_lbl_v1, "%s / %s mV", b1, b2);
+        lv_label_set_text(s_lbl_v2, "");   /* 已并入 Vpp 行 */
+    }
 
     /*
      * 优先用**片上锁相**的读数。
@@ -3668,32 +3718,92 @@ static void tick_scope(void)
         lv_label_set_text(s_lbl_m_vavg, "—");
         lv_label_set_text(s_lbl_m_rise, "—");
     }
-    /* 自动测量：单位换算统一在这里，面板只管排版 */
+    /*
+     * 自动测量：一行同时给两通道「CH1 / CH2」。单位换算统一在这里，
+     * 面板只管排版；哪路没数据就只显示有数据的那路。
+     */
     {
-        const bool mv = (S.use_real && s_real_valid && s_m1.vpp > 0.5f);
-        char tbuf[24];
+        const bool mv  = (S.use_real && s_real_valid && s_m1.vpp > 0.5f);
+        const bool mv2 = (S.use_real && s_real_valid && s_m2.vpp > 0.5f);
+        char tbuf[32];
         const float k = V32_ADC_MV_PER_LSB / 1000.0f;   /* 码 -> 伏 */
-        if (!mv) {
+        if (!mv && !mv2) {
             lv_label_set_text(s_lbl_m_vmax, "—");
             lv_label_set_text(s_lbl_m_vmin, "—");
             lv_label_set_text(s_lbl_m_vrms, "—");
             lv_label_set_text(s_lbl_m_per,  "—");
             lv_label_set_text(s_lbl_m_duty, "—");
         } else {
-            lv_label_set_text_fmt(s_lbl_m_vmax, "%.3f V", (double)(s_m1.vmax * k));
-            lv_label_set_text_fmt(s_lbl_m_vmin, "%.3f V", (double)(s_m1.vmin * k));
-            lv_label_set_text_fmt(s_lbl_m_vrms, "%.3f V", (double)(s_m1.vrms * k));
-            if (s_m1.ok) {
-                const double T = (double)s_m1.period_s;
-                if (T < 1e-3) snprintf(tbuf, sizeof tbuf, "%.2f µs", T * 1e6);
-                else          snprintf(tbuf, sizeof tbuf, "%.2f ms", T * 1e3);
+            /* 双通道值：哪路没数据就显示 — 占位 */
+            #define V32_TWO(lbl, unit, a, b) do { \
+                if (mv && mv2)      lv_label_set_text_fmt(lbl, "%.2f / %.2f " unit, \
+                                            (double)(a), (double)(b)); \
+                else if (mv)        lv_label_set_text_fmt(lbl, "%.2f / — " unit, (double)(a)); \
+                else                lv_label_set_text_fmt(lbl, "— / %.2f " unit, (double)(b)); \
+            } while(0)
+            const float k2 = k;
+            V32_TWO(s_lbl_m_vmax, "V", s_m1.vmax * k2, s_m2.vmax * k2);
+            V32_TWO(s_lbl_m_vmin, "V", s_m1.vmin * k2, s_m2.vmin * k2);
+            V32_TWO(s_lbl_m_vrms, "V", s_m1.vrms * k2, s_m2.vrms * k2);
+        }
+            if (s_m1.ok || s_m2.ok) {
+                const double T1 = (double)s_m1.period_s;
+                const double T2 = (double)s_m2.period_s;
+                char b1[16], b2[16];
+                if (s_m1.ok) { if (T1 < 1e-3) snprintf(b1, sizeof b1, "%.2fµs", T1 * 1e6);
+                               else           snprintf(b1, sizeof b1, "%.2fms", T1 * 1e3); }
+                else snprintf(b1, sizeof b1, "—");
+                if (s_m2.ok) { if (T2 < 1e-3) snprintf(b2, sizeof b2, "%.2fµs", T2 * 1e6);
+                               else           snprintf(b2, sizeof b2, "%.2fms", T2 * 1e3); }
+                else snprintf(b2, sizeof b2, "—");
+                snprintf(tbuf, sizeof tbuf, "%s / %s", b1, b2);
                 lv_label_set_text(s_lbl_m_per, tbuf);
-                lv_label_set_text_fmt(s_lbl_m_duty, "%.1f %%", (double)(s_m1.duty * 100.0f));
+                if (s_m1.ok && s_m2.ok)
+                    lv_label_set_text_fmt(s_lbl_m_duty, "%.1f / %.1f %%",
+                        (double)(s_m1.duty * 100.0f), (double)(s_m2.duty * 100.0f));
+                else if (s_m1.ok)
+                    lv_label_set_text_fmt(s_lbl_m_duty, "%.1f / — %%",
+                        (double)(s_m1.duty * 100.0f));
+                else if (s_m2.ok)
+                    lv_label_set_text_fmt(s_lbl_m_duty, "— / %.1f %%",
+                        (double)(s_m2.duty * 100.0f));
+                else
+                    lv_label_set_text(s_lbl_m_duty, "—");
             } else {
                 lv_label_set_text(s_lbl_m_per,  "—");
                 lv_label_set_text(s_lbl_m_duty, "—");
             }
         }
+
+    /* 光标读数（恢复）：ΔT/ΔV 以信息行简版之外，右栏光标段照旧 */
+    if(s_cur_on && s_real_sc > 0.f) {
+        const wave_source_t *cs = wave_source_get();
+        const float cfs = (cs && cs->sample_rate > 0) ? (float)cs->sample_rate : 65000000.0f;
+        const float span_s = (float)(s_zoom_span > 0 ? s_zoom_span : 1024) / cfs;
+        const float t1 = (s_cur_x[0] - 0.5f) * span_s;
+        const float t2 = (s_cur_x[1] - 0.5f) * span_s;
+        const float dts = fabsf(t2 - t1);
+        const float vr = (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;
+        const float v1c = (0.5f - s_cur_y[0]) * vr;
+        const float v2c = (0.5f - s_cur_y[1]) * vr;
+        const float dvm = fabsf(v2c - v1c);
+        char b1[16], b2[16];
+        fmt_time_s(b1, sizeof b1, t1);           lv_label_set_text(s_lbl_cur_t1, b1);
+        fmt_time_s(b2, sizeof b2, t2);           lv_label_set_text(s_lbl_cur_t2, b2);
+        fmt_time_s(b1, sizeof b1, t2 - t1);      lv_label_set_text(s_lbl_cur_dt, b1);
+        fmt_hz(b2, sizeof b2, dts > 0.f ? 1.f / dts : 0.f);
+                                                 lv_label_set_text(s_lbl_cur_idt, b2);
+        fmt_mv(b1, sizeof b1, v1c);              lv_label_set_text(s_lbl_cur_v1, b1);
+        fmt_mv(b2, sizeof b2, v2c);              lv_label_set_text(s_lbl_cur_v2, b2);
+        fmt_mv(b1, sizeof b1, dvm);              lv_label_set_text(s_lbl_cur_dv, b1);
+    } else {
+        lv_label_set_text(s_lbl_cur_t1,  "—");
+        lv_label_set_text(s_lbl_cur_t2,  "—");
+        lv_label_set_text(s_lbl_cur_dt,  "—");
+        lv_label_set_text(s_lbl_cur_idt, "—");
+        lv_label_set_text(s_lbl_cur_v1,  "—");
+        lv_label_set_text(s_lbl_cur_v2,  "—");
+        lv_label_set_text(s_lbl_cur_dv,  "—");
     }
 
     /* 上电时还不知道信号频率，tb_default 只能按整帧选（大档位）。
