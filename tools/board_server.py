@@ -22,7 +22,8 @@ curl 示例：
          -H 'Content-Type: application/json' \
          -d '{"from":"屏端","kind":"finding","text":"单读者 30 秒 25 组/秒，CRC 0 错"}'
 """
-import argparse, json, os, threading, time
+import argparse, json, mimetypes, os, re, threading, time
+from urllib.parse import unquote
 import socketserver
 from http.server import BaseHTTPRequestHandler, HTTPServer
 try:                                        # Python 3.7+
@@ -34,6 +35,21 @@ except ImportError:                         # Python 3.6（阿里云 Anolis 默�
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STORE = os.path.join(HERE, 'board.jsonl')
+
+# 图片附件：存 uploads/ 下，只允许常见位图，单张上限 8 MB。
+# 不做 multipart —— 前端直接把 File 当 body 发、文件名放 X-Filename 头。
+# 好处：Python 3.13 删掉了 cgi 模块，multipart 解析在 3.6/3.13 上行为还不一致。
+UPLOAD_DIR = os.path.join(HERE, 'uploads')
+MAX_UPLOAD = 32 * 1024 * 1024
+# 图片：内嵌预览；其余：一律按附件下载（Content-Disposition: attachment）
+IMAGE_EXT = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
+# 明确拒绝的类型：能在服务器或浏览器里当代码跑的东西，别往上传目录里放
+BLOCK_EXT = {'.php', '.phtml', '.php3', '.jsp', '.asp', '.aspx', '.cgi',
+             '.exe', '.dll', '.bat', '.cmd', '.com', '.scr', '.msi', '.sh'}
+try:
+    os.makedirs(UPLOAD_DIR)
+except OSError:
+    pass
 LOCK = threading.Lock()
 STATE = {'id': 0}
 
@@ -113,6 +129,17 @@ button{background:#0d2a14;color:var(--grn);border-color:#2e6b3c;cursor:pointer;p
 button:hover{background:#124020}
 .hint{font-size:11.5px;color:var(--dim);padding:0 16px 70px}
 code{color:var(--cyan)}
+.fbtn{display:inline-flex;align-items:center;justify-content:center;width:38px;height:36px;
+      border:1px solid #22371f;border-radius:5px;background:#0a120b;cursor:pointer;font-size:17px}
+.fbtn:hover{background:#124020;border-color:#2e6b3c}
+.att{font-size:12px;color:var(--cyan);max-width:220px;overflow:hidden;text-overflow:ellipsis;
+     white-space:nowrap}
+.att a{color:var(--cyan)}
+.attimg{margin-top:6px}
+.attimg img{max-width:100%;max-height:320px;border:1px solid var(--line);border-radius:5px;
+            display:block;cursor:zoom-in}
+.attfile{margin-top:6px;font-size:12.5px}
+.attfile a{color:var(--amb);text-decoration:none;border-bottom:1px dotted var(--amb)}
 </style></head><body>
 <header>
   <h1>AB5 联调留言板</h1>
@@ -133,6 +160,10 @@ code{color:var(--cyan)}
   </select>
   <textarea id="text" placeholder="写清楚：现象 / 证据 / 结论 / 待办。给数字，别给形容词。"></textarea>
   <input id="ref" placeholder="关联(可选)" style="width:130px">
+  <label class="fbtn" title="添加附件（图片可预览，其它文件可下载；也可直接 Ctrl+V 粘贴截图）">📎
+    <input type="file" id="file" onchange="pick()" style="display:none">
+  </label>
+  <span class="att" id="att"></span>
   <button onclick="send()">发送</button>
 </footer>
 <script>
@@ -154,7 +185,8 @@ async function pull(){
           '<span class="kind k-'+m.kind+'">'+(K[m.kind]||m.kind)+'</span>'+
           '<span>#'+m.id+'</span><span>'+esc(m.ts)+'</span>'+
           (m.ref?'<span>↔ '+esc(m.ref)+'</span>':'')+'</div>'+
-          '<div class="text">'+esc(m.text)+'</div>';
+          '<div class="text">'+esc(m.text)+'</div>'+
+          attHtml(m);
         box.appendChild(el);
       }
       window.scrollTo(0,document.body.scrollHeight);
@@ -164,15 +196,61 @@ async function pull(){
   const s=await fetch('api/stats').then(r=>r.json()).catch(()=>null);
   if(s) document.getElementById('stat').textContent='共 '+s.total+' 条 · 最近 #'+s.last_id;
 }
+function fmtSize(n){
+  n=+n||0;
+  if(n<1024) return n+' B';
+  if(n<1048576) return (n/1024).toFixed(1)+' KB';
+  return (n/1048576).toFixed(2)+' MB';
+}
+function attHtml(m){
+  if(!m.att) return '';
+  if(m.att_kind==='image')
+    return '<div class="attimg"><a href="'+m.att+'" target="_blank"><img src="'+m.att+'" alt=""></a></div>';
+  /* download 属性带值：浏览器保存时用原始文件名（磁盘上的文件名已把中文转成 _） */
+  return '<div class="attfile"><a href="'+m.att+'" download="'+esc(m.att_name||'file')+'">📎 '
+         +esc(m.att_name||'附件')+' · '+fmtSize(m.att_size)+'</a></div>';
+}
+let pending=null;
+async function pick(){
+  const f=document.getElementById('file').files[0];
+  if(!f) return;
+  await upload(f);
+  document.getElementById('file').value='';
+}
+async function upload(f){
+  const box=document.getElementById('att');
+  box.textContent='上传中… ' + f.name;
+  try{
+    const r=await fetch('api/upload',{method:'POST',
+      headers:{'X-Filename':encodeURIComponent(f.name),'Content-Type':'application/octet-stream'},
+      body:f});
+    const j=await r.json();
+    if(!r.ok||!j.url){ box.textContent='上传失败：'+(j.error||r.status); return; }
+    pending=j;
+    box.innerHTML='已附加：<a href="'+j.url+'" target="_blank">'+esc(j.name)+'</a> · '+fmtSize(j.size)
+                  +' <a href="#" onclick="clearAtt();return false;">✕</a>';
+  }catch(e){ box.textContent='上传失败：网络错误'; }
+}
+function clearAtt(){ pending=null; document.getElementById('att').textContent=''; }
+document.addEventListener('paste', async ev=>{
+  const items=(ev.clipboardData||{}).items||[];
+  for(const it of items){
+    if(it.kind==='file'){ ev.preventDefault(); await upload(it.getAsFile()); return; }
+  }
+});
+
 async function send(){
   const t=document.getElementById('text').value.trim();
   if(!t) return;
   await fetch('api/post',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({from:document.getElementById('from').value,
       kind:document.getElementById('kind').value,text:t,
-      ref:document.getElementById('ref').value.trim()})});
+      ref:document.getElementById('ref').value.trim(),
+      att:pending?pending.url:'', att_name:pending?pending.name:'',
+      att_kind:pending?pending.kind:'', att_size:pending?pending.size:0})});
   document.getElementById('text').value='';
   document.getElementById('ref').value='';
+  clearAtt();
   pull();
 }
 setInterval(pull,2000); pull();
@@ -222,6 +300,34 @@ class H(BaseHTTPRequestHandler):
             since = int(q.get('since', 0) or 0)
             self._send(200, json.dumps({'messages': read_msgs(since),
                                         'last_id': STATE['id']}, ensure_ascii=False))
+        elif p.startswith('/api/file/'):
+            fn = os.path.basename(p[len('/api/file/'):])
+            path = os.path.join(UPLOAD_DIR, fn)
+            if not fn or not os.path.exists(path):
+                self._send(404, json.dumps({'error': 'no such file'}))
+                return
+            try:
+                with open(path, 'rb') as f:
+                    data = f.read()
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)}))
+                return
+            ext = os.path.splitext(fn)[1].lower()
+            if ext in IMAGE_EXT:
+                ctype = mimetypes.guess_type(fn)[0] or 'application/octet-stream'
+                self._send(200, data, ctype)
+            else:
+                # 非图片一律 octet-stream + attachment：防止上传 .html/.svg 被当页面执行
+                b = data
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.send_header('Content-Disposition',
+                                 'attachment; filename="%s"' % fn.split('_', 1)[-1])
+                self.send_header('Content-Length', str(len(b)))
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Cache-Control', 'no-store')
+                self.end_headers()
+                self.wfile.write(b)
         elif p == '/api/stats':
             msgs = read_msgs(0)
             self._send(200, json.dumps({'total': len(msgs), 'last_id': STATE['id']},
@@ -230,7 +336,37 @@ class H(BaseHTTPRequestHandler):
             self._send(404, json.dumps({'error': 'not found'}))
 
     def do_POST(self):
-        if self._norm(self.path.split('?')[0]) != '/api/post':
+        p = self._norm(self.path.split('?')[0])
+        if p == '/api/upload':
+            n = int(self.headers.get('Content-Length', 0) or 0)
+            if n <= 0:
+                self._send(400, json.dumps({'error': '空文件'}))
+                return
+            if n > MAX_UPLOAD:
+                self._send(413, json.dumps({'error': '文件超过 8 MB'}))
+                return
+            raw = self.rfile.read(n)
+            name = unquote(self.headers.get('X-Filename') or '')\
+                   or ('file_%d.bin' % int(time.time()))
+            name = os.path.basename(name)
+            ext = os.path.splitext(name)[1].lower()
+            if ext in BLOCK_EXT:
+                self._send(400, json.dumps({'error': '出于安全不允许上传 %s 类型' % ext}))
+                return
+            safe = re.sub(r'[^A-Za-z0-9._-]', '_', name)[-60:]
+            fn = '%d_%s' % (int(time.time() * 1000), safe)
+            try:
+                with open(os.path.join(UPLOAD_DIR, fn), 'wb') as f:
+                    f.write(raw)
+            except Exception as e:
+                self._send(500, json.dumps({'error': '写文件失败: %s' % e}))
+                return
+            kind = 'image' if ext in IMAGE_EXT else 'file'
+            self._send(200, json.dumps({'url': 'api/file/' + fn, 'name': name,
+                                        'size': len(raw), 'kind': kind},
+                                       ensure_ascii=False))
+            return
+        if p != '/api/post':
             self._send(404, json.dumps({'error': 'not found'}))
             return
         n = int(self.headers.get('Content-Length', 0) or 0)
@@ -247,9 +383,13 @@ class H(BaseHTTPRequestHandler):
         kind = m.get('kind') or 'finding'
         if kind not in KIND_CN:
             kind = 'finding'
+        att = (m.get('att') or '').strip()[:200]
         msg = append_msg({'from': (m.get('from') or '未知').strip()[:20],
                           'kind': kind, 'text': text[:4000],
                           'ref': (m.get('ref') or '').strip()[:60],
+                          'att': att, 'att_name': (m.get('att_name') or '').strip()[:80],
+                          'att_kind': (m.get('att_kind') or 'file').strip()[:8],
+                          'att_size': int(m.get('att_size') or 0),
                           'ip': self.client_address[0]})
         self._send(200, json.dumps(msg, ensure_ascii=False))
 
