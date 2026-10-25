@@ -60,7 +60,13 @@ typedef struct {
     float iq_phase;          /* 度，数学约定：0°=+I 向右，逆时针为正 */
 
     bool  cur_vis;           /* 测量光标 */
-    int   cur_n;
+
+    int   cur_n;             /* 光标数(补丁后仍被 set/draw_cursors 使用) */
+
+    /* AM 上下包络叠加（金色虚线） */
+    float env_u[PLOT_MAX_PTS], env_d[PLOT_MAX_PTS];
+    int   env_n;
+    bool  env_vis;
     float cur_x[4];          /* 竖线位置 0..1 */
     float cur_y[4];          /* 横线位置 0..1 */
 
@@ -228,6 +234,20 @@ void plot_set_peak(lv_obj_t *plot, bool vis, float x, const char *txt)
         p->peak_txt[sizeof(p->peak_txt) - 1] = '\0';
     }
     else p->peak_txt[0] = '\0';
+    lv_obj_invalidate(plot);
+}
+
+void plot_set_envelope(lv_obj_t *plot, const float *up, const float *dn,
+                       int n, bool show)
+{
+    plot_t *p = PLOT_OF(plot);
+    if(p == NULL) return;
+    p->env_vis = show && up && dn && n >= 2;
+    if(!p->env_vis) { if(p->env_n) { p->env_n = 0; lv_obj_invalidate(plot); } return; }
+    if(n > PLOT_MAX_PTS) n = PLOT_MAX_PTS;
+    memcpy(p->env_u, up, (size_t)n * sizeof(float));
+    memcpy(p->env_d, dn, (size_t)n * sizeof(float));
+    p->env_n = n;
     lv_obj_invalidate(plot);
 }
 
@@ -714,6 +734,31 @@ static void draw_trigger(lv_layer_t *layer, plot_t *p,
     text(layer, x + 4, y0 + 18, "T", V32_C_TRIGGER, V32_FONT_SMALL);
 }
 
+/* 包络虚线: 3 段画 2 段跳, 无效点断口 */
+static void draw_env_curve(lv_layer_t *layer, const float *arr, int n,
+                           int32_t x0, int32_t y0, int32_t w, int32_t h,
+                           lv_draw_line_dsc_t *ld)
+{
+    const int32_t nm1 = n - 1;
+    const int32_t xspan = w - 1;
+    int run = 0;
+    int32_t px = 0, py = 0;
+    int have = 0;
+    for(int i = 0; i < n; i++) {
+        float v = arr[i];
+        if(!isfinite(v)) { have = 0; continue; }
+        if(v < 0.f) v = 0.f;
+        if(v > 1.f) v = 1.f;
+        const int32_t cx = x0 + (int32_t)((int64_t)i * xspan / nm1);
+        const int32_t cy = y0 + (h - 1) - (int32_t)(v * (float)(h - 1));
+        if(have && (run % 5) < 3) {
+            ld->p1.x = px; ld->p1.y = py; ld->p2.x = cx; ld->p2.y = cy;
+            lv_draw_line(layer, ld);
+        }
+        px = cx; py = cy; have = 1; run++;
+    }
+}
+
 /* 找 trace ti 在 peak_x 附近的最高点，用来把 ▼ 贴到曲线的峰上 */
 static int32_t peak_curve_y(plot_t *p, int ti, float at_x, int32_t y0, int32_t h)
 {
@@ -804,6 +849,16 @@ static void plot_draw_cb(lv_event_t *e)
     else {
         draw_one_trace(layer, p, 0, x0, y0, w, h);
         draw_one_trace(layer, p, 1, x0, y0, w, h);
+        /* AM 上下包络(金色虚线), 叠在载波迹线上 */
+        if(p->env_vis && p->env_n >= 2 && p->mode == PLOT_SCOPE) {
+            lv_draw_line_dsc_t ed;
+            lv_draw_line_dsc_init(&ed);
+            ed.color = V32_C_WARN;
+            ed.width = 1;
+            ed.opa   = LV_OPA_COVER;
+            draw_env_curve(layer, p->env_u, p->env_n, x0, y0, w, h, &ed);
+            draw_env_curve(layer, p->env_d, p->env_n, x0, y0, w, h, &ed);
+        }
         /* PLOT_FFT 也画游标线：频谱页要用手指点选频率（cb_fft_cursor） */
         if(p->mode == PLOT_SCOPE || p->mode == PLOT_FFT) draw_trigger(layer, p, x0, y0, w, h);
         if(p->mode == PLOT_SCOPE) draw_cursors(layer, p, x0, y0, w, h);

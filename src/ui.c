@@ -3626,6 +3626,63 @@ static void tick_scope(void)
     if(S.ch2) plot_set_trace(s_plot_scope, 1, ch2, n, V32_C_CH2, 2);
     else      plot_hide_trace(s_plot_scope, 1);
 
+    /*
+     * AM 上下包络线(金色虚线): 分析链在跑 AM/OOK(kind1)且载波周期
+     * 可测时, 从 RAW 窗口对 CH1 做滑窗 max/min, 提取上/下包络叠在
+     * 载波上(照 scope_proto 的 AM 视图)。深时基 roll 模式不叠
+     * (拼接时间轴与帧窗口不重合)。
+     */
+    if(!roll_mode) {
+        v32_ana_view_t ave;
+        const bool am_on = (v32_get_ana(&ave) != 0)
+                         && ave.kind == 1u && (ave.mode == 1u || ave.mode == 5u);
+        const wave_source_t *wes = wave_source_get();
+        const float wfs = (wes && wes->sample_rate > 0) ? (float)wes->sample_rate : 65000000.0f;
+        int espan = s_zoom_span > 0 ? s_zoom_span : s_full_n;
+        if(espan > s_full_n) espan = s_full_n;
+        int estart = s_zoom_start;
+        if(estart < 0) estart = 0;
+        if(estart > s_full_n - espan) estart = s_full_n - espan;
+        const int per = (int)(s_m1.period_s * wfs + 0.5f);
+        const bool show_env = am_on && s_m1.ok && per >= 4 && espan >= per * 2;
+
+        if(show_env) {
+            int W = per / 2;
+            if(W > espan / 4) W = espan / 4;
+            if(W < 2) W = 2;
+            const int STEP = 4;              /* 每 4 点一个锚, 中间线性内插 */
+            int prev_i = -1;
+            for(int i = 0; i < n; i += STEP) {
+                const int sp = estart + (int)((long)i * espan / n);
+                int s0 = sp - W; if(s0 < 0) s0 = 0;
+                int s1 = sp + W + 1; if(s1 > estart + espan) s1 = estart + espan;
+                if(s1 <= s0) s1 = s0 + 1;
+                float mu = s_full0[s0], md = s_full0[s0];
+                for(int q = s0 + 1; q < s1; q++) {
+                    if(s_full0[q] > mu) mu = s_full0[q];
+                    if(s_full0[q] < md) md = s_full0[q];
+                }
+                float up = 0.5f + ((mu - s_real_lo) * s_real_sc - 0.5f) * s_gain;
+                float dn = 0.5f + ((md - s_real_lo) * s_real_sc - 0.5f) * s_gain;
+                ch1[i] = up < 0.f ? 0.f : (up > 1.f ? 1.f : up);
+                ch2[i] = dn < 0.f ? 0.f : (dn > 1.f ? 1.f : dn);
+                if(prev_i >= 0)
+                    for(int j = prev_i + 1; j < i && j < n; j++) {
+                        const float f = (float)(j - prev_i) / (float)(i - prev_i);
+                        ch1[j] = ch1[prev_i] + (ch1[i] - ch1[prev_i]) * f;
+                        ch2[j] = ch2[prev_i] + (ch2[i] - ch2[prev_i]) * f;
+                    }
+                prev_i = i;
+            }
+            for(int j = prev_i + 1; j < n; j++) {
+                ch1[j] = ch1[prev_i]; ch2[j] = ch2[prev_i];
+            }
+            plot_set_envelope(s_plot_scope, ch1, ch2, n, true);
+        } else {
+            plot_set_envelope(s_plot_scope, NULL, NULL, 0, false);
+        }
+    }
+
     /* 测量光标（2 竖 + 2 横） */
     {
         const float xs[2] = { s_cur_x[0], s_cur_x[1] };

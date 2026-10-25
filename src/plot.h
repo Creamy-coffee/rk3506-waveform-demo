@@ -83,6 +83,12 @@ void plot_set_iq(lv_obj_t *plot, float phase_deg);
 /* ---- 画布内的角落文字（参考稿 FFT 页的 "0 MHz" / "32.5 MHz"）---- */
 void plot_set_axis_labels(lv_obj_t *plot, const char *left, const char *right);
 
+/* ---- SCOPE 专用：AM 上下包络叠加（金色虚线, 照原型 AM 视图）----
+ * up/dn 为归一化 0..1 曲线(0=底 1=顶), show=false 或 n<2 清除。
+ * 绘制在迹线之上、光标之下。 */
+void plot_set_envelope(lv_obj_t *plot, const float *up, const float *dn,
+                       int n, bool show);
+
 /* 测量光标：n<=4，xs 是竖线的相对位置 0..1，ys 是横线的相对位置 0..1。
  * 示波器页用 2 竖 + 2 横（时间光标 + 电压光标）。 */
 void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, bool show);
