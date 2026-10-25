@@ -174,6 +174,9 @@ static void set_trace(lv_obj_t *plot, int idx, const float *y, int n,
 
     if(y == NULL || n <= 0) { t->n = 0; return; }
     if(n > PLOT_MAX_PTS) n = PLOT_MAX_PTS;
+    /* 数据完全一致（暂停/锚定后的稳态帧）就不重绘 —— 高频 set_trace
+       的场景下这一下 memcmp 能省掉整块 plot 的软件渲染。 */
+    if(t->n == n && memcmp(t->y, y, (size_t)n * sizeof(float)) == 0) return;
     memcpy(t->y, y, (size_t)n * sizeof(float));
     t->n = n;
 }
@@ -181,8 +184,13 @@ static void set_trace(lv_obj_t *plot, int idx, const float *y, int n,
 void plot_set_trace(lv_obj_t *plot, int idx, const float *y, int n,
                     lv_color_t color, int32_t width)
 {
+    trace_t *t = &PLOT_OF(plot)->tr[idx];
+    const int old_n = t->n;
     set_trace(plot, idx, y, n, color, width, true);
-    lv_obj_invalidate(plot);
+    /* set_trace 内部 memcmp 相同会早退（t->n 不变、数据没拷）——
+       只有数据真的变了才 invalidate，高频 set_trace 场景省一半渲染 */
+    if(t->n != old_n || memcmp(t->y, y, (size_t)t->n * sizeof(float)) != 0)
+        lv_obj_invalidate(plot);
 }
 
 void plot_hide_trace(lv_obj_t *plot, int idx)

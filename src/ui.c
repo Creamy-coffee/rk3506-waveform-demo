@@ -2003,14 +2003,10 @@ static void build_scope(lv_obj_t *pg)
     s_lbl_scope_freq = mk_metric(p1, TITLE_H + METRIC_H * 7, "频率 f",      "--", V32_C_METRIC_VALUE);
     s_lbl_m_duty     = mk_metric(p1, TITLE_H + METRIC_H * 8, "占空比",      "--", V32_C_METRIC_VALUE);
     s_lbl_m_rise     = mk_metric(p1, TITLE_H + METRIC_H * 9, "上升时间",    "--", V32_C_METRIC_VALUE);
-    /* 光标段：洋红（照 scope_proto：T1 T2 ΔT 1/ΔT V1 V2 ΔV 各占一行） */
-    s_lbl_cur_t1  = mk_metric(p1, TITLE_H + METRIC_H * 10, "T1",   "--", V32_C_TRIGGER);
-    s_lbl_cur_t2  = mk_metric(p1, TITLE_H + METRIC_H * 11, "T2",   "--", V32_C_TRIGGER);
-    s_lbl_cur_dt  = mk_metric(p1, TITLE_H + METRIC_H * 12, "ΔT",   "--", V32_C_TRIGGER);
-    s_lbl_cur_idt = mk_metric(p1, TITLE_H + METRIC_H * 13, "1/ΔT", "--", V32_C_TRIGGER);
-    s_lbl_cur_v1  = mk_metric(p1, TITLE_H + METRIC_H * 14, "V1",   "--", V32_C_TRIGGER);
-    s_lbl_cur_v2  = mk_metric(p1, TITLE_H + METRIC_H * 15, "V2",   "--", V32_C_TRIGGER);
-    s_lbl_cur_dv  = mk_metric(p1, TITLE_H + METRIC_H * 16, "ΔV",   "--", V32_C_TRIGGER);
+    /*
+     * 光标读数段已删（右栏只留 CH1 测量）—— 光标的 ΔT/ΔV 数值仍以
+     * 简版显示在顶部信息行；洋红光标线本身照画。
+     */
 
     /* CH2 峰峰值 / 相位差已并入上面 10 项（HTML 里没有这两行，A2 在信息条里），
        但 tick_scope 还在写这两个句柄 —— 建在面板外，别让它们露出来。 */
@@ -3672,36 +3668,6 @@ static void tick_scope(void)
         lv_label_set_text(s_lbl_m_vavg, "—");
         lv_label_set_text(s_lbl_m_rise, "—");
     }
-    if(s_cur_on && s_real_sc > 0.f) {
-        const wave_source_t *cs = wave_source_get();
-        const float cfs = (cs && cs->sample_rate > 0) ? (float)cs->sample_rate : 65000000.0f;
-        const float span_s = (float)(s_zoom_span > 0 ? s_zoom_span : 1024) / cfs;
-        const float t1 = (s_cur_x[0] - 0.5f) * span_s;             /* 秒（原型: (t-.5)*DX*tdiv) */
-        const float t2 = (s_cur_x[1] - 0.5f) * span_s;
-        const float dts = fabsf(t2 - t1);
-        const float vr = (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB;  /* 满屏 mV */
-        const float v1 = (0.5f - s_cur_y[0]) * vr;
-        const float v2 = (0.5f - s_cur_y[1]) * vr;
-        const float dvm = fabsf(v2 - v1);
-        char b1[16], b2[16];
-        fmt_time_s(b1, sizeof b1, t1);           lv_label_set_text(s_lbl_cur_t1, b1);
-        fmt_time_s(b2, sizeof b2, t2);           lv_label_set_text(s_lbl_cur_t2, b2);
-        fmt_time_s(b1, sizeof b1, t2 - t1);      lv_label_set_text(s_lbl_cur_dt, b1);
-        fmt_hz(b2, sizeof b2, dts > 0.f ? 1.f / dts : 0.f);
-                                                 lv_label_set_text(s_lbl_cur_idt, b2);
-        fmt_mv(b1, sizeof b1, v1);               lv_label_set_text(s_lbl_cur_v1, b1);
-        fmt_mv(b2, sizeof b2, v2);               lv_label_set_text(s_lbl_cur_v2, b2);
-        fmt_mv(b1, sizeof b1, dvm);              lv_label_set_text(s_lbl_cur_dv, b1);
-    } else {
-        lv_label_set_text(s_lbl_cur_t1,  "—");
-        lv_label_set_text(s_lbl_cur_t2,  "—");
-        lv_label_set_text(s_lbl_cur_dt,  "—");
-        lv_label_set_text(s_lbl_cur_idt, "—");
-        lv_label_set_text(s_lbl_cur_v1,  "—");
-        lv_label_set_text(s_lbl_cur_v2,  "—");
-        lv_label_set_text(s_lbl_cur_dv,  "—");
-    }
-
     /* 自动测量：单位换算统一在这里，面板只管排版 */
     {
         const bool mv = (S.use_real && s_real_valid && s_m1.vpp > 0.5f);

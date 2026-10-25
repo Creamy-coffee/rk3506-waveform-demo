@@ -44,7 +44,12 @@
  * 如果将来发现 CPU 跟不上（ui_tick 单次耗时 > 45 ms），会自动被主循环节流，
  * 不会卡死 —— 只是帧率降下来。
  */
-#define REFRESH_MS      45      /* 数据刷新周期 */
+/*
+ * 数据刷新周期：45ms 时每秒 22 次全量 plot 重绘，叠加五种帧的接收
+ * 线程后 CPU 撑不住（实测调制分析开着就卡）。100ms = 10fps，
+ * 与数据帧率同量级，渲染负载直接减半，肉眼看不出差别。
+ */
+#define REFRESH_MS      100     /* 数据刷新周期 */
 #define AUTOSWITCH_MS   8000    /* 无触摸时的自动轮播周期 */
 
 static volatile sig_atomic_t s_quit = 0;
