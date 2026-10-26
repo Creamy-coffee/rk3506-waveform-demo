@@ -28,7 +28,9 @@ echo "==> 编译"
 cmake --build "$BUILD_DIR" -j"$(nproc)"
 
 mkdir -p ../out
-cp -f "$BUILD_DIR/waveform_demo" ../out/
+for artifact in waveform_demo ook_capture_decode fsk_capture_decode bpsk_capture_decode; do
+    cp -f "$BUILD_DIR/$artifact" ../out/
+done
 
 echo
 echo "================ 产物 ================"

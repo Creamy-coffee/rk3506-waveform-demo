@@ -20,7 +20,7 @@ WAVE_MEASDBG=1时运行实例每秒stderr打印[fsk]，字段与[ook]一致；�
 
 ## 构建与回放
 
-在现有SDK/LVGL9.1使用新BUILD_DIR构建，备份GUI，确认ARMv7校验后部署。CMake新增fsk_capture_decode；build.sh仍只自动复制GUI，工具须另行从构建目录部署并核对。
+在现有SDK/LVGL9.1使用新BUILD_DIR构建，备份GUI，确认ARMv7校验后部署。CMake新增fsk_capture_decode；后续构建脚本已同步复制GUI和三个CLI到../out，部署时仍需核对平台与校验。
 
 ```sh
 LVGL_DIR=/现有LVGL9.1路径 BUILD_DIR=build_fsk_bits bash build.sh

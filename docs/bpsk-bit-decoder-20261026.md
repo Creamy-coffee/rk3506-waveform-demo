@@ -37,7 +37,7 @@ pn_dir、pn_invert明确报告所选假设，不会偷偷改变显示的原始�
 ```sh
 LVGL_DIR=/现有LVGL9.1路径 BUILD_DIR=build_bpsk_bits bash build.sh
 file ../out/waveform_demo build_bpsk_bits/bpsk_capture_decode
-# 工具留在构建目录，build.sh仅自动复制GUI，需另外部署并校验
+# build.sh同步复制GUI及三个CLI到../out；部署时仍需核对平台与校验
 ./bpsk_capture_decode raw.bin 1000 1 0 recovered_bits.txt
 # 参数为文件、已知Rs、PN7开关、人工INV、可选全bit导出路径
 ```

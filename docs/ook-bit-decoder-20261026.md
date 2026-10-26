@@ -36,7 +36,7 @@ file ../out/waveform_demo build_ook_bits/ook_capture_decode
 sha256sum ../out/waveform_demo
 ```
 
-备份现有屏上程序与`../out/waveform_demo`，确认ARMv7产物后按原流程部署。CMake同时构建`ook_capture_decode`离线工具；`build.sh`仅自动复制GUI到`../out`，工具仍在构建目录，需另行传到屏端（或在Linux主机原生编译）。
+备份现有屏上程序与`../out/waveform_demo`，确认ARMv7产物后按原流程部署。CMake同时构建离线工具；后续`build.sh`已同步复制GUI和三个CLI到`../out`，部署时仍需核对平台与校验（或在Linux主机原生编译工具）。
 
 ```bash
 # 使用与页面完全同一src/ook_decoder.h，不靠另一套算法生成理想bit。
