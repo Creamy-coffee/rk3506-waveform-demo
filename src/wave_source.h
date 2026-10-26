@@ -67,5 +67,7 @@ void wave_source_v32_set_spec(const char *spec);
 void wave_source_v32_set_baud(int baud);
 /* 当前生效的波特率（已打开的串口返回驱动真实值） */
 int  wave_source_v32_get_baud(void);
+/* UI-thread cached RAW frame rate, before integer-Hz rounding. 0 if unavailable. */
+double wave_source_v32_frame_rate_hz(void);
 
 #endif /* WAVE_SOURCE_H */

@@ -80,6 +80,7 @@ typedef struct {
     uint64_t start_index;     /* 复位后 ADC 域时钟计数，不是 Unix 时间 */
     uint32_t crc32;
     uint32_t flags;           /* 帧头 flags，原样带上来（bit0 预留：payload 是 FPGA 端算的频谱） */
+    uint32_t decimation;      /* Same validated RAW frame; not the latest reader-thread setting. */
     int      n;               /* 本帧实际样点数（256..4096） */
     int16_t  ch0[V32_POINTS];
     int16_t  ch1[V32_POINTS];

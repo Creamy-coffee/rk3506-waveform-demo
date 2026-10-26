@@ -791,6 +791,7 @@ static void v32_feed(const uint8_t *data, int n)
         s_stage.start_index = start_idx;
         s_stage.crc32       = want;
         s_stage.flags       = flags;
+        s_stage.decimation  = dec;
         s_stage.n           = (int)pts;
         s_last_dec          = (int)dec;
 

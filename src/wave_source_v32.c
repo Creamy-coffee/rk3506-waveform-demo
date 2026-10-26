@@ -48,6 +48,11 @@ int wave_source_v32_get_baud(void)
     return actual > 0 ? actual : s_baud;
 }
 
+double wave_source_v32_frame_rate_hz(void)
+{
+    return s_have && s_cur.decimation ? (double)V32_ADC_FS_HZ/s_cur.decimation : 0.0;
+}
+
 /*
  * nsrc 点 -> ndst 点。ndst >= nsrc 时原样拷贝（不做任何抽取）。
  * ndst 为偶数时每 2 个输出点对应一个桶（先出现的极值在前，保持时间顺序）。
