@@ -12,6 +12,7 @@ static char fixture[128];
 static unsigned raw_id;
 static void flush_cb(lv_display_t *d,const lv_area_t *a,uint8_t *p){(void)a;(void)p;lv_display_flush_ready(d);}
 static void put(uint8_t *p,uint32_t v){for(int i=0;i<4;i++)p[i]=(uint8_t)(v>>(8*i));}
+static uint32_t take32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
 static uint32_t crc(const uint8_t *p,size_t n){uint32_t c=~0u;for(size_t i=0;i<n;i++){c^=p[i];for(int k=0;k<8;k++)c=(c>>1)^((c&1)?0xedb88320u:0);}return ~c;}
 static void fixture_write(unsigned fid,unsigned cfg,unsigned mode,unsigned channel,unsigned flags,int holes,unsigned dec,int raw)
 {
@@ -47,7 +48,7 @@ static unsigned next_cp(const unsigned char **p){unsigned c=*(*p)++;if(c<128)ret
 static void glyphs(void){const unsigned char *p=(const unsigned char *)"波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测";while(*p){unsigned cp=next_cp(&p);lv_font_glyph_dsc_t g;assert(V32_FONT_SMALL->get_glyph_dsc(V32_FONT_SMALL,&g,cp,0));assert(V32_FONT_BASE->get_glyph_dsc(V32_FONT_BASE,&g,cp,0));}}
 int main(int argc,char **argv)
 {
-    assert(argc==2);snprintf(fixture,sizeof fixture,"/tmp/v32_modulation_view_%ld.bin",(long)getpid());float lo,hi,out[1024],v[3]={10,10,10};assert(mod_view_range(v,3,1,&lo,&hi)&&lo==0&&hi>10);
+    assert(argc==2 || argc==3);snprintf(fixture,sizeof fixture,"/tmp/v32_modulation_view_%ld.bin",(long)getpid());float lo,hi,out[1024],v[3]={10,10,10};assert(mod_view_range(v,3,1,&lo,&hi)&&lo==0&&hi>10);
     v[1]=NAN;mod_view_resample(v,3,out,9,0,20);assert(isnan(out[4]) && isfinite(out[0]) && isfinite(out[8]));
     float amp[5]={0,.5f,1,NAN,-1},up[5],dn[5];
     mod_view_bounds(amp,up,dn,5);
@@ -58,6 +59,17 @@ int main(int argc,char **argv)
     lv_init();glyphs();lv_display_t *d=lv_display_create(1024,600);lv_display_set_color_format(d,LV_COLOR_FORMAT_XRGB8888);lv_display_set_buffers(d,pixels,NULL,sizeof pixels,LV_DISPLAY_RENDER_MODE_DIRECT);lv_display_set_flush_cb(d,flush_cb);
     fixture_write(1,3,1,0,0,0,1,1);char spec[128];snprintf(spec,sizeof spec,"file:%s",fixture);wave_source_v32_set_spec(spec);wave_source_select(&wave_source_v32);assert(wave_source_v32.init()==0);setenv("WAVE_SRC","real",1);
     ui_create();ui_set_page(UI_PAGE_MOD);draw(d);
+    if(argc==3){
+        FILE *capture=fopen(argv[2],"rb");assert(capture);fseek(capture,0,SEEK_END);long size=ftell(capture);rewind(capture);assert(size>0 && size<64000000);
+        uint8_t *data=malloc((size_t)size);assert(data && fread(data,1,(size_t)size,capture)==(size_t)size);fclose(capture);
+        unsigned frames=0;s_an_type=5;s_an_ch=0;s_an_rate=1;s_an_send_pending=0;s_an_tx_failed=0;s_an_have_target=1;s_an_target_fcw=66076420;s_ook_test=true;ook_reset(&s_ook);an_chips_refresh();
+        for(long i=0;i+1076<=size;i++)if(!memcmp(data+i,"V32ANA1!",8) && crc(data+i,1072)==take32(data+i+1072) && ((take32(data+i+36)>>16)&255)==5){
+            FILE *f=fopen(fixture,"wb");assert(f && fwrite(data+i,1,1076,f)==1076);fclose(f);assert(v32_init_file(fixture)==0);
+            test_ms+=20;lv_tick_inc(20);ui_tick();frames++;i+=1075;
+        }
+        draw(d);printf("OOK_GUI_CAPTURE frames=%u n=%llu errors=%llu checks=%llu erasures=%llu lock=%d\n",frames,s_ook.bits,s_ook.alternating_errors,s_ook.alternating_checks,s_ook.erasures,s_ook.locked);fflush(stdout);
+        assert(frames>300 && s_ook.bits>5900 && s_ook.alternating_errors==0 && s_ook.erasures==0 && s_ook.locked);save(argv[1],"ook_real_capture");free(data);unlink(fixture);return 0;
+    }
     for(unsigned i=2;i<=16;i++){fixture_write(i,3,1,0,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);}
     assert(lv_obj_get_width(s_plot_modraw)>600 && lv_obj_get_width(s_plot_modana)>600);
     assert(strstr(lv_label_get_text(s_lbl_rawnote),"ANA history") && strstr(lv_label_get_text(s_lbl_rawnote),"4.03 ms"));
