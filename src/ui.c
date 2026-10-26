@@ -196,6 +196,7 @@ static lv_obj_t *s_lbl_mf1, *s_lbl_mf2, *s_lbl_mf3, *s_lbl_mf4;  /* 帧诊断 */
 static lv_obj_t *s_lbl_rawnote;   /* 上图 RAW 新鲜度标注（实时/历史快照） */
 static lv_obj_t *s_lbl_modraw_title;   /* 上图标题（原始波形/分析历史 切换） */
 static lv_obj_t *s_lbl_modana_title, *s_lbl_modana_note, *s_lbl_modraw_units, *s_lbl_modana_units, *s_lbl_modvalue_key;
+static lv_obj_t *s_lbl_modcarrier;
 static lv_obj_t *s_chip_mv, *s_chip_mw;
 static bool s_mod_raw_view = false;
 static unsigned s_mod_window = 0;
@@ -2320,8 +2321,9 @@ static void build_mod(lv_obj_t *pg)
     s_lbl_modana_note=mk_label(s_plot_modana,0,0,"",V32_FONT_SMALL,V32_C_METRIC_VALUE);
     lv_obj_align(s_lbl_modana_note,LV_ALIGN_TOP_RIGHT,-8,6);
     s_lbl_modraw_units=mk_label(s_plot_modraw,8,24,"",V32_FONT_SMALL,V32_C_METRIC_VALUE);
+    s_lbl_modcarrier=mk_label(s_plot_modraw,8,42,"载波 --",V32_FONT_SMALL,V32_C_METRIC_VALUE);
     s_lbl_modana_units=mk_label(s_plot_modana,8,24,"",V32_FONT_SMALL,V32_C_METRIC_VALUE);
-    lv_obj_t *badges[]={s_lbl_rawnote,s_lbl_modraw_title,s_lbl_modana_title,s_lbl_modana_note,s_lbl_modraw_units,s_lbl_modana_units};
+    lv_obj_t *badges[]={s_lbl_rawnote,s_lbl_modraw_title,s_lbl_modana_title,s_lbl_modana_note,s_lbl_modraw_units,s_lbl_modana_units,s_lbl_modcarrier};
     for(unsigned k=0;k<sizeof badges/sizeof badges[0];k++){
         lv_obj_set_style_bg_color(badges[k],V32_C_PLOT,0);lv_obj_set_style_bg_opa(badges[k],LV_OPA_COVER,0);
         lv_obj_set_style_pad_hor(badges[k],3,0);
@@ -4429,8 +4431,28 @@ static void mod_draw_raw(int channel,const v32_ana_view_t *av,bool have_ana)
         plot_set_envelope(s_plot_modraw,up,dn,PLOT_MAX_PTS,true);
     }
 }
+static void mod_carrier_metadata(const v32_ana_view_t *av,bool good)
+{
+    /* The DDC echo is a reference setting, never an independent frequency measurement. */
+    if(!good || !isfinite(av->center_hz) || av->center_hz<=0){
+        lv_label_set_text(s_lbl_modcarrier,"载波 --");return;
+    }
+    char ref[32],measured[32];fmt_hz(ref,sizeof ref,av->center_hz);
+    double fs=wave_source_v32_frame_rate_hz();
+    const meas_t *m=av->channel?&s_m2:&s_m1;
+    /* Zero-crossing estimate is only labelled carrier for AM, with fresh, adequately
+       sampled RAW and agreement with the reference. Other modes need a carrier estimator. */
+    bool usable=av->mode==1u && s_real_valid && s_full_n>=8 && m->ok &&
+        isfinite(m->freq_hz) && m->freq_hz>0 && fs>=2.5*av->center_hz &&
+        fabsf(m->freq_hz-av->center_hz)<.2f*av->center_hz;
+    if(usable){
+        fmt_hz(measured,sizeof measured,m->freq_hz);
+        lv_label_set_text_fmt(s_lbl_modcarrier,"载波频率(RAW) ~%s | 参考(DDC) %s",measured,ref);
+    }else lv_label_set_text_fmt(s_lbl_modcarrier,"载波参考(DDC) %s | 实测 --",ref);
+}
 static void mod_draw_upper(const v32_ana_view_t *av,bool have_ana,bool match)
 {
+    mod_carrier_metadata(av,have_ana && match && !av->flags && av->nvalid>0);
     if(s_mod_raw_view || s_an_type==0){mod_draw_raw(s_an_ch,av,have_ana);return;}
     plot_set_envelope(s_plot_modraw,NULL,NULL,0,false);
     if(!have_ana || !match || av->flags || av->nvalid<=0 || s_history.length<2){

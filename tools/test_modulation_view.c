@@ -36,7 +36,7 @@ static void fixture_write(unsigned fid,unsigned cfg,unsigned mode,unsigned chann
 static void draw(lv_display_t *d){lv_tick_inc(40);ui_tick();lv_obj_update_layout(lv_screen_active());lv_obj_invalidate(lv_screen_active());lv_refr_now(d);}
 static void save(const char *dir,const char *name){char p[1024];snprintf(p,sizeof p,"%s/%s.ppm",dir,name);FILE *f=fopen(p,"wb");assert(f);fprintf(f,"P6\n1024 600\n255\n");for(int i=0;i<1024*600;i++){uint8_t b[3]={pixels[i]>>16,pixels[i]>>8,pixels[i]};fwrite(b,1,3,f);}fclose(f);}
 static unsigned next_cp(const unsigned char **p){unsigned c=*(*p)++;if(c<128)return c;unsigned n=(c&0xe0)==0xc0?1:(c&0xf0)==0xe0?2:3;c&=(1u<<(6-n))-1;while(n--)c=(c<<6)|(*(*p)++&63);return c;}
-static void glyphs(void){const unsigned char *p=(const unsigned char *)"波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心";while(*p){unsigned cp=next_cp(&p);lv_font_glyph_dsc_t g;assert(V32_FONT_SMALL->get_glyph_dsc(V32_FONT_SMALL,&g,cp,0));assert(V32_FONT_BASE->get_glyph_dsc(V32_FONT_BASE,&g,cp,0));}}
+static void glyphs(void){const unsigned char *p=(const unsigned char *)"波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测";while(*p){unsigned cp=next_cp(&p);lv_font_glyph_dsc_t g;assert(V32_FONT_SMALL->get_glyph_dsc(V32_FONT_SMALL,&g,cp,0));assert(V32_FONT_BASE->get_glyph_dsc(V32_FONT_BASE,&g,cp,0));}}
 int main(int argc,char **argv)
 {
     assert(argc==2);snprintf(fixture,sizeof fixture,"/tmp/v32_modulation_view_%ld.bin",(long)getpid());float lo,hi,out[1024],v[3]={10,10,10};assert(mod_view_range(v,3,1,&lo,&hi)&&lo==0&&hi>10);
@@ -56,11 +56,13 @@ int main(int argc,char **argv)
     assert(strstr(lv_label_get_text(s_lbl_modana_note),"16.13 ms"));
     assert(strstr(lv_label_get_text(s_lbl_modana_units),"A(t)"));save(argv[1],"envelope");
     assert(strstr(lv_label_get_text(s_lbl_modraw_units),"bounds, NOT RAW"));
+    assert(strstr(lv_label_get_text(s_lbl_modcarrier),"RAW") && strstr(lv_label_get_text(s_lbl_modcarrier),"1.000"));
     uint32_t fcw=s_an_target_fcw;int pending=s_an_send_pending;
     cb_mod_view(NULL);draw(d);assert(s_mod_raw_view && s_an_target_fcw==fcw && s_an_send_pending==pending);
     assert(strstr(lv_label_get_text(s_lbl_rawnote),"us") && !strstr(lv_label_get_text(s_lbl_rawnote),"516"));save(argv[1],"raw");
     lv_area_t a,b;lv_obj_get_coords(s_chip_mv,&a);lv_obj_get_coords(s_chip_mw,&b);assert(a.x1>=0 && b.x2<1024);
     s_real_t_last=lv_tick_get()-20000u;draw(d);assert(strstr(lv_label_get_text(s_lbl_rawnote),"stale"));save(argv[1],"stale");
+    assert(!strstr(lv_label_get_text(s_lbl_modcarrier),"RAW") && strstr(lv_label_get_text(s_lbl_modcarrier),"DDC"));
     fixture_write(17,3,1,0,0,0,1,0);assert(v32_init_file(fixture)==0);
     cb_mod_view(NULL);cb_mod_window(NULL);draw(d);assert(!s_mod_raw_view && strstr(lv_label_get_text(s_lbl_rawnote),"16.01 ms"));
     // Valid zero samples and invalid holes must remain distinguishable.
