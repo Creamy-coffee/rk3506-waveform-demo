@@ -24,6 +24,7 @@
 #include "analysis_history.h"
 #include "modulation_view.h"
 #include "ook_decoder.h"
+#include "bpsk_decoder.h"
 #include "v32cap3.h"       /* SYSTEM 页要读 UART 的帧数/CRC 错误统计 */
 #include "fft.h"
 #include "bl_interp.h"
@@ -201,6 +202,9 @@ static lv_obj_t *s_lbl_modcarrier;
 static lv_obj_t *s_lbl_moddecision_key;
 static lv_obj_t *s_lbl_modbaud,*s_lbl_ook_info,*s_lbl_ook_bits,*s_chip_ook_on,*s_chip_ook_baud,*s_chip_ook_test;
 static ook_decoder_t s_ook;
+static bpsk_decoder_t s_bpsk;
+static bool s_bpsk_invert=false,s_bpsk_symbols=true;
+static lv_obj_t *s_chip_bpsk_inv,*s_chip_bpsk_view;
 static bool s_ook_on=true,s_ook_test=false;
 static unsigned s_ook_rate=3;
 static const int OOK_RATES[5]={100,250,500,1000,2000};
@@ -258,6 +262,8 @@ static void cb_mod_window(lv_event_t *e);
 static void cb_ook_on(lv_event_t *e);
 static void cb_ook_baud(lv_event_t *e);
 static void cb_ook_test(lv_event_t *e);
+static void cb_bpsk_inv(lv_event_t *e);
+static void cb_bpsk_view(lv_event_t *e);
 static void cb_ch1(lv_event_t *e);
 static void cb_ch2(lv_event_t *e);
 
@@ -2374,6 +2380,15 @@ static void build_mod(lv_obj_t *pg)
                             TITLE_H + METRIC_H * 4 + V32_PANEL_PAD * 2 + V32_PANEL_BW * 2);
     lv_obj_set_width(p2, LV_PCT(100));
     mk_title(p2, 0, 0, "分析帧");
+    s_chip_bpsk_inv=mk_chip(p2,"INV 0",cb_bpsk_inv);
+    s_chip_bpsk_view=mk_chip(p2,"SYM",cb_bpsk_view);
+    lv_obj_t *bpsk_buttons[]={s_chip_bpsk_inv,s_chip_bpsk_view};
+    for(int k=0;k<2;k++){
+        lv_obj_set_pos(bpsk_buttons[k],k?150:90,0);lv_obj_set_size(bpsk_buttons[k],k?74:54,22);
+        lv_obj_set_style_pad_all(bpsk_buttons[k],0,0);
+        lv_obj_set_style_text_font(lv_obj_get_child(bpsk_buttons[k],0),V32_FONT_SMALL,0);
+        lv_obj_add_flag(bpsk_buttons[k],LV_OBJ_FLAG_HIDDEN);
+    }
     s_lbl_mf1 = mk_metric(p2, TITLE_H + METRIC_H * 0, "帧号/配置", "--", V32_C_METRIC_VALUE);
     s_lbl_mf2 = mk_metric(p2, TITLE_H + METRIC_H * 1, "样点类型",   "--", V32_C_METRIC_VALUE);
     s_lbl_mf3 = mk_metric(p2, TITLE_H + METRIC_H * 2, "抽取率",     "--", V32_C_METRIC_VALUE);
@@ -2878,6 +2893,7 @@ static int s_an_send_pending;
 static void analysis_apply(int type, int ch, int rate)
 {
     ook_reset(&s_ook);
+    bpsk_reset(&s_bpsk);
     s_an_type = type; s_an_ch = ch; s_an_rate = rate;
     s_an_last_tap_ms = lv_tick_get();
     s_an_send_pending = 1;      /* 命令延后 250ms 发（等连点结束） */
@@ -2931,10 +2947,16 @@ static void an_chips_refresh(void)
     if(s_chip_mw){char t[32];snprintf(t,sizeof t,"窗口 %ums",MOD_WINDOW_MS[s_mod_window]);chip_set_text(s_chip_mw,t);if(s_mod_raw_view)lv_obj_add_state(s_chip_mw,LV_STATE_DISABLED);else lv_obj_remove_state(s_chip_mw,LV_STATE_DISABLED);}
     if(s_chip_ook_on){
         lv_obj_t *chips[]={s_chip_ook_on,s_chip_ook_baud,s_chip_ook_test};
-        for(int i=0;i<3;i++)if(s_an_type==5 || s_an_type==3)lv_obj_remove_flag(chips[i],LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(chips[i],LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<3;i++)if(s_an_type==5 || s_an_type==3 || s_an_type==6)lv_obj_remove_flag(chips[i],LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(chips[i],LV_OBJ_FLAG_HIDDEN);
         chip_set_text(s_chip_ook_on,s_ook_on?"解码 开":"解码 关");
         char t[24];snprintf(t,sizeof t,"%dBd",OOK_RATES[s_ook_rate]);chip_set_text(s_chip_ook_baud,t);
-        chip_set_text(s_chip_ook_test,s_ook_test?"0101 开":"0101 关");
+        chip_set_text(s_chip_ook_test,s_an_type==6?(s_ook_test?"PN7 开":"PN7 关"):(s_ook_test?"0101 开":"0101 关"));
+    }
+    if(s_chip_bpsk_inv){
+        lv_obj_t *b[]={s_chip_bpsk_inv,s_chip_bpsk_view};
+        for(int k=0;k<2;k++)if(s_an_type==6)lv_obj_remove_flag(b[k],LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(b[k],LV_OBJ_FLAG_HIDDEN);
+        chip_set_text(s_chip_bpsk_inv,s_bpsk_invert?"INV 1":"INV 0");
+        chip_set_text(s_chip_bpsk_view,s_bpsk_symbols?"SYM":"RAW IQ");
     }
     /* FPGA 内部 ADC 0/1 -> 界面显示 CH1/CH2（交付包 v3：只在 UI 映射） */
     if(s_chip_mc) { char b[16]; snprintf(b, sizeof b, "通道 CH%d", s_an_ch + 1);
@@ -2947,9 +2969,11 @@ static void an_chips_refresh(void)
 /* These two controls only change the display. They never configure the FPGA. */
 static void cb_mod_view(lv_event_t *e){LV_UNUSED(e);s_mod_raw_view=!s_mod_raw_view;an_chips_refresh();}
 static void cb_mod_window(lv_event_t *e){LV_UNUSED(e);s_mod_window=(s_mod_window+1u)%5u;an_chips_refresh();}
-static void cb_ook_on(lv_event_t *e){LV_UNUSED(e);s_ook_on=!s_ook_on;ook_reset(&s_ook);an_chips_refresh();}
-static void cb_ook_baud(lv_event_t *e){LV_UNUSED(e);s_ook_rate=(s_ook_rate+1)%5;ook_reset(&s_ook);an_chips_refresh();}
-static void cb_ook_test(lv_event_t *e){LV_UNUSED(e);s_ook_test=!s_ook_test;ook_reset(&s_ook);an_chips_refresh();}
+static void cb_ook_on(lv_event_t *e){LV_UNUSED(e);s_ook_on=!s_ook_on;ook_reset(&s_ook);bpsk_reset(&s_bpsk);an_chips_refresh();}
+static void cb_ook_baud(lv_event_t *e){LV_UNUSED(e);s_ook_rate=(s_ook_rate+1)%5;ook_reset(&s_ook);bpsk_reset(&s_bpsk);an_chips_refresh();}
+static void cb_ook_test(lv_event_t *e){LV_UNUSED(e);s_ook_test=!s_ook_test;ook_reset(&s_ook);bpsk_reset(&s_bpsk);an_chips_refresh();}
+static void cb_bpsk_inv(lv_event_t *e){LV_UNUSED(e);s_bpsk_invert=!s_bpsk_invert;bpsk_reset(&s_bpsk);an_chips_refresh();}
+static void cb_bpsk_view(lv_event_t *e){LV_UNUSED(e);s_bpsk_symbols=!s_bpsk_symbols;an_chips_refresh();}
 
 static void cb_an_type(lv_event_t *e)
 {
@@ -4505,7 +4529,7 @@ static void mod_draw_upper(const v32_ana_view_t *av,bool have_ana,bool match)
         mod_view_resample(src,count,y,PLOT_MAX_PTS,-peak,peak);
         mod_view_resample(qq,count,q,PLOT_MAX_PTS,-peak,peak);
         plot_set_mode(s_plot_modraw,PLOT_SCOPE);plot_set_trace(s_plot_modraw,0,y,PLOT_MAX_PTS,V32_C_CH1,1);plot_set_trace(s_plot_modraw,1,q,PLOT_MAX_PTS,V32_C_CH2,1);
-        lv_label_set_text(s_lbl_modraw_title,"I/Q · 时间历程");lv_label_set_text(s_lbl_modraw_units,"I/Q [DDC 码] | baseband, not decoded");
+        lv_label_set_text(s_lbl_modraw_title,"I/Q · 时间历程");lv_label_set_text(s_lbl_modraw_units,av->mode==6u?"I/Q [DDC 码] | raw baseband":"I/Q [DDC 码] | baseband, not decoded");
         plot_set_legends(s_plot_modraw,"I","Q");
         return;
     }
@@ -4577,13 +4601,18 @@ static void tick_mod(void)
             ana_history_push(&s_history,&queued);
             if(s_ook_on && (queued.mode==5 || queued.mode==3))binary_push(&s_ook,&queued,OOK_RATES[s_ook_rate],s_ook_test,queued.mode==3);
             else ook_reset(&s_ook);
-        }else {ana_history_clear(&s_history);ook_reset(&s_ook);}
+            if(s_ook_on && queued.mode==6)bpsk_push(&s_bpsk,&queued,OOK_RATES[s_ook_rate],s_bpsk_invert,s_ook_test);
+            else bpsk_reset(&s_bpsk);
+        }else {ana_history_clear(&s_history);ook_reset(&s_ook);bpsk_reset(&s_bpsk);}
     }
     /* The reader may enqueue a newer frame after get_ana above. Never feed the
        older snapshot back after draining that newer frame (false gap/reset). */
     if((s_an_type==5 || s_an_type==3) && s_ook_on && have_ana && match) {
         if(!drained_ana)binary_push(&s_ook,&av,OOK_RATES[s_ook_rate],s_ook_test,av.mode==3);
     }else ook_reset(&s_ook);
+    if(s_an_type==6 && s_ook_on && have_ana && match){
+        if(!drained_ana)bpsk_push(&s_bpsk,&av,OOK_RATES[s_ook_rate],s_bpsk_invert,s_ook_test);
+    }else bpsk_reset(&s_bpsk);
     lv_label_set_text(s_lbl_ook_info,"");lv_label_set_text(s_lbl_ook_bits,"");lv_label_set_text(s_lbl_modbaud,"—");
 
     mod_draw_upper(&av,have_ana,match);
@@ -4686,14 +4715,46 @@ static void tick_mod(void)
         }
         plot_set_mode(s_plot_modana, PLOT_XY);
         plot_set_xy_style(s_plot_modana,true,true);
-        plot_set_trace(s_plot_modana, 0, a, V32_ANA_POINTS, V32_C_MATH, 2);
+        int plotted=V32_ANA_POINTS;
+        if(av.mode==6u && s_bpsk_symbols){
+            lv_label_set_text(s_lbl_modana_title,"BPSK · Symbols");
+            lv_label_set_text(s_lbl_modana_units,"BPSK symbols | +/- phase ambiguity | equal axes");
+            plotted=s_ook_on && s_bpsk.locked?s_bpsk.sym_n:0;
+            lv_label_set_text_fmt(s_lbl_modana_note,"SYM %d",plotted);
+            float limit=1.25f;
+            for(int k=0;k<plotted;k++){int at=(s_bpsk.sym_at-plotted+k+128)%128;limit=fmaxf(limit,1.15f*fmaxf(fabsf(s_bpsk.sym_i[at]),fabsf(s_bpsk.sym_q[at])));}
+            for(int k=0;k<plotted;k++){int at=(s_bpsk.sym_at-plotted+k+128)%128;a[k]=.5f+s_bpsk.sym_i[at]/(2*limit);qbuf[k]=.5f+s_bpsk.sym_q[at]/(2*limit);}
+        }
+        if(plotted)plot_set_trace(s_plot_modana, 0, a, plotted, V32_C_MATH, 2);else plot_hide_trace(s_plot_modana,0);
         /* PLOT_XY 用 trace1 当 Y 轴 —— 拷一份进静态缓冲 */
 
-        plot_set_trace(s_plot_modana, 1, qbuf, V32_ANA_POINTS, V32_C_MATH, 2);
+        if(plotted)plot_set_trace(s_plot_modana, 1, qbuf, plotted, V32_C_MATH, 2);else plot_hide_trace(s_plot_modana,1);
 
         lv_label_set_text_fmt(s_lbl_m4, "RMS %.0f",
                               (double)sqrtf(su / (float)av.nvalid));
         lv_label_set_text(s_lbl_m5, "未解码");
+        if(av.mode==6u){
+            lv_label_set_text_fmt(s_lbl_modbaud,"%d Bd",OOK_RATES[s_ook_rate]);
+            if(s_ook_on){
+                lv_label_set_text(s_lbl_mst,s_bpsk.locked?"● BPSK bit 同步":"○ BPSK 等待同步");
+                lv_obj_set_style_text_color(s_lbl_mst,s_bpsk.locked?V32_C_GREEN:V32_C_WARN,0);
+                lv_label_set_text(s_lbl_m5,s_bpsk.locked?"同步":"等待同步");
+                lv_label_set_text_fmt(s_lbl_ook_info,"CFO~%+.0fHz\nEVM %.3f | INV%d\nn=%llu ?=%llu",s_bpsk.cfo_hz,(double)s_bpsk.evm,s_bpsk_invert,s_bpsk.bits,s_bpsk.erasures);
+                double sps=(65000000.0/av.decim)/OOK_RATES[s_ook_rate];
+                if(sps<6 || sps>256)lv_label_set_text(s_lbl_ook_info,"Rs / R unsupported\nNeed 6..256 SPS");
+                int start=s_bpsk.recent_n>40?s_bpsk.recent_n-40:0;const char *recent=s_bpsk.recent+start;
+                char status[64];
+                if(!s_ook_test)snprintf(status,sizeof status,"PN7 OFF");
+                else if(!s_bpsk.pn_locked)snprintf(status,sizeof status,"PN7 acquiring");
+                else snprintf(status,sizeof status,"PN7 E=%llu/%llu",s_bpsk.pn_errors,s_bpsk.pn_checks);
+                lv_label_set_text_fmt(s_lbl_ook_bits,"bits (+/-):\n%.20s\n%s\n%s",recent,strlen(recent)>20?recent+20:"",status);
+                static uint32_t bpsk_log_ms;
+                if(getenv("WAVE_MEASDBG") && (uint32_t)(lv_tick_get()-bpsk_log_ms)>=1000u){
+                    bpsk_log_ms=lv_tick_get();
+                    fprintf(stderr,"[bpsk] cfg=%u fid=%u ch=%u fcw=%u R=%u baud=%d lock=%d n=%llu erasures=%llu CFO_coarse=%.3f evm=%.4f invert=%d pn_test=%d pn_locked=%d pn_errors=%llu pn_checks=%llu pn_dir=%d pn_invert=%d recent=%s\n",s_bpsk.cfg,s_bpsk.fid,s_bpsk.channel,s_bpsk.fcw,s_bpsk.decim,s_bpsk.baud,s_bpsk.locked,s_bpsk.bits,s_bpsk.erasures,s_bpsk.cfo_hz,(double)s_bpsk.evm,s_bpsk_invert,s_ook_test,s_bpsk.pn_locked,s_bpsk.pn_errors,s_bpsk.pn_checks,s_bpsk.pn_dir,s_bpsk.pn_invert,s_bpsk.recent);
+                }
+            }
+        }
     } else {
         /* 单值曲线：包络(Q8 码)/频偏(Hz)/相位(度)，画成单迹线 */
         plot_set_mode(s_plot_modana, PLOT_SCOPE);

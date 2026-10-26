@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(waveform_demo C)
+include(third_party/liquid.cmake)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -35,6 +36,7 @@ add_subdirectory("${LVGL_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/lvgl")
 add_executable(waveform_demo
     src/main.c
     src/ui.c
+    src/bpsk_decoder.c
     src/plot.c
     src/port.c
     src/drm_disp.c
@@ -61,7 +63,16 @@ target_include_directories(waveform_demo PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
-target_link_libraries(waveform_demo PRIVATE lvgl m pthread)
+target_link_libraries(waveform_demo PRIVATE lvgl liquid m pthread)
+add_executable(bpsk_capture_decode tools/decode_bpsk_capture.c src/bpsk_decoder.c)
+target_include_directories(bpsk_capture_decode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(bpsk_capture_decode PRIVATE liquid m)
+add_executable(test_bpsk_decoder tools/test_bpsk_decoder.c src/bpsk_decoder.c)
+target_include_directories(test_bpsk_decoder PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(test_bpsk_decoder PRIVATE liquid m)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(test_bpsk_decoder PRIVATE -UNDEBUG)
+endif()
 add_executable(ook_capture_decode tools/decode_ook_capture.c)
 target_include_directories(ook_capture_decode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(ook_capture_decode PRIVATE m)

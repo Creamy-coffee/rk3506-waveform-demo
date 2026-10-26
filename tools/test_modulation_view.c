@@ -60,13 +60,19 @@ int main(int argc,char **argv)
     fixture_write(1,3,1,0,0,0,1,1);char spec[128];snprintf(spec,sizeof spec,"file:%s",fixture);wave_source_v32_set_spec(spec);wave_source_select(&wave_source_v32);assert(wave_source_v32.init()==0);setenv("WAVE_SRC","real",1);
     ui_create();ui_set_page(UI_PAGE_MOD);draw(d);
     if(argc>=3){
-        const unsigned capture_mode=argc==4 && !strcmp(argv[3],"fsk")?3:5;
+        const unsigned capture_mode=argc==4 && !strcmp(argv[3],"bpsk")?6:argc==4 && !strcmp(argv[3],"fsk")?3:5;
         FILE *capture=fopen(argv[2],"rb");assert(capture);fseek(capture,0,SEEK_END);long size=ftell(capture);rewind(capture);assert(size>0 && size<64000000);
         uint8_t *data=malloc((size_t)size);assert(data && fread(data,1,(size_t)size,capture)==(size_t)size);fclose(capture);
         unsigned frames=0;s_an_type=(int)capture_mode;s_an_ch=0;s_an_rate=1;s_an_send_pending=0;s_an_tx_failed=0;s_an_have_target=1;s_an_target_fcw=66076420;s_ook_test=true;ook_reset(&s_ook);an_chips_refresh();
         for(long i=0;i+1076<=size;i++)if(!memcmp(data+i,"V32ANA1!",8) && crc(data+i,1072)==take32(data+i+1072) && ((take32(data+i+36)>>16)&255)==capture_mode){
+            if(!frames)s_an_target_fcw=take32(data+i+40);
             FILE *f=fopen(fixture,"wb");assert(f && fwrite(data+i,1,1076,f)==1076);fclose(f);assert(v32_init_file(fixture)==0);
             test_ms+=20;lv_tick_inc(20);ui_tick();frames++;i+=1075;
+        }
+        if(capture_mode==6){
+            draw(d);printf("BPSK_GUI_CAPTURE frames=%u n=%llu errors=%llu checks=%llu erasures=%llu lock=%d pn=%d evm=%f\n",frames,s_bpsk.bits,s_bpsk.pn_errors,s_bpsk.pn_checks,s_bpsk.erasures,s_bpsk.locked,s_bpsk.pn_locked,s_bpsk.evm);fflush(stdout);
+            assert(frames>300 && s_bpsk.bits>5700 && s_bpsk.pn_errors==0 && s_bpsk.pn_checks>5000 && s_bpsk.erasures==0 && s_bpsk.locked && s_bpsk.pn_locked);
+            assert(lv_obj_get_height(s_lbl_ook_bits)<=80);save(argv[1],"bpsk_real_capture");bpsk_reset(&s_bpsk);free(data);unlink(fixture);return 0;
         }
         draw(d);printf("%s_GUI_CAPTURE frames=%u n=%llu errors=%llu checks=%llu erasures=%llu lock=%d\n",capture_mode==3?"FSK":"OOK",frames,s_ook.bits,s_ook.alternating_errors,s_ook.alternating_checks,s_ook.erasures,s_ook.locked);fflush(stdout);
         assert(frames>300 && s_ook.bits>5900 && s_ook.alternating_errors==0 && s_ook.erasures==0 && s_ook.locked);save(argv[1],capture_mode==3?"fsk_real_capture":"ook_real_capture");free(data);unlink(fixture);return 0;
@@ -94,7 +100,8 @@ int main(int argc,char **argv)
     s_an_type=4;s_an_ch=1;an_chips_refresh();fixture_write(1,4,4,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(strstr(lv_label_get_text(s_lbl_modana_units),"not decoded"));save(argv[1],"iq");
     assert(strstr(lv_label_get_text(s_lbl_modraw_title),"时间") && !strcmp(lv_label_get_text(s_lbl_m5),"未解码"));
     v32_ana_view_t digital;assert(v32_get_ana(&digital));assert(digital.nvalid==256 && digital.q[0]<0);
-    s_an_type=6;an_chips_refresh();fixture_write(1,6,6,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.mode==6 && digital.nvalid==256);save(argv[1],"bpsk");
+    s_an_type=6;s_bpsk_symbols=false;an_chips_refresh();fixture_write(1,6,6,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.mode==6 && digital.nvalid==256);assert(!strcmp(lv_label_get_text(s_lbl_m5),"等待同步"));save(argv[1],"bpsk");
+    cb_bpsk_view(NULL);draw(d);assert(s_bpsk_symbols && strstr(lv_label_get_text(s_lbl_modana_units),"symbols"));save(argv[1],"bpsk_wait");cb_bpsk_view(NULL);
     s_an_type=5;an_chips_refresh();fixture_write(1,7,5,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.y[0]==0 && digital.nvalid==256);assert(s_ook.locked && s_ook.bits>5);assert(strstr(lv_label_get_text(s_lbl_modraw_title),"OOK"));save(argv[1],"ook");
     uint32_t ook_fcw=s_an_target_fcw;int ook_pending=s_an_send_pending;
     cb_ook_test(NULL);fixture_write(2,7,5,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(s_ook.alternating_checks>5 && s_ook.alternating_errors==0);save(argv[1],"ook_bits");

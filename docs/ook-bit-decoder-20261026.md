@@ -1,6 +1,6 @@
 # 已知符号率 OOK bit 判决（第一版）
 
-本功能在Linux屏端处理现有`V32ANA1!` mode5/kind1包络，不改FPGA协议、不需更换bit。保留原始ADC波形和包络观察。后续2FSK已知符号率判决见[fsk-bit-decoder-20261026.md](fsk-bit-decoder-20261026.md)，BPSK/QPSK仍不输出bit，不能把OOK进展推广为所有数字制式已解码。
+本功能在Linux屏端处理现有`V32ANA1!` mode5/kind1包络，不改FPGA协议、不需更换bit。保留原始ADC波形和包络观察。2FSK见[fsk-bit-decoder-20261026.md](fsk-bit-decoder-20261026.md)，后续BPSK见[bpsk-bit-decoder-20261026.md](bpsk-bit-decoder-20261026.md)。QPSK仍不输出bit，不能把单个制式进展推广为所有数字制式已解码。
 
 ## 页面与参数
 
