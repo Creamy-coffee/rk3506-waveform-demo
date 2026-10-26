@@ -454,7 +454,7 @@ int main(int argc, char **argv)
             const char *v = argv[++i];
             const int p = ui_page_from_name(v);
             if (p < 0) {
-                fprintf(stderr, "[app] 未知视图 '%s'（scope|fft|lock|ai|system）\n", v);
+                fprintf(stderr, "[app] 未知视图 '%s'（scope|fft|lock|ai|mod|system）\n", v);
                 return 2;
             }
             start_page = p;

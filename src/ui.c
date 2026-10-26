@@ -1824,6 +1824,14 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
      */
     {
         v32_spec_view_t sp;
+        memset(&sp, 0, sizeof sp);
+        /*
+         * 必须先取一次！之前删占位 if 的时候把这一行连同 if 一起删了，
+         * 结果 sp 未初始化就被读（sp.seq/got/nfft/fs_eff_hz），
+         * 全靠栈残留值碰运气 —— FPGA 端代码审查在 ui.c:1826 抓到了。
+         * v32_get_spec 的返回值只表示"新不新"，所以下面用 sp.seq 判"有没有"。
+         */
+        (void)v32_get_spec(&sp);
         /*
          * FPGA 的 V32SPEC! 帧里**只有 CH0**（PROTOCOL.md 明确写了），
          * 所以用户选 CH2 时必须走本地 FFT —— 否则选了通道画面一点变化都没有，
@@ -4248,6 +4256,98 @@ static void tick_ai(void)
  *   回显匹配：帧头 mode/channel 必须等于当前下发配置，否则「切换中」；
  *   flags≠0 整帧只作诊断（02_双路显示与防卡住.md 的验收要求）。
  */
+/* =========================================================
+ * 正弦 AM 调制度拟合（按 FPGA 修改清单 P0-2，2026-10-26）
+ *
+ * 为什么不用极值法：
+ *   实测（#51 证据包，真值 0/25/50/75%）极值法给出 9.54/30.96/55.77/79.64%，
+ *   幅度减半时 50% 被算成 63.48% —— 低幅度下噪声和量化波动被 max/min 当成
+ *   调制深度放大了。同一批数据用已知频率正弦拟合是 0.26/25.16/49.91/75.00%，
+ *   半幅 50.12%。差异全在算法，不在数据。
+ *
+ * 模型：A(t) = A0 + a·cos(2π·fm·t) + b·sin(2π·fm·t)，m = √(a²+b²)/A0
+ * 采样间隔 dt = R/fs（R 是 ANA 帧里的 decim，fs=65 MHz），所以
+ *   以样点序号 n 为自变量时，角步长 fp = fm·R/fs，不需要另猜采样率。
+ *   （实测 1 kHz/R=4096 时 fp=0.0630，与 fm·R/fs 完全吻合）
+ * ========================================================= */
+
+/* 最小二乘：y[n] ≈ A0 + a·cos(2π fp n) + b·sin(2π fp n)
+ * 只统计 valid 的样点；返回 1 表示解出来了。 */
+static int am_ls_sine(const float *y, const int *val, int n, float fp,
+                      float *pA0, float *pa, float *pb, float *presid)
+{
+    double s1 = 0, sc = 0, ss = 0, scc = 0, css = 0, scs = 0;
+    double sy = 0, syc = 0, sys = 0;
+    int m = 0;
+    for(int i = 0; i < n; i++) {
+        if(!val[i]) continue;
+        const double ph = 2.0 * 3.14159265358979 * (double)fp * (double)i;
+        const double c = cos(ph), sn = sin(ph), v = (double)y[i];
+        s1 += 1.0; sc += c; ss += sn;
+        scc += c * c; css += sn * sn; scs += c * sn;
+        sy += v; syc += v * c; sys += v * sn;
+        m++;
+    }
+    if(m < 8) return 0;
+
+    /* 3×3 正规方程，Cramer 法则 */
+    const double A00 = s1,  A01 = sc,  A02 = ss;
+    const double A11 = scc, A12 = scs, A22 = css;
+    const double det = A00 * (A11 * A22 - A12 * A12)
+                     - A01 * (A01 * A22 - A12 * A02)
+                     + A02 * (A01 * A12 - A11 * A02);
+    if(fabs(det) < 1e-9) return 0;
+    const double d0 = sy  * (A11 * A22 - A12 * A12)
+                    - A01 * (syc * A22 - A12 * sys)
+                    + A02 * (syc * A12 - A11 * sys);
+    const double d1 = A00 * (syc * A22 - A12 * sys)
+                    - sy  * (A01 * A22 - A12 * A02)
+                    + A02 * (A01 * sys - syc * A02);
+    const double d2 = A00 * (A11 * sys - syc * A12)
+                    - A01 * (A01 * sys - syc * A02)
+                    + sy  * (A01 * A12 - A11 * A02);
+    const double A0 = d0 / det, ca = d1 / det, cb = d2 / det;
+
+    double se = 0;
+    for(int i = 0; i < n; i++) {
+        if(!val[i]) continue;
+        const double ph = 2.0 * 3.14159265358979 * (double)fp * (double)i;
+        const double pr = A0 + ca * cos(ph) + cb * sin(ph);
+        const double e = (double)y[i] - pr;
+        se += e * e;
+    }
+    *pA0 = (float)A0; *pa = (float)ca; *pb = (float)cb;
+    *presid = (float)sqrt(se / (double)m);
+    return 1;
+}
+
+/* 从包络自身估调制频率：256 点 FFT 找峰 + 抛物线插值 + 残差精修 */
+static float am_est_fp(const float *y, const int *val, int n)
+{
+    static float buf[256], mag[256];
+    if(n != 256) return 0.f;
+    double mean = 0; int cnt = 0;
+    for(int i = 0; i < n; i++) if(val[i]) { mean += y[i]; cnt++; }
+    if(cnt < 8) return 0.f;
+    mean /= cnt;
+    for(int i = 0; i < n; i++) buf[i] = val[i] ? (float)(y[i] - mean) : 0.f;
+    fft_magnitude_spectrum(buf, n, mag);
+
+    int kb = 1;
+    for(int k = 2; k < n / 2; k++) if(mag[k] > mag[kb]) kb = k;
+    float fp = (float)kb / (float)n;
+    if(kb > 0 && kb < n / 2 - 1) {
+        const float a = mag[kb - 1], b = mag[kb], c = mag[kb + 1];
+        const float den = a - 2.f * b + c;
+        if(fabsf(den) > 1e-12f) {
+            float d = 0.5f * (a - c) / den;
+            if(d > -0.5f && d < 0.5f) fp = ((float)kb + d) / (float)n;
+        }
+    }
+    if(fp < 0.5f / (float)n) fp = 0.5f / (float)n;
+    return fp;
+}
+
 static void tick_mod(void)
 {
     static float a[PLOT_MAX_PTS];
@@ -4567,14 +4667,104 @@ static void tick_mod(void)
         plot_set_trace(s_plot_modana, 0, a, V32_ANA_POINTS, V32_C_MATH, 2);
 
         if(av.kind == 1u) {
-            /* AM/OOK：幅度=包络峰峰值(码)，调制度=(max-min)/(max+min) */
-            const float sum = mx + mn;
-            snprintf(b, sizeof b, "%.0f 码", (double)(mx - mn));
+            /*
+             * AM/OOK 调制度改用**正弦拟合**，不再用极值法。
+             * 极值法 (max-min)/(max+min) 在低幅度下把噪声当调制深度：
+             * 实测真值 0% 被算成 9.54%、25%→30.96%、50%→55.77%、75%→79.64%，
+             * 幅度减半时 50% 变成 63.48%。拟合值分别是 0.26/25.16/49.91/75.00/50.12%。
+             *
+             * 注意：绘图归一化用的 mn/mx 与这里的统计**完全分开**，
+             * 画图为了让波形铺满而改写量程，绝不能影响读数。
+             */
+            float rmin = 0.f, rmax = 0.f;
+            int   nv = 0;
+            for(int k = 0; k < V32_ANA_POINTS; k++) {
+                if(!av.yvalid[k]) continue;
+                if(nv == 0 || av.y[k] < rmin) rmin = av.y[k];
+                if(nv == 0 || av.y[k] > rmax) rmax = av.y[k];
+                nv++;
+            }
+            const float vpp = (nv > 0) ? (rmax - rmin) : 0.f;
+            snprintf(b, sizeof b, "%.0f 码", (double)vpp);
             lv_label_set_text(s_lbl_m4, b);
-            if(sum > 1e-6f)
-                lv_label_set_text_fmt(s_lbl_m5, "%.1f %%", (double)((mx - mn) / sum * 100.0f));
-            else
-                lv_label_set_text(s_lbl_m5, "--");
+
+            /* 拟合：先在 FFT 峰附近精修 fp，再取残差最小解 */
+            float fp = am_est_fp(av.y, av.yvalid, V32_ANA_POINTS);
+            float bA0 = 0.f, ba = 0.f, bb = 0.f, bres = 1e30f, bfp = fp;
+            if(nv >= 200 && fp > 0.f) {
+                /* 粗扫：±6 个 1/4 bin */
+                for(int q = -6; q <= 6; q++) {
+                    const float t = fp + (float)q * (0.25f / (float)V32_ANA_POINTS);
+                    float A0, ca2, cb2, rs;
+                    if(t <= 0.f) continue;
+                    if(am_ls_sine(av.y, av.yvalid, V32_ANA_POINTS, t, &A0, &ca2, &cb2, &rs)
+                       && rs < bres) {
+                        bres = rs; bfp = t; bA0 = A0; ba = ca2; bb = cb2;
+                    }
+                }
+                /*
+                 * 黄金分割精修 fp。
+                 * 粗扫的台阶是 1/4 bin(=0.00098)，而 fp 只偏 0.0005 就足以让
+                 * 50% 的读数从 49.9 掉到 49.1 —— 调制深度对频率非常敏感。
+                 * 这里在粗扫最优点两侧各 1 个台阶内做黄金分割，收到 1e-6 量级。
+                 */
+                {
+                    float lo = bfp - 0.25f / (float)V32_ANA_POINTS;
+                    float hi = bfp + 0.25f / (float)V32_ANA_POINTS;
+                    if(lo < 1e-5f) lo = 1e-5f;
+                    const float gr = 0.6180339887f;
+                    float x1 = hi - gr * (hi - lo), x2 = lo + gr * (hi - lo);
+                    float A0, ca2, cb2, r1, r2;
+                    if(!am_ls_sine(av.y, av.yvalid, V32_ANA_POINTS, x1, &A0, &ca2, &cb2, &r1)) r1 = 1e30f;
+                    if(!am_ls_sine(av.y, av.yvalid, V32_ANA_POINTS, x2, &A0, &ca2, &cb2, &r2)) r2 = 1e30f;
+                    for(int it = 0; it < 20; it++) {
+                        if(r1 < r2) { hi = x2; x2 = x1; r2 = r1;
+                                      x1 = hi - gr * (hi - lo);
+                                      if(!am_ls_sine(av.y, av.yvalid, V32_ANA_POINTS, x1, &A0, &ca2, &cb2, &r1)) r1 = 1e30f; }
+                        else        { lo = x1; x1 = x2; r1 = r2;
+                                      x2 = lo + gr * (hi - lo);
+                                      if(!am_ls_sine(av.y, av.yvalid, V32_ANA_POINTS, x2, &A0, &ca2, &cb2, &r2)) r2 = 1e30f; }
+                    }
+                    const float xb = (r1 < r2) ? x1 : x2;
+                    float rb = (r1 < r2) ? r1 : r2;
+                    if(rb < bres && am_ls_sine(av.y, av.yvalid, V32_ANA_POINTS, xb, &A0, &ca2, &cb2, &rb)) {
+                        bres = rb; bfp = xb; bA0 = A0; ba = ca2; bb = cb2;
+                    }
+                }
+            }
+
+            const float cycles = bfp * (float)V32_ANA_POINTS;   /* 窗内周期数 */
+            const float amp    = sqrtf(ba * ba + bb * bb);      /* 拟合出的调制幅度(码) */
+            const float m_pct  = (bA0 > 1e-6f) ? (amp / bA0 * 100.f) : 0.f;
+            /*
+             * 显著性：调制幅度必须明显高于拟合残差。
+             * 恒定包络（真值 0%）上 FFT 只能找到噪声峰，三点模型会把噪声
+             * 拟合出 3.5% 的假调制（实测）；而真正的 25/50/75% 该比值在 8~15，
+             * 噪声组只有 0.9。判据取 2.0 留足余量。
+             */
+            const bool  sig    = (bres > 1e-6f) ? (amp >= 2.0f * bres) : (amp > 0.f);
+            const bool  ok_amp = (bA0 > 3.f);                   /* 直流包络太小 = 无信号 */
+            const bool  ok_cyc = (cycles >= 0.8f);
+            const bool  ok_res = (bA0 > 1e-6f) && (bres / bA0 <= 0.15f);
+
+            if(getenv("WAVE_MEASDBG"))
+                fprintf(stderr, "[am] m=%.2f%% sig=%d A0=%.2f amp=%.2f resid=%.3f fp=%.5f cyc=%.1f nv=%d\n",
+                        (double)m_pct, (int)sig, (double)bA0, (double)amp,
+                        (double)bres, (double)bfp, (double)cycles, nv);
+
+            if(!ok_amp) {
+                lv_label_set_text(s_lbl_m5, "--");          /* 零包络：无信号，不是 0% */
+            } else if(!ok_cyc) {
+                lv_label_set_text(s_lbl_m5, "--");          /* 窗内不足 1 个周期 */
+            } else if(!ok_res) {
+                lv_label_set_text(s_lbl_m5, "--");          /* 不像正弦调制，不套模型 */
+            } else if(!sig) {
+                lv_label_set_text(s_lbl_m5, "0.0 %");       /* 低于检测限：没有可测的调制 */
+            } else if(m_pct > 100.f) {
+                lv_label_set_text(s_lbl_m5, "--");          /* 物理上不可能，不裁剪掩盖 */
+            } else {
+                lv_label_set_text_fmt(s_lbl_m5, "%.1f %%", (double)m_pct);
+            }
         } else if(av.kind == 2u) {
             /* FM/FSK：峰值频偏 = max|y| */
             float pk = 0.f;
@@ -4786,7 +4976,9 @@ int ui_page_from_name(const char *name)
     if(!strcmp(name, "fft")   || !strcmp(name, "1")) return UI_PAGE_FFT;
     if(!strcmp(name, "lock")  || !strcmp(name, "lockin") || !strcmp(name, "2")) return UI_PAGE_LOCK;
     if(!strcmp(name, "ai")    || !strcmp(name, "3")) return UI_PAGE_AI;
-    if(!strcmp(name, "system")|| !strcmp(name, "sys") || !strcmp(name, "4")) return UI_PAGE_SYSTEM;
+    /* 插入 UI_PAGE_MOD 之后，"4" 已经变成调制页，不能再当 system 用 */
+    if(!strcmp(name, "mod")   || !strcmp(name, "modem") || !strcmp(name, "4")) return UI_PAGE_MOD;
+    if(!strcmp(name, "system")|| !strcmp(name, "sys") || !strcmp(name, "5")) return UI_PAGE_SYSTEM;
     return -1;
 }
 
