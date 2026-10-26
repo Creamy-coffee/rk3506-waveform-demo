@@ -1824,6 +1824,14 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
      */
     {
         v32_spec_view_t sp;
+        memset(&sp, 0, sizeof sp);
+        /*
+         * 必须先取一次！之前删占位 if 的时候把这一行连同 if 一起删了，
+         * 结果 sp 未初始化就被读（sp.seq/got/nfft/fs_eff_hz），
+         * 全靠栈残留值碰运气 —— FPGA 端代码审查在 ui.c:1826 抓到了。
+         * v32_get_spec 的返回值只表示"新不新"，所以下面用 sp.seq 判"有没有"。
+         */
+        (void)v32_get_spec(&sp);
         /*
          * FPGA 的 V32SPEC! 帧里**只有 CH0**（PROTOCOL.md 明确写了），
          * 所以用户选 CH2 时必须走本地 FFT —— 否则选了通道画面一点变化都没有，
