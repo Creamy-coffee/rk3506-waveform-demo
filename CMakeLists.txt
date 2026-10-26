@@ -62,6 +62,9 @@ target_include_directories(waveform_demo PRIVATE
 )
 
 target_link_libraries(waveform_demo PRIVATE lvgl m pthread)
+add_executable(ook_capture_decode tools/decode_ook_capture.c)
+target_include_directories(ook_capture_decode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(ook_capture_decode PRIVATE m)
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(waveform_demo PRIVATE -O2 -Wall -Wextra)

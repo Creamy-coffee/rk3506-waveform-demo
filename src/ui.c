@@ -23,6 +23,7 @@
 #include "wave_source.h"
 #include "analysis_history.h"
 #include "modulation_view.h"
+#include "ook_decoder.h"
 #include "v32cap3.h"       /* SYSTEM 页要读 UART 的帧数/CRC 错误统计 */
 #include "fft.h"
 #include "bl_interp.h"
@@ -198,6 +199,11 @@ static lv_obj_t *s_lbl_modraw_title;   /* 上图标题（原始波形/分析历�
 static lv_obj_t *s_lbl_modana_title, *s_lbl_modana_note, *s_lbl_modraw_units, *s_lbl_modana_units, *s_lbl_modvalue_key;
 static lv_obj_t *s_lbl_modcarrier;
 static lv_obj_t *s_lbl_moddecision_key;
+static lv_obj_t *s_lbl_modbaud,*s_lbl_ook_info,*s_lbl_ook_bits,*s_chip_ook_on,*s_chip_ook_baud,*s_chip_ook_test;
+static ook_decoder_t s_ook;
+static bool s_ook_on=true,s_ook_test=false;
+static unsigned s_ook_rate=3;
+static const int OOK_RATES[5]={100,250,500,1000,2000};
 static lv_obj_t *s_chip_mv, *s_chip_mw;
 static bool s_mod_raw_view = false;
 static unsigned s_mod_window = 0;
@@ -249,6 +255,9 @@ static void cb_an_ch(lv_event_t *e);
 static void cb_an_rate(lv_event_t *e);
 static void cb_mod_view(lv_event_t *e);
 static void cb_mod_window(lv_event_t *e);
+static void cb_ook_on(lv_event_t *e);
+static void cb_ook_baud(lv_event_t *e);
+static void cb_ook_test(lv_event_t *e);
 static void cb_ch1(lv_event_t *e);
 static void cb_ch2(lv_event_t *e);
 
@@ -2356,7 +2365,10 @@ static void build_mod(lv_obj_t *pg)
     s_lbl_m5  = mk_metric(p1, TITLE_H + METRIC_H * 5, "调制度",   "--", V32_C_METRIC_VALUE);
     s_lbl_moddecision_key=lv_obj_get_child(lv_obj_get_parent(s_lbl_m5),0);
     s_lbl_m6  = mk_metric(p1, TITLE_H + METRIC_H * 6, "有效样点", "--", V32_C_METRIC_VALUE);
-    mk_metric(p1, TITLE_H + METRIC_H * 7, "符号率",   "—", V32_C_METRIC_VALUE);
+    s_lbl_modbaud=mk_metric(p1, TITLE_H + METRIC_H * 7, "符号率",   "—", V32_C_METRIC_VALUE);
+    s_lbl_ook_info=mk_label(p1,0,TITLE_H+METRIC_H*8,"",V32_FONT_SMALL,V32_C_METRIC_VALUE);
+    s_lbl_ook_bits=mk_label(p1,0,TITLE_H+METRIC_H*11,"",V32_FONT_SMALL,V32_C_METRIC_VALUE);
+    lv_obj_set_width(s_lbl_ook_info,LV_PCT(100));lv_obj_set_width(s_lbl_ook_bits,LV_PCT(100));
 
     lv_obj_t *p2 = mk_panel(aside, 0, 0, 0,
                             TITLE_H + METRIC_H * 4 + V32_PANEL_PAD * 2 + V32_PANEL_BW * 2);
@@ -2865,6 +2877,7 @@ static int s_an_send_pending;
 
 static void analysis_apply(int type, int ch, int rate)
 {
+    ook_reset(&s_ook);
     s_an_type = type; s_an_ch = ch; s_an_rate = rate;
     s_an_last_tap_ms = lv_tick_get();
     s_an_send_pending = 1;      /* 命令延后 250ms 发（等连点结束） */
@@ -2916,6 +2929,13 @@ static void an_chips_refresh(void)
                     chip_selected_c(s_chip_mt, s_an_type != 0, V32_C_MATH); }
     if(s_chip_mv){const char *view=(s_an_type==4 || s_an_type==6)?"波形 I/Q":(s_an_type==2 || s_an_type==3)?"波形 频偏":s_an_type==7?"波形 相位":"波形 包络";chip_set_text(s_chip_mv,s_mod_raw_view?"波形 原始":view);chip_selected_c(s_chip_mv,!s_mod_raw_view,V32_C_CH1);}
     if(s_chip_mw){char t[32];snprintf(t,sizeof t,"窗口 %ums",MOD_WINDOW_MS[s_mod_window]);chip_set_text(s_chip_mw,t);if(s_mod_raw_view)lv_obj_add_state(s_chip_mw,LV_STATE_DISABLED);else lv_obj_remove_state(s_chip_mw,LV_STATE_DISABLED);}
+    if(s_chip_ook_on){
+        lv_obj_t *chips[]={s_chip_ook_on,s_chip_ook_baud,s_chip_ook_test};
+        for(int i=0;i<3;i++)if(s_an_type==5)lv_obj_remove_flag(chips[i],LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(chips[i],LV_OBJ_FLAG_HIDDEN);
+        chip_set_text(s_chip_ook_on,s_ook_on?"解码 开":"解码 关");
+        char t[24];snprintf(t,sizeof t,"%dBd",OOK_RATES[s_ook_rate]);chip_set_text(s_chip_ook_baud,t);
+        chip_set_text(s_chip_ook_test,s_ook_test?"0101 开":"0101 关");
+    }
     /* FPGA 内部 ADC 0/1 -> 界面显示 CH1/CH2（交付包 v3：只在 UI 映射） */
     if(s_chip_mc) { char b[16]; snprintf(b, sizeof b, "通道 CH%d", s_an_ch + 1);
                     chip_set_text(s_chip_mc, b);
@@ -2927,6 +2947,9 @@ static void an_chips_refresh(void)
 /* These two controls only change the display. They never configure the FPGA. */
 static void cb_mod_view(lv_event_t *e){LV_UNUSED(e);s_mod_raw_view=!s_mod_raw_view;an_chips_refresh();}
 static void cb_mod_window(lv_event_t *e){LV_UNUSED(e);s_mod_window=(s_mod_window+1u)%5u;an_chips_refresh();}
+static void cb_ook_on(lv_event_t *e){LV_UNUSED(e);s_ook_on=!s_ook_on;ook_reset(&s_ook);an_chips_refresh();}
+static void cb_ook_baud(lv_event_t *e){LV_UNUSED(e);s_ook_rate=(s_ook_rate+1)%5;ook_reset(&s_ook);an_chips_refresh();}
+static void cb_ook_test(lv_event_t *e){LV_UNUSED(e);s_ook_test=!s_ook_test;ook_reset(&s_ook);an_chips_refresh();}
 
 static void cb_an_type(lv_event_t *e)
 {
@@ -3327,6 +3350,10 @@ static void build_controls(lv_obj_t *root)
     s_chip_mr = mk_chip(gm2, "标准", cb_an_rate);
     s_chip_mv = mk_chip(gm2,"波形 包络",cb_mod_view);
     s_chip_mw = mk_chip(gm2,"窗口 4ms",cb_mod_window);
+    s_chip_ook_on=mk_chip(gm2,"解码 开",cb_ook_on);
+    s_chip_ook_baud=mk_chip(gm2,"1000Bd",cb_ook_baud);
+    s_chip_ook_test=mk_chip(gm2,"0101 关",cb_ook_test);
+    lv_obj_add_flag(s_chip_ook_on,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(s_chip_ook_baud,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(s_chip_ook_test,LV_OBJ_FLAG_HIDDEN);
     chip_selected_c(s_chip_mt, false, V32_C_MATH);
     chip_selected_c(s_chip_mc, false, V32_C_CH2);
     chip_selected_c(s_chip_mr, false, V32_C_WARN);
@@ -4534,19 +4561,30 @@ static void tick_mod(void)
         if(s_an_type != 0) s_claimed_off = 0;
     }
 
-    v32_ana_view_t av;
+    v32_ana_view_t av={0};
     const bool have_ana = (v32_get_ana(&av) != 0);
     const bool match=have_ana && !s_an_send_pending && !s_an_tx_failed &&
         ana_echo_matches(&av,s_an_type,s_an_ch,s_an_rate,
                          s_an_have_target?s_an_target_fcw:av.fcw);
     v32_ana_view_t queued;
+    bool drained_ana=false;
     while(v32_pop_ana(&queued)) {
+        drained_ana=true;
         if(s_an_type && !s_an_send_pending && !s_an_tx_failed &&
            ana_echo_matches(&queued,s_an_type,s_an_ch,s_an_rate,
                             s_an_have_target?s_an_target_fcw:av.fcw))
+        {
             ana_history_push(&s_history,&queued);
-        else ana_history_clear(&s_history);
+            if(s_ook_on && queued.mode==5)ook_push(&s_ook,&queued,OOK_RATES[s_ook_rate],s_ook_test);
+            else ook_reset(&s_ook);
+        }else {ana_history_clear(&s_history);ook_reset(&s_ook);}
     }
+    /* The reader may enqueue a newer frame after get_ana above. Never feed the
+       older snapshot back after draining that newer frame (false gap/reset). */
+    if(s_an_type==5 && s_ook_on && have_ana && match) {
+        if(!drained_ana)ook_push(&s_ook,&av,OOK_RATES[s_ook_rate],s_ook_test);
+    }else ook_reset(&s_ook);
+    lv_label_set_text(s_lbl_ook_info,"");lv_label_set_text(s_lbl_ook_bits,"");lv_label_set_text(s_lbl_modbaud,"—");
 
     mod_draw_upper(&av,have_ana,match);
     mod_set_lower_metadata(&av,have_ana && match && !av.flags && av.nvalid>0);
@@ -4678,7 +4716,16 @@ static void tick_mod(void)
         if(av.mode == 5u){
             /* OOK is an amplitude observation, not a sinusoidal AM-depth fit. */
             lv_label_set_text_fmt(s_lbl_m4,"%.1f 码",(double)(mx-mn));
-            lv_label_set_text(s_lbl_m5,"未解码");
+            lv_label_set_text(s_lbl_m5,!s_ook_on?"未解码":s_ook.locked?"同步":"等待同步");
+            lv_label_set_text_fmt(s_lbl_modbaud,"%d Bd",OOK_RATES[s_ook_rate]);
+            if(s_ook_on){
+                lv_label_set_text_fmt(s_lbl_mst,s_ook.locked?"● OOK bit 同步":"○ OOK 等待同步");
+                lv_obj_set_style_text_color(s_lbl_mst,s_ook.locked?V32_C_GREEN:V32_C_WARN,0);
+                lv_label_set_text_fmt(s_lbl_ook_info,"L/H %.1f/%.1f\nthr %.1f/%.1f\nn=%llu ?=%llu",(double)s_ook.low,(double)s_ook.high,(double)s_ook.threshold_low,(double)s_ook.threshold_high,s_ook.bits,s_ook.erasures);
+                if(s_ook.have_frame && s_ook.step<6)lv_label_set_text(s_lbl_ook_info,"Rs too high for Fs/R\nNeed >=6 samples/symbol");
+                int start=s_ook.recent_n>48?s_ook.recent_n-48:0;char recent[49];snprintf(recent,sizeof recent,"%s",s_ook.recent+start);
+                lv_label_set_text_fmt(s_lbl_ook_bits,"bits (latest):\n%.24s\n%s\n0101 %s %llu/%llu",recent,strlen(recent)>24?recent+24:"",s_ook_test?"errors":"OFF",s_ook.alternating_errors,s_ook.alternating_checks);
+            }
         }else if(av.kind == 1u) {
             /*
              * AM 调制度用正弦拟合；OOK 在独立分支仅观察幅度，不套此模型。
