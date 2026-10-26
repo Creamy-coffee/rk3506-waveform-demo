@@ -111,11 +111,10 @@ static int v32_src_init(void)
         return rc;
     }
 
-    printf("[v32] 数据源 = %s (%s @ %d Bd), %d 点/帧, %.3f MHz, %.1f µs/帧\n",
+    printf("[v32] 数据源 = %s (%s @ %d Bd), RAW缓存上限 %d 点, ADC标称 %.3f MHz（实际点数/抽取率以有效帧头为准）\n",
            v32_source_name(), v32_is_live() ? "实时串口" : "文件回放",
            v32_is_live() ? wave_source_v32_get_baud() : 0,
-           V32_POINTS, (double)V32_ADC_FS_HZ / 1e6,
-           (double)V32_FRAME_SECONDS * 1e6);
+           V32_POINTS, (double)V32_ADC_FS_HZ / 1e6);
 
     s_inited = 1;
     return 0;
