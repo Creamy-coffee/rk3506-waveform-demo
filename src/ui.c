@@ -197,6 +197,7 @@ static lv_obj_t *s_lbl_rawnote;   /* 上图 RAW 新鲜度标注（实时/历史�
 static lv_obj_t *s_lbl_modraw_title;   /* 上图标题（原始波形/分析历史 切换） */
 static lv_obj_t *s_lbl_modana_title, *s_lbl_modana_note, *s_lbl_modraw_units, *s_lbl_modana_units, *s_lbl_modvalue_key;
 static lv_obj_t *s_lbl_modcarrier;
+static lv_obj_t *s_lbl_moddecision_key;
 static lv_obj_t *s_chip_mv, *s_chip_mw;
 static bool s_mod_raw_view = false;
 static unsigned s_mod_window = 0;
@@ -2353,6 +2354,7 @@ static void build_mod(lv_obj_t *pg)
     s_lbl_m4  = mk_metric(p1, TITLE_H + METRIC_H * 4, "幅度/频偏", "--", V32_C_METRIC_VALUE);
     s_lbl_modvalue_key=lv_obj_get_child(lv_obj_get_parent(s_lbl_m4),0);
     s_lbl_m5  = mk_metric(p1, TITLE_H + METRIC_H * 5, "调制度",   "--", V32_C_METRIC_VALUE);
+    s_lbl_moddecision_key=lv_obj_get_child(lv_obj_get_parent(s_lbl_m5),0);
     s_lbl_m6  = mk_metric(p1, TITLE_H + METRIC_H * 6, "有效样点", "--", V32_C_METRIC_VALUE);
     mk_metric(p1, TITLE_H + METRIC_H * 7, "符号率",   "—", V32_C_METRIC_VALUE);
 
@@ -2903,7 +2905,7 @@ static void analysis_send_now(void)
 }
 
 static const char *AN_TYPE_NAME[8] = {
-    "关", "AM", "FM", "FSK", "QPSK", "OOK", "BPSK", "PM"
+    "关", "AM", "FM", "2FSK", "QPSK", "OOK", "BPSK", "PM"
 };
 static const char *AN_RATE_NAME[3] = { "档8k", "标准", "宽档" };
 
@@ -2912,7 +2914,7 @@ static void an_chips_refresh(void)
     if(s_chip_mt) { char b[16]; snprintf(b, sizeof b, "制式 %s", AN_TYPE_NAME[s_an_type]);
                     chip_set_text(s_chip_mt, b);
                     chip_selected_c(s_chip_mt, s_an_type != 0, V32_C_MATH); }
-    if(s_chip_mv){chip_set_text(s_chip_mv,s_mod_raw_view?"波形 原始":"波形 包络");chip_selected_c(s_chip_mv,!s_mod_raw_view,V32_C_CH1);}
+    if(s_chip_mv){const char *view=(s_an_type==4 || s_an_type==6)?"波形 I/Q":(s_an_type==2 || s_an_type==3)?"波形 频偏":s_an_type==7?"波形 相位":"波形 包络";chip_set_text(s_chip_mv,s_mod_raw_view?"波形 原始":view);chip_selected_c(s_chip_mv,!s_mod_raw_view,V32_C_CH1);}
     if(s_chip_mw){char t[32];snprintf(t,sizeof t,"窗口 %ums",MOD_WINDOW_MS[s_mod_window]);chip_set_text(s_chip_mw,t);if(s_mod_raw_view)lv_obj_add_state(s_chip_mw,LV_STATE_DISABLED);else lv_obj_remove_state(s_chip_mw,LV_STATE_DISABLED);}
     /* FPGA 内部 ADC 0/1 -> 界面显示 CH1/CH2（交付包 v3：只在 UI 映射） */
     if(s_chip_mc) { char b[16]; snprintf(b, sizeof b, "通道 CH%d", s_an_ch + 1);
@@ -4386,11 +4388,12 @@ static void mod_axes(lv_obj_t *plot,lv_obj_t *note,double seconds,const char *so
 static void mod_set_lower_metadata(const v32_ana_view_t *av,bool good)
 {
     if(!good){lv_label_set_text(s_lbl_modana_note,"ANA | --");lv_label_set_text(s_lbl_modana_units,"");plot_set_axis_labels(s_plot_modana,"","");return;}
-    const char *title=av->kind==0u?"I/Q":"调制分析";
+    const char *title=av->kind==0u?"I/Q · 基带样点":av->mode==5u?"OOK · 包络":av->mode==3u?"2FSK · 频偏":"调制分析";
     lv_label_set_text(s_lbl_modana_title,title);
     lv_label_set_text(s_lbl_modvalue_key,av->kind==1u?"包络峰峰值":av->kind==0u?"幅度 RMS":av->kind==2u?"相对频偏":"相位");
+    lv_label_set_text(s_lbl_moddecision_key,(av->mode>=3u && av->mode<=6u)?"符号判决":"调制度");
     mod_axes(s_plot_modana,s_lbl_modana_note,(double)V32_ANA_POINTS*av->decim/V32_ADC_FS_HZ,"ANA");
-    if(av->kind==0u)plot_set_axis_labels(s_plot_modana,"I","Q");
+    if(av->kind==0u)plot_set_axis_labels(s_plot_modana,"X=I","Y=Q");
     lv_obj_set_style_text_color(s_lbl_modana_note,V32_C_METRIC_VALUE,0);
 }
 static void mod_draw_raw(int channel,const v32_ana_view_t *av,bool have_ana)
@@ -4452,6 +4455,7 @@ static void mod_carrier_metadata(const v32_ana_view_t *av,bool good)
 }
 static void mod_draw_upper(const v32_ana_view_t *av,bool have_ana,bool match)
 {
+    plot_set_legends(s_plot_modraw,NULL,NULL);
     mod_carrier_metadata(av,have_ana && match && !av->flags && av->nvalid>0);
     if(s_mod_raw_view || s_an_type==0){mod_draw_raw(s_an_ch,av,have_ana);return;}
     plot_set_envelope(s_plot_modraw,NULL,NULL,0,false);
@@ -4467,18 +4471,21 @@ static void mod_draw_upper(const v32_ana_view_t *av,bool have_ana,bool match)
     mod_axes(s_plot_modraw,s_lbl_rawnote,count/fs,"ANA history");
     lv_obj_set_style_text_color(s_lbl_rawnote,V32_C_METRIC_VALUE,0);
     if(av->kind==0u){
-        const float *qq=s_history.q+s_history.length-count;int n=count<PLOT_MAX_PTS?count:PLOT_MAX_PTS;
+        const float *qq=s_history.q+s_history.length-count;
         float peak=1;
-        for(int k=count-n;k<count;k++){if(isfinite(src[k]) && fabsf(src[k])>peak)peak=fabsf(src[k]);if(isfinite(qq[k]) && fabsf(qq[k])>peak)peak=fabsf(qq[k]);}
-        for(int k=0;k<n;k++){y[k]=.5f+src[count-n+k]/(2*peak);q[k]=.5f+qq[count-n+k]/(2*peak);}
-        plot_set_mode(s_plot_modraw,PLOT_XY);plot_set_trace(s_plot_modraw,0,y,n,V32_C_CH1,1);plot_set_trace(s_plot_modraw,1,q,n,V32_C_CH1,1);
-        lv_label_set_text(s_lbl_modraw_title,"I/Q · 分析历史");lv_label_set_text(s_lbl_modraw_units,"I/Q [DDC 码] | baseband, not decoded");
-        mod_axes(s_plot_modraw,s_lbl_rawnote,n/fs,"ANA history");plot_set_axis_labels(s_plot_modraw,"I","Q");return;
+        for(int k=0;k<count;k++){if(isfinite(src[k]) && fabsf(src[k])>peak)peak=fabsf(src[k]);if(isfinite(qq[k]) && fabsf(qq[k])>peak)peak=fabsf(qq[k]);}
+        peak*=1.15f; /* Keep constant digital levels clear of the plot border. */
+        mod_view_resample(src,count,y,PLOT_MAX_PTS,-peak,peak);
+        mod_view_resample(qq,count,q,PLOT_MAX_PTS,-peak,peak);
+        plot_set_mode(s_plot_modraw,PLOT_SCOPE);plot_set_trace(s_plot_modraw,0,y,PLOT_MAX_PTS,V32_C_CH1,1);plot_set_trace(s_plot_modraw,1,q,PLOT_MAX_PTS,V32_C_CH2,1);
+        lv_label_set_text(s_lbl_modraw_title,"I/Q · 时间历程");lv_label_set_text(s_lbl_modraw_units,"I/Q [DDC 码] | baseband, not decoded");
+        plot_set_legends(s_plot_modraw,"I","Q");
+        return;
     }
     float lo,hi;if(!mod_view_range(src,count,av->kind==1u,&lo,&hi))return;
     mod_view_resample(src,count,y,PLOT_MAX_PTS,lo,hi);
     plot_set_mode(s_plot_modraw,PLOT_SCOPE);plot_hide_trace(s_plot_modraw,1);
-    if(av->kind==1u){
+    if(av->kind==1u && av->mode==1u){
         static float upper[PLOT_MAX_PTS],lower[PLOT_MAX_PTS];
         mod_view_bounds(y,upper,lower,PLOT_MAX_PTS);
         plot_hide_trace(s_plot_modraw,0);
@@ -4489,7 +4496,7 @@ static void mod_draw_upper(const v32_ana_view_t *av,bool have_ana,bool match)
         return;
     }
     plot_set_trace(s_plot_modraw,0,y,PLOT_MAX_PTS,V32_C_CH1,2);
-    lv_label_set_text(s_lbl_modraw_title,av->kind==1u?"包络 · 分析历史":"分析历史");
+    lv_label_set_text(s_lbl_modraw_title,av->mode==5u?"OOK · 包络历史":av->mode==3u?"2FSK · 频偏历史":"分析历史");
     if(av->kind==1u)lv_label_set_text_fmt(s_lbl_modraw_units,"A(t) [DDC 码] %.1f..%.1f | 0 = zero",(double)lo,(double)hi);
     else lv_label_set_text_fmt(s_lbl_modraw_units,"%s [%s] %.1f..%.1f",av->kind==2u?"df":"phase",av->kind==2u?"Hz":"deg",(double)lo,(double)hi);
 }
@@ -4561,7 +4568,7 @@ static void tick_mod(void)
     lv_obj_add_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);   /* 有数据了，藏指引 */
     /* 分析帧诊断（交付包验收：帧号/配置/类型/抽取率/新鲜度可见） */
     {
-        static const char *KN[4] = { "I/Q 星座", "包络 Q8", "相位差 Hz", "相位 deg" };
+        static const char *KN[4] = { "基带 I/Q", "包络 Q8", "相位差 Hz", "相位 deg" };
         static uint32_t last_seq = 0;
         static uint32_t acc = 0, t0ms = 0;
         if(av.seq != last_seq) {
@@ -4618,20 +4625,21 @@ static void tick_mod(void)
         lv_label_set_text(s_lbl_m5, "--");
         return;                       /* 不画不匹配的数据 */
     } else {
-        lv_label_set_text(s_lbl_mst, "● 分析有效");
+        lv_label_set_text(s_lbl_mst, (av.mode>=3u && av.mode<=6u)?"● 分析有效 · 未解码":"● 分析有效");
         lv_obj_set_style_text_color(s_lbl_mst, V32_C_GREEN, LV_PART_MAIN);
     }
 
     /* 下图：按 kind 画 */
     if(av.kind == 0u) {
-        lv_label_set_text(s_lbl_modana_units,"I/Q [DDC 码] | baseband, not decoded");
-        /* I/Q 星座轨迹（XY）：I=X，Q=Y，联合归一 */
+        lv_label_set_text(s_lbl_modana_units,"I/Q [DDC 码] | baseband, not decoded | equal axes");
+        /* Unsynchronized baseband samples, not symbol decisions or a recovered constellation. */
         float peak = 1.0f;
         for(int k = 0; k < V32_ANA_POINTS; k++) {
             if(!av.yvalid[k]) continue;
             if(fabsf(av.y[k]) > peak) peak = fabsf(av.y[k]);
             if(fabsf(av.q[k]) > peak) peak = fabsf(av.q[k]);
         }
+        peak*=1.15f;
         static float qbuf[V32_ANA_POINTS];float su=0.f;
         for(int k=0;k<V32_ANA_POINTS;k++) {
             if(!av.yvalid[k]) { a[k]=NAN;qbuf[k]=NAN;continue; }
@@ -4639,6 +4647,7 @@ static void tick_mod(void)
             a[k]=0.5f+av.y[k]/(2.f*peak);qbuf[k]=0.5f+av.q[k]/(2.f*peak);
         }
         plot_set_mode(s_plot_modana, PLOT_XY);
+        plot_set_xy_style(s_plot_modana,true,true);
         plot_set_trace(s_plot_modana, 0, a, V32_ANA_POINTS, V32_C_MATH, 2);
         /* PLOT_XY 用 trace1 当 Y 轴 —— 拷一份进静态缓冲 */
 
@@ -4646,7 +4655,7 @@ static void tick_mod(void)
 
         lv_label_set_text_fmt(s_lbl_m4, "RMS %.0f",
                               (double)sqrtf(su / (float)av.nvalid));
-        lv_label_set_text(s_lbl_m5, "--");
+        lv_label_set_text(s_lbl_m5, "未解码");
     } else {
         /* 单值曲线：包络(Q8 码)/频偏(Hz)/相位(度)，画成单迹线 */
         plot_set_mode(s_plot_modana, PLOT_SCOPE);
@@ -4666,9 +4675,13 @@ static void tick_mod(void)
         if(av.kind==3u)lv_label_set_text_fmt(s_lbl_modana_units,"phase [deg] %.1f..%.1f",(double)draw_lo,(double)draw_hi);
         plot_set_trace(s_plot_modana, 0, a, V32_ANA_POINTS, V32_C_MATH, 2);
 
-        if(av.kind == 1u) {
+        if(av.mode == 5u){
+            /* OOK is an amplitude observation, not a sinusoidal AM-depth fit. */
+            lv_label_set_text_fmt(s_lbl_m4,"%.1f 码",(double)(mx-mn));
+            lv_label_set_text(s_lbl_m5,"未解码");
+        }else if(av.kind == 1u) {
             /*
-             * AM/OOK 调制度改用**正弦拟合**，不再用极值法。
+             * AM 调制度用正弦拟合；OOK 在独立分支仅观察幅度，不套此模型。
              * 极值法 (max-min)/(max+min) 在低幅度下把噪声当调制深度：
              * 实测真值 0% 被算成 9.54%、25%→30.96%、50%→55.77%、75%→79.64%，
              * 幅度减半时 50% 变成 63.48%。拟合值分别是 0.26/25.16/49.91/75.00/50.12%。
@@ -4774,7 +4787,7 @@ static void tick_mod(void)
             if(pk >= 1000.f) snprintf(b, sizeof b, "%.2f kHz", (double)pk / 1e3);
             else             snprintf(b, sizeof b, "%.1f Hz",  (double)pk);
             lv_label_set_text(s_lbl_m4, b);
-            lv_label_set_text(s_lbl_m5, "--");
+            lv_label_set_text(s_lbl_m5, av.mode==3u?"未解码":"--");
         } else {
             /* PM：相位峰偏 */
             snprintf(b, sizeof b, "%.1f°", (double)(mx > -mn ? mx : -mn));

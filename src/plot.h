@@ -90,6 +90,8 @@ void plot_set_envelope(lv_obj_t *plot, const float *up, const float *dn,
                        int n, bool show);
 /* Optional amplitude-region shading, not sampled carrier data. Off by default. */
 void plot_set_envelope_fill(lv_obj_t *plot, bool show);
+/* For baseband sample distributions: actual samples, optional equal pixel scales. */
+void plot_set_xy_style(lv_obj_t *plot, bool points, bool equal_axes);
 
 /* 测量光标：n<=4，xs 是竖线的相对位置 0..1，ys 是横线的相对位置 0..1。
  * 示波器页用 2 竖 + 2 横（时间光标 + 电压光标）。 */

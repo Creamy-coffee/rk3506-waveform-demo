@@ -68,6 +68,7 @@ typedef struct {
     int   env_n;
     bool  env_vis;
     bool  env_fill;
+    bool  xy_points,xy_equal;
     float cur_x[4];          /* 竖线位置 0..1 */
     float cur_y[4];          /* 横线位置 0..1 */
 
@@ -256,6 +257,14 @@ void plot_set_envelope_fill(lv_obj_t *plot, bool show)
 {
     plot_t *p=PLOT_OF(plot);
     if(p && p->env_fill!=show){p->env_fill=show;lv_obj_invalidate(plot);}
+}
+
+void plot_set_xy_style(lv_obj_t *plot, bool points, bool equal_axes)
+{
+    plot_t *p=PLOT_OF(plot);
+    if(p && (p->xy_points!=points || p->xy_equal!=equal_axes)){
+        p->xy_points=points;p->xy_equal=equal_axes;lv_obj_invalidate(plot);
+    }
 }
 
 void plot_set_iq(lv_obj_t *plot, float phase_deg)
@@ -658,11 +667,20 @@ static void draw_xy(lv_layer_t *layer, plot_t *p,
 {
     if(!p->tr[0].vis || !p->tr[1].vis) return;
 
+    if(p->xy_equal){int side=w<h?w:h;x0+=(w-side)/2;y0+=(h-side)/2;w=h=side;}
+
     lv_draw_line_dsc_t ld;
     lv_draw_line_dsc_init(&ld);
     ld.color = p->tr[0].color;
     ld.width = 2;
     ld.opa   = LV_OPA_COVER;
+    ld.round_start=1;ld.round_end=1;
+
+    /* Axes behind samples: a BPSK point on Q=0 must not be split by the axis. */
+    ld.color=p->center_color;ld.width=1;
+    line(layer,&ld,x0+w/2,y0,x0+w/2,y0+h-1);
+    line(layer,&ld,x0,y0+h/2,x0+w-1,y0+h/2);
+    ld.color=p->tr[0].color;ld.width=2;
 
     const int n = (p->tr[0].n < p->tr[1].n) ? p->tr[0].n : p->tr[1].n;
     int32_t px=0,py=0;int have_previous=0;
@@ -674,15 +692,15 @@ static void draw_xy(lv_layer_t *layer, plot_t *p,
         if(y<0.f)y=0.f;
         if(y>1.f)y=1.f;
         int32_t cx=x0+(int32_t)(x*(w-1)),cy=y0+h-1-(int32_t)(y*(h-1));
-        if(have_previous)line(layer,&ld,px,py,cx,cy);
+        if(p->xy_points){
+            lv_draw_rect_dsc_t dot;lv_draw_rect_dsc_init(&dot);
+            dot.bg_color=ld.color;dot.bg_opa=LV_OPA_COVER;dot.radius=LV_RADIUS_CIRCLE;
+            lv_area_t bounds={cx-2,cy-2,cx+2,cy+2};lv_draw_rect(layer,&dot,&bounds);
+        }
+        else if(have_previous)line(layer,&ld,px,py,cx,cy);
         px=cx;py=cy;have_previous=1;
     }
 
-    /* 中心十字（原点 = 两路中点） */
-    ld.color = p->center_color;
-    ld.width = 1;
-    line(layer, &ld, x0 + w/2, y0, x0 + w/2, y0 + h - 1);
-    line(layer, &ld, x0, y0 + h/2, x0 + w - 1, y0 + h/2);
 }
 
 static void draw_trigger(lv_layer_t *layer, plot_t *p,

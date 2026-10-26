@@ -25,7 +25,11 @@ static void fixture_write(unsigned fid,unsigned cfg,unsigned mode,unsigned chann
     put(b+36,kind|(channel<<8)|(mode<<16));put(b+40,66076420);
     for(int i=0;i<256;i++){
         double p=2*M_PI*1000*(i+(fid-1)*256)/(65000000.0/4096);uint32_t x;
-        if(!kind)x=(uint16_t)(int16_t)(200*cos(p))|((uint32_t)(uint16_t)(int16_t)(100*sin(p))<<16);
+        if(mode==4)x=(uint16_t)(int16_t)(((i/16)&1)?150:-150)|((uint32_t)(uint16_t)(int16_t)(((i/32)&1)?150:-150)<<16);
+        else if(mode==6)x=(uint16_t)(int16_t)(((i/16)&1)?200:-200);
+        else if(mode==5)x=((i/16)&1)?25600:0;
+        else if(mode==3)x=(uint32_t)(int32_t)(((i/16)&1)?1000:-1000)&0xffffffu;
+        else if(!kind)x=(uint16_t)(int16_t)(200*cos(p))|((uint32_t)(uint16_t)(int16_t)(100*sin(p))<<16);
         else if(kind==1)x=(unsigned)(256*(100+50*sin(p)));
         else x=(uint32_t)(int32_t)(1000*sin(p))&0xffffffu;
         if(kind && holes && i%19==0)x|=0x80000000u;
@@ -61,14 +65,24 @@ int main(int argc,char **argv)
     cb_mod_view(NULL);draw(d);assert(s_mod_raw_view && s_an_target_fcw==fcw && s_an_send_pending==pending);
     assert(strstr(lv_label_get_text(s_lbl_rawnote),"us") && !strstr(lv_label_get_text(s_lbl_rawnote),"516"));save(argv[1],"raw");
     lv_area_t a,b;lv_obj_get_coords(s_chip_mv,&a);lv_obj_get_coords(s_chip_mw,&b);assert(a.x1>=0 && b.x2<1024);
-    s_real_t_last=lv_tick_get()-20000u;draw(d);assert(strstr(lv_label_get_text(s_lbl_rawnote),"stale"));save(argv[1],"stale");
-    assert(!strstr(lv_label_get_text(s_lbl_modcarrier),"RAW") && strstr(lv_label_get_text(s_lbl_modcarrier),"DDC"));
+    s_real_t_last=lv_tick_get()-20000u;
     fixture_write(17,3,1,0,0,0,1,0);assert(v32_init_file(fixture)==0);
+    draw(d);assert(strstr(lv_label_get_text(s_lbl_rawnote),"stale"));save(argv[1],"stale");
+    assert(!strstr(lv_label_get_text(s_lbl_modcarrier),"RAW") && strstr(lv_label_get_text(s_lbl_modcarrier),"DDC"));
+    fixture_write(18,3,1,0,0,0,1,0);assert(v32_init_file(fixture)==0);
     cb_mod_view(NULL);cb_mod_window(NULL);draw(d);assert(!s_mod_raw_view && strstr(lv_label_get_text(s_lbl_rawnote),"16.01 ms"));
     // Valid zero samples and invalid holes must remain distinguishable.
-    fixture_write(18,3,1,0,0,1,1,1);assert(v32_init_file(fixture)==0);draw(d);save(argv[1],"gaps");
-    fixture_write(19,3,1,0,1,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(!strcmp(lv_label_get_text(s_lbl_m5),"--"));assert(!strcmp(lv_label_get_text(s_lbl_modana_note),"ANA | --"));
-    s_an_type=4;s_an_ch=1;fixture_write(1,4,4,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(strstr(lv_label_get_text(s_lbl_modana_units),"not decoded"));save(argv[1],"iq");
+    fixture_write(19,3,1,0,0,1,1,1);assert(v32_init_file(fixture)==0);draw(d);save(argv[1],"gaps");
+    fixture_write(20,3,1,0,1,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(!strcmp(lv_label_get_text(s_lbl_m5),"--"));assert(!strcmp(lv_label_get_text(s_lbl_modana_note),"ANA | --"));
+    s_an_type=4;s_an_ch=1;an_chips_refresh();fixture_write(1,4,4,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(strstr(lv_label_get_text(s_lbl_modana_units),"not decoded"));save(argv[1],"iq");
+    assert(strstr(lv_label_get_text(s_lbl_modraw_title),"时间") && !strcmp(lv_label_get_text(s_lbl_m5),"未解码"));
+    v32_ana_view_t digital;assert(v32_get_ana(&digital));assert(digital.nvalid==256 && digital.q[0]<0);
+    s_an_type=6;an_chips_refresh();fixture_write(1,6,6,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.mode==6 && digital.nvalid==256);save(argv[1],"bpsk");
+    s_an_type=5;an_chips_refresh();fixture_write(1,7,5,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.y[0]==0 && digital.nvalid==256);assert(!strcmp(lv_label_get_text(s_lbl_m5),"未解码"));assert(strstr(lv_label_get_text(s_lbl_modraw_title),"OOK"));save(argv[1],"ook");
+    fixture_write(2,7,5,1,0,1,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.nvalid<256 && !digital.yvalid[0] && digital.yvalid[1] && digital.y[1]==0);save(argv[1],"ook_gaps");
+    s_an_type=3;an_chips_refresh();fixture_write(1,8,3,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.y[0]<0 && digital.y[16]>0);assert(!strcmp(lv_label_get_text(s_lbl_m5),"未解码"));assert(strstr(lv_label_get_text(s_lbl_modana_units),"Hz"));save(argv[1],"fsk");
+    cb_mod_view(NULL);draw(d);assert(s_mod_raw_view);assert(strstr(lv_label_get_text(s_lbl_modraw_title),"原始"));cb_mod_view(NULL);draw(d);assert(!s_mod_raw_view);
+    fixture_write(2,8,5,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(!strcmp(lv_label_get_text(s_lbl_m5),"--"));
     s_an_type=2;fixture_write(1,5,2,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(strstr(lv_label_get_text(s_lbl_modana_units),"Hz"));save(argv[1],"fm");
     S.running=false;const int previous=s_aroll_len;fixture_write(2,5,2,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(s_aroll_len==previous);S.running=true;draw(d);assert(s_aroll_len>previous);
     fixture_write(3,5,2,1,0,0,32768,1);assert(v32_init_file(fixture)==0);draw(d);assert(fabs(wave_source_v32_frame_rate_hz()-65000000.0/32768)<1e-6);
