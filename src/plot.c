@@ -67,6 +67,7 @@ typedef struct {
     float env_u[PLOT_MAX_PTS], env_d[PLOT_MAX_PTS];
     int   env_n;
     bool  env_vis;
+    bool  env_fill;
     float cur_x[4];          /* 竖线位置 0..1 */
     float cur_y[4];          /* 横线位置 0..1 */
 
@@ -243,12 +244,18 @@ void plot_set_envelope(lv_obj_t *plot, const float *up, const float *dn,
     plot_t *p = PLOT_OF(plot);
     if(p == NULL) return;
     p->env_vis = show && up && dn && n >= 2;
-    if(!p->env_vis) { if(p->env_n) { p->env_n = 0; lv_obj_invalidate(plot); } return; }
+    if(!p->env_vis) { p->env_fill=false; if(p->env_n) { p->env_n = 0; lv_obj_invalidate(plot); } return; }
     if(n > PLOT_MAX_PTS) n = PLOT_MAX_PTS;
     memcpy(p->env_u, up, (size_t)n * sizeof(float));
     memcpy(p->env_d, dn, (size_t)n * sizeof(float));
     p->env_n = n;
     lv_obj_invalidate(plot);
+}
+
+void plot_set_envelope_fill(lv_obj_t *plot, bool show)
+{
+    plot_t *p=PLOT_OF(plot);
+    if(p && p->env_fill!=show){p->env_fill=show;lv_obj_invalidate(plot);}
 }
 
 void plot_set_iq(lv_obj_t *plot, float phase_deg)
@@ -856,6 +863,21 @@ static void plot_draw_cb(lv_event_t *e)
             ed.color = V32_C_WARN;
             ed.width = 1;
             ed.opa   = LV_OPA_COVER;
+            if(p->env_fill && w>1){
+                ed.opa=LV_OPA_20;
+                for(int x=0;x<w;x++){
+                    float t=(float)x*(p->env_n-1)/(w-1);
+                    int a=(int)t,b=a+1<p->env_n?a+1:a;
+                    if(!isfinite(p->env_u[a]) || !isfinite(p->env_d[a]) ||
+                       !isfinite(p->env_u[b]) || !isfinite(p->env_d[b]))continue;
+                    float f=t-a;
+                    float u=p->env_u[a]+f*(p->env_u[b]-p->env_u[a]);
+                    float d=p->env_d[a]+f*(p->env_d[b]-p->env_d[a]);
+                    u=fminf(1.f,fmaxf(0.f,u));d=fminf(1.f,fmaxf(0.f,d));
+                    line(layer,&ed,x0+x,y0+(int)((1-u)*(h-1)),x0+x,y0+(int)((1-d)*(h-1)));
+                }
+                ed.opa=LV_OPA_COVER;
+            }
             draw_env_curve(layer, p->env_u, p->env_n, x0, y0, w, h, &ed);
             draw_env_curve(layer, p->env_d, p->env_n, x0, y0, w, h, &ed);
         }

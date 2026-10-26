@@ -41,6 +41,11 @@ int main(int argc,char **argv)
 {
     assert(argc==2);snprintf(fixture,sizeof fixture,"/tmp/v32_modulation_view_%ld.bin",(long)getpid());float lo,hi,out[1024],v[3]={10,10,10};assert(mod_view_range(v,3,1,&lo,&hi)&&lo==0&&hi>10);
     v[1]=NAN;mod_view_resample(v,3,out,9,0,20);assert(isnan(out[4]) && isfinite(out[0]) && isfinite(out[8]));
+    float amp[5]={0,.5f,1,NAN,-1},up[5],dn[5];
+    mod_view_bounds(amp,up,dn,5);
+    assert(up[0]==.5f && dn[0]==.5f && up[1]==.75f && dn[1]==.25f);
+    assert(up[2]==1 && dn[2]==0 && isnan(up[3]) && isnan(dn[3]) && isnan(up[4]));
+    assert(amp[1]==.5f && isnan(amp[3]));
     assert(mod_view_count(256,65000000.0/4096,4)==64);
     lv_init();glyphs();lv_display_t *d=lv_display_create(1024,600);lv_display_set_color_format(d,LV_COLOR_FORMAT_XRGB8888);lv_display_set_buffers(d,pixels,NULL,sizeof pixels,LV_DISPLAY_RENDER_MODE_DIRECT);lv_display_set_flush_cb(d,flush_cb);
     fixture_write(1,3,1,0,0,0,1,1);char spec[128];snprintf(spec,sizeof spec,"file:%s",fixture);wave_source_v32_set_spec(spec);wave_source_select(&wave_source_v32);assert(wave_source_v32.init()==0);setenv("WAVE_SRC","real",1);
@@ -50,6 +55,7 @@ int main(int argc,char **argv)
     assert(strstr(lv_label_get_text(s_lbl_rawnote),"ANA history") && strstr(lv_label_get_text(s_lbl_rawnote),"4.03 ms"));
     assert(strstr(lv_label_get_text(s_lbl_modana_note),"16.13 ms"));
     assert(strstr(lv_label_get_text(s_lbl_modana_units),"A(t)"));save(argv[1],"envelope");
+    assert(strstr(lv_label_get_text(s_lbl_modraw_units),"bounds, NOT RAW"));
     uint32_t fcw=s_an_target_fcw;int pending=s_an_send_pending;
     cb_mod_view(NULL);draw(d);assert(s_mod_raw_view && s_an_target_fcw==fcw && s_an_send_pending==pending);
     assert(strstr(lv_label_get_text(s_lbl_rawnote),"us") && !strstr(lv_label_get_text(s_lbl_rawnote),"516"));save(argv[1],"raw");

@@ -88,6 +88,8 @@ void plot_set_axis_labels(lv_obj_t *plot, const char *left, const char *right);
  * 绘制在迹线之上、光标之下。 */
 void plot_set_envelope(lv_obj_t *plot, const float *up, const float *dn,
                        int n, bool show);
+/* Optional amplitude-region shading, not sampled carrier data. Off by default. */
+void plot_set_envelope_fill(lv_obj_t *plot, bool show);
 
 /* 测量光标：n<=4，xs 是竖线的相对位置 0..1，ys 是横线的相对位置 0..1。
  * 示波器页用 2 竖 + 2 横（时间光标 + 电压光标）。 */

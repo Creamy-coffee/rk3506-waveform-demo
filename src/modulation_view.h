@@ -27,6 +27,14 @@ static inline int mod_view_range(const float *y,int n,int nonnegative,float *lo,
     else {float d=b-a;if(d<1e-6f)d=fmaxf(fabsf(a)*.1f,1.f);*lo=a-d*.08f;*hi=b+d*.08f;}
     return 1;
 }
+/* Baseband magnitude bounds around zero, never a reconstructed RF waveform. */
+static inline void mod_view_bounds(const float *amplitude,float *upper,float *lower,int n)
+{
+    for(int i=0;i<n;i++){
+        if(!isfinite(amplitude[i]) || amplitude[i]<0){upper[i]=lower[i]=NAN;continue;}
+        upper[i]=.5f+.5f*amplitude[i];lower[i]=.5f-.5f*amplitude[i];
+    }
+}
 static inline void mod_view_resample(const float *src,int count,float *out,int n,float lo,float hi)
 {
     if(count<2 || n<2 || !(hi>lo)){for(int i=0;i<n;i++)out[i]=NAN;return;}

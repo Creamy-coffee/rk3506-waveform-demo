@@ -4456,6 +4456,16 @@ static void mod_draw_upper(const v32_ana_view_t *av,bool have_ana,bool match)
     float lo,hi;if(!mod_view_range(src,count,av->kind==1u,&lo,&hi))return;
     mod_view_resample(src,count,y,PLOT_MAX_PTS,lo,hi);
     plot_set_mode(s_plot_modraw,PLOT_SCOPE);plot_hide_trace(s_plot_modraw,1);
+    if(av->kind==1u){
+        static float upper[PLOT_MAX_PTS],lower[PLOT_MAX_PTS];
+        mod_view_bounds(y,upper,lower,PLOT_MAX_PTS);
+        plot_hide_trace(s_plot_modraw,0);
+        plot_set_envelope(s_plot_modraw,upper,lower,PLOT_MAX_PTS,true);
+        plot_set_envelope_fill(s_plot_modraw,true);
+        lv_label_set_text(s_lbl_modraw_title,"包络 · 分析历史");
+        lv_label_set_text_fmt(s_lbl_modraw_units,"+/- A(t) [DDC 码] | bounds, NOT RAW | range +/-%.1f",(double)hi);
+        return;
+    }
     plot_set_trace(s_plot_modraw,0,y,PLOT_MAX_PTS,V32_C_CH1,2);
     lv_label_set_text(s_lbl_modraw_title,av->kind==1u?"包络 · 分析历史":"分析历史");
     if(av->kind==1u)lv_label_set_text_fmt(s_lbl_modraw_units,"A(t) [DDC 码] %.1f..%.1f | 0 = zero",(double)lo,(double)hi);
