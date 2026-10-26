@@ -4723,8 +4723,14 @@ static void tick_mod(void)
                 lv_obj_set_style_text_color(s_lbl_mst,s_ook.locked?V32_C_GREEN:V32_C_WARN,0);
                 lv_label_set_text_fmt(s_lbl_ook_info,"L/H %.1f/%.1f\nthr %.1f/%.1f\nn=%llu ?=%llu",(double)s_ook.low,(double)s_ook.high,(double)s_ook.threshold_low,(double)s_ook.threshold_high,s_ook.bits,s_ook.erasures);
                 if(s_ook.have_frame && s_ook.step<6)lv_label_set_text(s_lbl_ook_info,"Rs too high for Fs/R\nNeed >=6 samples/symbol");
-                int start=s_ook.recent_n>48?s_ook.recent_n-48:0;char recent[49];snprintf(recent,sizeof recent,"%s",s_ook.recent+start);
-                lv_label_set_text_fmt(s_lbl_ook_bits,"bits (latest):\n%.24s\n%s\n0101 %s %llu/%llu",recent,strlen(recent)>24?recent+24:"",s_ook_test?"errors":"OFF",s_ook.alternating_errors,s_ook.alternating_checks);
+                int start=s_ook.recent_n>40?s_ook.recent_n-40:0;char recent[41];snprintf(recent,sizeof recent,"%s",s_ook.recent+start);
+                lv_label_set_text_fmt(s_lbl_ook_bits,"bits (latest):\n%.20s\n%s\n0101 %s=%llu/%llu",recent,strlen(recent)>20?recent+20:"",s_ook_test?"E":"OFF",s_ook.alternating_errors,s_ook.alternating_checks);
+                /* Diagnostic only; one line/second, no UART/config writes. */
+                static uint32_t ook_log_ms;
+                if(getenv("WAVE_MEASDBG") && (uint32_t)(lv_tick_get()-ook_log_ms)>=1000u){
+                    ook_log_ms=lv_tick_get();
+                    fprintf(stderr,"[ook] cfg=%u fid=%u ch=%u fcw=%u R=%u baud=%d lock=%d n=%llu erasures=%llu alt_test=%d errors=%llu checks=%llu low=%.3f high=%.3f thr=%.3f/%.3f recent=%s\n",s_ook.cfg,s_ook.fid,s_ook.channel,s_ook.fcw,s_ook.decim,s_ook.baud,s_ook.locked,s_ook.bits,s_ook.erasures,s_ook_test,s_ook.alternating_errors,s_ook.alternating_checks,(double)s_ook.low,(double)s_ook.high,(double)s_ook.threshold_low,(double)s_ook.threshold_high,s_ook.recent);
+                }
             }
         }else if(av.kind == 1u) {
             /*

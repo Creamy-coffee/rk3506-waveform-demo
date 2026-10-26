@@ -86,6 +86,9 @@ int main(int argc,char **argv)
     uint32_t ook_fcw=s_an_target_fcw;int ook_pending=s_an_send_pending;
     cb_ook_test(NULL);fixture_write(2,7,5,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(s_ook.alternating_checks>5 && s_ook.alternating_errors==0);save(argv[1],"ook_bits");
     lv_area_t oc;lv_obj_get_coords(s_chip_ook_test,&oc);assert(oc.x2<1024);
+    ook_decoder_t saved_ook=s_ook;
+    for(int k=0;k<64;k++)ook_emit(&s_ook,s_ook.last_bit^1,1);
+    draw(d);assert(lv_obj_get_height(s_lbl_ook_bits)<=80);save(argv[1],"ook_bits_long");s_ook=saved_ook;
     cb_ook_on(NULL);draw(d);assert(!s_ook.bits && !strcmp(lv_label_get_text(s_lbl_m5),"未解码"));cb_ook_on(NULL);
     for(int k=0;k<5;k++)cb_ook_baud(NULL);assert(s_ook_rate==3 && s_an_target_fcw==ook_fcw && s_an_send_pending==ook_pending);
     fixture_write(3,7,5,1,0,1,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.nvalid<256 && !digital.yvalid[0] && digital.yvalid[1] && digital.y[1]==0);save(argv[1],"ook_gaps");
