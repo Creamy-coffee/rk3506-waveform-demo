@@ -104,7 +104,8 @@ int main(int argc,char **argv)
     cb_ook_on(NULL);draw(d);assert(!s_ook.bits && !strcmp(lv_label_get_text(s_lbl_m5),"未解码"));cb_ook_on(NULL);
     for(int k=0;k<5;k++)cb_ook_baud(NULL);assert(s_ook_rate==3 && s_an_target_fcw==ook_fcw && s_an_send_pending==ook_pending);
     fixture_write(3,7,5,1,0,1,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.nvalid<256 && !digital.yvalid[0] && digital.yvalid[1] && digital.y[1]==0);save(argv[1],"ook_gaps");
-    s_an_type=3;an_chips_refresh();fixture_write(1,8,3,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.y[0]<0 && digital.y[16]>0);assert(!strcmp(lv_label_get_text(s_lbl_m5),"未解码"));assert(strstr(lv_label_get_text(s_lbl_modana_units),"Hz"));save(argv[1],"fsk");
+    s_an_type=3;an_chips_refresh();fixture_write(1,8,3,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.y[0]<0 && digital.y[16]>0);assert(s_ook.locked && s_ook.bits>5 && !s_ook.alternating_errors);assert(!strcmp(lv_label_get_text(s_lbl_m5),"同步"));assert(strstr(lv_label_get_text(s_lbl_modana_units),"Hz"));assert(!lv_obj_has_flag(s_chip_ook_on,LV_OBJ_FLAG_HIDDEN));save(argv[1],"fsk");
+    saved_ook=s_ook;for(int k=0;k<64;k++)ook_emit(&s_ook,s_ook.last_bit^1,1);draw(d);assert(lv_obj_get_height(s_lbl_ook_bits)<=80);save(argv[1],"fsk_bits_long");s_ook=saved_ook;
     cb_mod_view(NULL);draw(d);assert(s_mod_raw_view);assert(strstr(lv_label_get_text(s_lbl_modraw_title),"原始"));cb_mod_view(NULL);draw(d);assert(!s_mod_raw_view);
     fixture_write(2,8,5,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(!strcmp(lv_label_get_text(s_lbl_m5),"--"));
     s_an_type=2;fixture_write(1,5,2,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(strstr(lv_label_get_text(s_lbl_modana_units),"Hz"));save(argv[1],"fm");

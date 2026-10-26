@@ -2931,7 +2931,7 @@ static void an_chips_refresh(void)
     if(s_chip_mw){char t[32];snprintf(t,sizeof t,"窗口 %ums",MOD_WINDOW_MS[s_mod_window]);chip_set_text(s_chip_mw,t);if(s_mod_raw_view)lv_obj_add_state(s_chip_mw,LV_STATE_DISABLED);else lv_obj_remove_state(s_chip_mw,LV_STATE_DISABLED);}
     if(s_chip_ook_on){
         lv_obj_t *chips[]={s_chip_ook_on,s_chip_ook_baud,s_chip_ook_test};
-        for(int i=0;i<3;i++)if(s_an_type==5)lv_obj_remove_flag(chips[i],LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(chips[i],LV_OBJ_FLAG_HIDDEN);
+        for(int i=0;i<3;i++)if(s_an_type==5 || s_an_type==3)lv_obj_remove_flag(chips[i],LV_OBJ_FLAG_HIDDEN);else lv_obj_add_flag(chips[i],LV_OBJ_FLAG_HIDDEN);
         chip_set_text(s_chip_ook_on,s_ook_on?"解码 开":"解码 关");
         char t[24];snprintf(t,sizeof t,"%dBd",OOK_RATES[s_ook_rate]);chip_set_text(s_chip_ook_baud,t);
         chip_set_text(s_chip_ook_test,s_ook_test?"0101 开":"0101 关");
@@ -4575,14 +4575,14 @@ static void tick_mod(void)
                             s_an_have_target?s_an_target_fcw:av.fcw))
         {
             ana_history_push(&s_history,&queued);
-            if(s_ook_on && queued.mode==5)ook_push(&s_ook,&queued,OOK_RATES[s_ook_rate],s_ook_test);
+            if(s_ook_on && (queued.mode==5 || queued.mode==3))binary_push(&s_ook,&queued,OOK_RATES[s_ook_rate],s_ook_test,queued.mode==3);
             else ook_reset(&s_ook);
         }else {ana_history_clear(&s_history);ook_reset(&s_ook);}
     }
     /* The reader may enqueue a newer frame after get_ana above. Never feed the
        older snapshot back after draining that newer frame (false gap/reset). */
-    if(s_an_type==5 && s_ook_on && have_ana && match) {
-        if(!drained_ana)ook_push(&s_ook,&av,OOK_RATES[s_ook_rate],s_ook_test);
+    if((s_an_type==5 || s_an_type==3) && s_ook_on && have_ana && match) {
+        if(!drained_ana)binary_push(&s_ook,&av,OOK_RATES[s_ook_rate],s_ook_test,av.mode==3);
     }else ook_reset(&s_ook);
     lv_label_set_text(s_lbl_ook_info,"");lv_label_set_text(s_lbl_ook_bits,"");lv_label_set_text(s_lbl_modbaud,"—");
 
@@ -4713,13 +4713,13 @@ static void tick_mod(void)
         if(av.kind==3u)lv_label_set_text_fmt(s_lbl_modana_units,"phase [deg] %.1f..%.1f",(double)draw_lo,(double)draw_hi);
         plot_set_trace(s_plot_modana, 0, a, V32_ANA_POINTS, V32_C_MATH, 2);
 
-        if(av.mode == 5u){
-            /* OOK is an amplitude observation, not a sinusoidal AM-depth fit. */
-            lv_label_set_text_fmt(s_lbl_m4,"%.1f 码",(double)(mx-mn));
+        if(av.mode == 5u || av.mode==3u){
+            /* Known-rate binary observations; preserve the original traces. */
+            lv_label_set_text_fmt(s_lbl_m4,av.mode==3u?"%.1f Hz":"%.1f 码",av.mode==3u?(double)fmaxf(fabsf(mn),fabsf(mx)):(double)(mx-mn));
             lv_label_set_text(s_lbl_m5,!s_ook_on?"未解码":s_ook.locked?"同步":"等待同步");
             lv_label_set_text_fmt(s_lbl_modbaud,"%d Bd",OOK_RATES[s_ook_rate]);
             if(s_ook_on){
-                lv_label_set_text_fmt(s_lbl_mst,s_ook.locked?"● OOK bit 同步":"○ OOK 等待同步");
+                lv_label_set_text_fmt(s_lbl_mst,s_ook.locked?"● %s bit 同步":"○ %s 等待同步",av.mode==3u?"FSK":"OOK");
                 lv_obj_set_style_text_color(s_lbl_mst,s_ook.locked?V32_C_GREEN:V32_C_WARN,0);
                 lv_label_set_text_fmt(s_lbl_ook_info,"L/H %.1f/%.1f\nthr %.1f/%.1f\nn=%llu ?=%llu",(double)s_ook.low,(double)s_ook.high,(double)s_ook.threshold_low,(double)s_ook.threshold_high,s_ook.bits,s_ook.erasures);
                 if(s_ook.have_frame && s_ook.step<6)lv_label_set_text(s_lbl_ook_info,"Rs too high for Fs/R\nNeed >=6 samples/symbol");
@@ -4729,7 +4729,7 @@ static void tick_mod(void)
                 static uint32_t ook_log_ms;
                 if(getenv("WAVE_MEASDBG") && (uint32_t)(lv_tick_get()-ook_log_ms)>=1000u){
                     ook_log_ms=lv_tick_get();
-                    fprintf(stderr,"[ook] cfg=%u fid=%u ch=%u fcw=%u R=%u baud=%d lock=%d n=%llu erasures=%llu alt_test=%d errors=%llu checks=%llu low=%.3f high=%.3f thr=%.3f/%.3f recent=%s\n",s_ook.cfg,s_ook.fid,s_ook.channel,s_ook.fcw,s_ook.decim,s_ook.baud,s_ook.locked,s_ook.bits,s_ook.erasures,s_ook_test,s_ook.alternating_errors,s_ook.alternating_checks,(double)s_ook.low,(double)s_ook.high,(double)s_ook.threshold_low,(double)s_ook.threshold_high,s_ook.recent);
+                    fprintf(stderr,"[%s] cfg=%u fid=%u ch=%u fcw=%u R=%u baud=%d lock=%d n=%llu erasures=%llu alt_test=%d errors=%llu checks=%llu low=%.3f high=%.3f thr=%.3f/%.3f recent=%s\n",av.mode==3u?"fsk":"ook",s_ook.cfg,s_ook.fid,s_ook.channel,s_ook.fcw,s_ook.decim,s_ook.baud,s_ook.locked,s_ook.bits,s_ook.erasures,s_ook_test,s_ook.alternating_errors,s_ook.alternating_checks,(double)s_ook.low,(double)s_ook.high,(double)s_ook.threshold_low,(double)s_ook.threshold_high,s_ook.recent);
                 }
             }
         }else if(av.kind == 1u) {

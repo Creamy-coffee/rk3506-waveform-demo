@@ -1,6 +1,15 @@
 /* Offline replay of real ANA packets through the SAME OOK core as the screen. */
 #include "ook_decoder.h"
 #include <stdio.h>
+#ifdef FSK_CAPTURE
+#define CAPTURE_MODE 3
+#define CAPTURE_KIND 2
+#define CAPTURE_NAME "FSK"
+#else
+#define CAPTURE_MODE 5
+#define CAPTURE_KIND 1
+#define CAPTURE_NAME "OOK"
+#endif
 static unsigned u32(const unsigned char *p){return (unsigned)p[0]|((unsigned)p[1]<<8)|((unsigned)p[2]<<16)|((unsigned)p[3]<<24);}
 static unsigned crc32(const unsigned char *p,int n){unsigned c=~0u;while(n--){c^=*p++;for(int k=0;k<8;k++)c=(c>>1)^((c&1)?0xedb88320u:0);}return ~c;}
 int main(int argc,char **argv)
@@ -14,12 +23,21 @@ int main(int argc,char **argv)
     for(long off=0;off+1076<=size;off++){
         unsigned char *p=data+off;if(memcmp(p,"V32ANA1!",8))continue;
         if(crc32(p,1072)!=u32(p+1072)){bad++;continue;}
-        unsigned info=u32(p+36);if(u32(p+8)!=1 || u32(p+24)!=256 || (info&255)!=1 || ((info>>16)&255)!=5 || u32(p+16)!=65000000)continue;
-        v32_ana_view_t v={0};v.valid=1;v.mode=5;v.kind=1;v.frame_id=u32(p+12);v.decim=u32(p+20);v.flags=u32(p+28);v.cfg_id=u32(p+32);v.fcw=u32(p+40);v.channel=(info>>8)&255;
-        for(int i=0;i<256;i++){unsigned y=u32(p+48+4*i);v.y[i]=(y&0xffffff)/256.f;v.yvalid[i]=!(y&0x80000000u);v.nvalid+=v.yvalid[i];}
+        unsigned info=u32(p+36);if(u32(p+8)!=1 || u32(p+24)!=256 || (info&255)!=CAPTURE_KIND || ((info>>16)&255)!=CAPTURE_MODE || u32(p+16)!=65000000 || u32(p+44) || (info>>24) || ((info>>8)&255)>1)continue;
+        v32_ana_view_t v={0};v.valid=1;v.mode=CAPTURE_MODE;v.kind=CAPTURE_KIND;v.frame_id=u32(p+12);v.decim=u32(p+20);v.flags=u32(p+28);v.cfg_id=u32(p+32);v.fcw=u32(p+40);v.channel=(info>>8)&255;
+        if(v.decim!=2048 && v.decim!=4096 && v.decim!=8192)continue;
+        int malformed=0;
+        for(int i=0;i<256;i++){
+            unsigned y=u32(p+48+4*i);if(y&0x7f000000u){malformed=1;break;}
+            int phase=(int)((int32_t)(y<<8)>>8);
+            if(CAPTURE_KIND==2 && (phase< -32768 || phase>32767)){malformed=1;break;}
+            v.y[i]=CAPTURE_KIND==2?(float)phase*65000000.f/v.decim/65536.f:(y&0xffffff)/256.f;
+            v.yvalid[i]=!(y&0x80000000u) && (CAPTURE_KIND!=2 || (phase>=-29491 && phase<=29491));v.nvalid+=v.yvalid[i];
+        }
+        if(malformed)continue;
         if(r.have_frame && (r.cfg!=v.cfg_id || r.fcw!=v.fcw || r.decim!=v.decim || r.channel!=v.channel || (unsigned)(v.frame_id-r.fid)!=1))gaps++;
-        ook_push(&r,&v,atoi(argv[2]),atoi(argv[3]));good++;
+        binary_push(&r,&v,atoi(argv[2]),atoi(argv[3]),CAPTURE_KIND==2);good++;
     }
-    printf("{\"CRC_good_OOK_frames\":%u,\"CRC_bad_ANA_candidates\":%u,\"frame_or_config_gaps\":%u,\"last_segment_bits\":%llu,\"erasures\":%llu,\"alternating_errors\":%llu,\"alternating_checks\":%llu,\"locked\":%d,\"levels\":[%.3f,%.3f],\"recent\":\"%s\"}\n",good,bad,gaps,r.bits,r.erasures,r.alternating_errors,r.alternating_checks,r.locked,r.low,r.high,r.recent);
+    printf("{\"CRC_good_%s_frames\":%u,\"CRC_bad_ANA_candidates\":%u,\"frame_or_config_gaps\":%u,\"last_segment_bits\":%llu,\"erasures\":%llu,\"alternating_errors\":%llu,\"alternating_checks\":%llu,\"locked\":%d,\"levels\":[%.3f,%.3f],\"recent\":\"%s\"}\n",CAPTURE_NAME,good,bad,gaps,r.bits,r.erasures,r.alternating_errors,r.alternating_checks,r.locked,r.low,r.high,r.recent);
     free(data);return 0;
 }
