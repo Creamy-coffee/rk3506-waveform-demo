@@ -137,6 +137,20 @@ int main(int argc,char **argv)
     s_an_type=5;an_chips_refresh();fixture_write(1,7,5,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.y[0]==0 && digital.nvalid==256);assert(s_ook.locked && s_ook.bits>5);assert(strstr(lv_label_get_text(s_lbl_modraw_title),"OOK"));save(argv[1],"ook");
     uint32_t ook_fcw=s_an_target_fcw;int ook_pending=s_an_send_pending;
     cb_ook_test(NULL);fixture_write(2,7,5,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(s_ook.alternating_checks>5 && s_ook.alternating_errors==0);save(argv[1],"ook_bits");
+    /* About 62 ANA/s arrive between 100 ms UI ticks. A seven-frame burst
+       must be consumed in one fast tick, rather than limited to four (40/s). */
+    {
+        fixture_write(3,7,5,1,0,0,1,0);
+        uint8_t frame[1076];FILE *burst=fopen(fixture,"rb");assert(burst);
+        assert(fread(frame,1,sizeof frame,burst)==sizeof frame);fclose(burst);
+        burst=fopen(fixture,"wb");assert(burst);
+        for(unsigned fid=3;fid<=9;fid++){
+            put(frame+12,fid);put(frame+1072,crc(frame,1072));
+            assert(fwrite(frame,1,sizeof frame,burst)==sizeof frame);
+        }
+        fclose(burst);assert(v32_init_file(fixture)==0);draw(d);
+        assert(s_ook.fid==9);v32_ana_view_t remaining;assert(!v32_pop_ana(&remaining));
+    }
     lv_area_t oc;lv_obj_get_coords(s_chip_ook_test,&oc);assert(oc.x2<1024);
     ook_decoder_t saved_ook=s_ook;
     for(int k=0;k<64;k++)ook_emit(&s_ook,s_ook.last_bit^1,1);

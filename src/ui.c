@@ -4774,8 +4774,10 @@ static void tick_mod(void)
        overflow/frame gaps still reach the decoder's normal discontinuity path. */
     const uint32_t ana_work_start=lv_tick_get();
     unsigned ana_work_count=0;
-    while(ana_work_count<4 &&
-          (ana_work_count==0 || lv_tick_get()-ana_work_start<12u) &&
+    /* ui_tick runs every 100 ms; R=4096 produces about 62 frames/s.
+       Allow a full burst plus catch-up, rather than capping throughput at 40/s. */
+    while(ana_work_count<32 &&
+          (ana_work_count==0 || lv_tick_get()-ana_work_start<20u) &&
           v32_pop_ana(&queued)) {
         ana_work_count++;
         drained_ana=true;
