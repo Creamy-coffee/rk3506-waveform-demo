@@ -4,9 +4,9 @@ Source: https://github.com/jgaeddert/liquid-dsp (release 1.7.0).
 Archive SHA256: `33c42ebc2e6088570421e282c6332e899705d42b4f73ebd1212e6a11da714dd4`.
 MIT license retained in `liquid-dsp.LICENSE` and the source archive.
 
-`liquid.cmake` extracts offline into the build directory and applies only three
+`liquid.cmake` extracts offline into the build directory and applies only four
 build-system changes there: C-only project; static library; omit the upstream
-unconditional SIMD runtime probes. Generic C DSP kernels retain the algorithms
+unconditional SIMD runtime probes; quote empty flags in the summary printer. Generic C DSP kernels retain the algorithms
 and numeric types; no reduced-precision replacement. Examples/tests/benchmarks
 are not bundled into the GUI. No target executable runs during cross configuration.
 

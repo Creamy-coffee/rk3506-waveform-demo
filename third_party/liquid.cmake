@@ -21,6 +21,12 @@ string(REPLACE "LANGUAGES C CXX" "LANGUAGES C" liquid_cmake "${liquid_cmake}")
 string(REPLACE "include(cmake/FindSIMD.cmake)" "# Generic C kernels: no cross-target SIMD probes" liquid_cmake "${liquid_cmake}")
 string(REPLACE "add_library(\${LIBNAME} SHARED" "add_library(\${LIBNAME} STATIC" liquid_cmake "${liquid_cmake}")
 file(WRITE "${V32_LIQUID_DIR}/CMakeLists.txt" "${liquid_cmake}")
+# The upstream summary assumes CXX flags exist. With a fresh C-only toolchain,
+# unquoted empty arguments make string(STRIP) fail on some CMake versions.
+file(READ "${V32_LIQUID_DIR}/cmake/summary.cmake" liquid_summary)
+string(REPLACE "string(STRIP \${__result} __result)" "string(STRIP \"\${__result}\" __result)" liquid_summary "${liquid_summary}")
+string(REPLACE "string(STRIP \${__flag} __flag)" "string(STRIP \"\${__flag}\" __flag)" liquid_summary "${liquid_summary}")
+file(WRITE "${V32_LIQUID_DIR}/cmake/summary.cmake" "${liquid_summary}")
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_AUTOTESTS OFF CACHE BOOL "" FORCE)
 set(BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)

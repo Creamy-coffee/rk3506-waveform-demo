@@ -37,14 +37,30 @@ echo
 echo "==> 2/3 交叉编译"
 CLEAN_ENV=""
 [ "x$CLEAN" = "x1" ] && CLEAN_ENV="CLEAN=1"
+printf -v REMOTE_DIR_Q '%q' "$REMOTE_DIR"
+printf -v BUILD_DIR_Q '%q' "${BUILD_DIR:-build}"
+REMOTE_LVGL_ENV=""
+if [ -n "${LVGL_DIR:-}" ]; then
+    printf -v LVGL_DIR_Q '%q' "$LVGL_DIR"
+    REMOTE_LVGL_ENV="LVGL_DIR=$LVGL_DIR_Q"
+fi
 "$PYBIN" ../scripts/ssh_run.py - 900 <<EOF
-cd $REMOTE_DIR
-$CLEAN_ENV ./build.sh 2>&1 | tail -40
+bash -s <<'V32_REMOTE_BUILD'
+set -e
+set -o pipefail
+cd $REMOTE_DIR_Q
+$CLEAN_ENV BUILD_DIR=$BUILD_DIR_Q $REMOTE_LVGL_ENV bash ./build.sh 2>&1 | tail -40
+V32_REMOTE_BUILD
 EOF
 
 echo
 echo "==> 3/3 拉回产物"
-"$PYBIN" ../scripts/sftp_get.py /home/lqnm/waveform_demo/out/waveform_demo out/waveform_demo
+REMOTE_PROJECT=${REMOTE_DIR%/}
+REMOTE_OUT=${REMOTE_OUT:-${REMOTE_PROJECT%/*}/out}
+mkdir -p out
+for artifact in waveform_demo ook_capture_decode fsk_capture_decode bpsk_capture_decode; do
+    "$PYBIN" ../scripts/sftp_get.py "$REMOTE_OUT/$artifact" "out/$artifact"
+done
 
 echo
 echo "================ 本地产物 ================"

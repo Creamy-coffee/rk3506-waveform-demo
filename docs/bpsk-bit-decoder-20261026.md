@@ -34,6 +34,8 @@ pn_dir、pn_invert明确报告所选假设，不会偷偷改变显示的原始�
 
 固定liquid源码约1.3MB在third_party，配置时核验SHA并离线解包；不联网取依赖。用原SDK/LVGL9.1的新构建目录，旧65e113c GUI备份后再部署。不能把主机x86工具推成ARM程序。源码与库许可证保留，精度不为节省资源降低。
 
+使用push_build.sh时也会透传BUILD_DIR/LVGL_DIR到构建VM，并拉回GUI及三个CLI；远端管道保留pipefail，编译失败不会把旧产物伪装为成功。LVGL_DIR应是VM上的路径。
+
 ```sh
 LVGL_DIR=/现有LVGL9.1路径 BUILD_DIR=build_bpsk_bits bash build.sh
 file ../out/waveform_demo build_bpsk_bits/bpsk_capture_decode
