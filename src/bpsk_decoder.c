@@ -10,9 +10,12 @@
 
 void bpsk_reset(bpsk_decoder_t *r)
 {
+    decoded_bit_sink_t sink=r->sink;void *context=r->sink_context;
+    if(sink && r->have_frame)sink(context,-1);
     if(r->tracker)symtrack_cccf_destroy((symtrack_cccf)r->tracker);
     if(r->resampler)msresamp_crcf_destroy((msresamp_crcf)r->resampler);
     memset(r,0,sizeof *r);
+    r->sink=sink;r->sink_context=context;
 }
 static int pn7(int phase)
 {
@@ -42,6 +45,7 @@ static void pn_bit(bpsk_decoder_t *r,int bit)
 }
 static void emit(bpsk_decoder_t *r,int bit)
 {
+    if(r->sink)r->sink(r->sink_context,bit);
     if(r->recent_n==64){memmove(r->recent,r->recent+1,63);r->recent_n=63;}
     r->recent[r->recent_n++]=bit<0?'?':(char)('0'+bit);r->recent[r->recent_n]=0;
     if(bit<0)r->erasures++;else r->bits++;

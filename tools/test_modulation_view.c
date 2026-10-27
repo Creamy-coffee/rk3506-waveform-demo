@@ -59,7 +59,7 @@ static void draw(lv_display_t *d){test_ms+=40;lv_tick_inc(40);ui_tick();lv_obj_u
 static void save(const char *dir,const char *name){char p[1024];snprintf(p,sizeof p,"%s/%s.ppm",dir,name);FILE *f=fopen(p,"wb");assert(f);fprintf(f,"P6\n1024 600\n255\n");for(int i=0;i<1024*600;i++){uint8_t b[3]={pixels[i]>>16,pixels[i]>>8,pixels[i]};fwrite(b,1,3,f);}fclose(f);}
 static unsigned next_cp(const unsigned char **p){unsigned c=*(*p)++;if(c<128)return c;unsigned n=(c&0xe0)==0xc0?1:(c&0xf0)==0xe0?2:3;c&=(1u<<(6-n))-1;while(n--)c=(c<<6)|(*(*p)++&63);return c;}
 static void glyphs(void){
-    const char *text="波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测○● BPSK PN7 待定判决比对中匹配检出误码有无效位对频频率无效/↺⊞";
+    const char *text="波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测○● BPSK PN7 待定判决比对中匹配检出误码有无效位对频频率无效/↺⊞图片接收中图已复位";
     const lv_font_t *fonts[]={&lv_font_v32_12,&lv_font_v32_16,&lv_font_v32_18,&lv_font_v32_20,&lv_font_v32_12_bold,&lv_font_v32_16_bold,&lv_font_v32_18_bold,&lv_font_v32_20_bold};
     for(unsigned k=0;k<sizeof fonts/sizeof fonts[0];k++){
         const unsigned char *p=(const unsigned char *)text;
@@ -187,5 +187,20 @@ int main(int argc,char **argv)
     s_an_send_pending=0;s_an_type=0;an_chips_refresh();assert(lv_obj_has_state(s_chip_auto,LV_STATE_DISABLED));
     ui_set_page(UI_PAGE_SCOPE);assert(!lv_obj_has_state(s_chip_auto,LV_STATE_DISABLED));
     assert(strstr(lv_label_get_text(lv_obj_get_child(s_chip_auto,0)),"自动"));record_config=0;
-    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs");return 0;
+    image_receiver_clear(&s_image);s_image_drawn_revision=UINT32_MAX;
+    ui_set_page(UI_PAGE_IMAGE);assert(ui_page_from_name("image")==UI_PAGE_IMAGE);
+    assert(!s_image.have_image && strstr(lv_label_get_text(s_image_status),"等待数据"));draw(d);save(argv[1],"image_waiting");
+    const char *image_fixture=getenv("V32_TEST_IMAGE_PACKETS");assert(image_fixture);
+    FILE *image_file=fopen(image_fixture,"rb");assert(image_file);uint8_t image_packets[272];
+    assert(fread(image_packets,1,sizeof image_packets,image_file)==sizeof image_packets);fclose(image_file);
+    image_accept_packet(&s_image,image_packets);image_refresh();
+    assert(s_image.received==1 && !s_image.complete && image_receiver_pixel(&s_image,0,31)==-1);
+    assert(strstr(lv_label_get_text(s_image_status),"接收中"));draw(d);save(argv[1],"image_partial");
+    for(int i=1;i<4;i++)image_accept_packet(&s_image,image_packets+68*i);
+    image_refresh();assert(s_image.complete && s_image.received==4);
+    assert(strstr(lv_label_get_text(s_image_status),"CRC OK"));draw(d);save(argv[1],"image_complete");
+    lv_tick_inc(4000);image_refresh();assert(strstr(lv_label_get_text(s_image_info),"NO NEW PACKETS"));draw(d);save(argv[1],"image_stale");
+    cb_image_clear(NULL);assert(!s_image.have_image && !s_image.complete);
+    ui_set_page(UI_PAGE_SYSTEM);assert(ui_page_from_name("5")==UI_PAGE_SYSTEM);
+    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale");return 0;
 }

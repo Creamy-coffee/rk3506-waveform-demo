@@ -26,6 +26,7 @@ enum {
     UI_PAGE_AI,
     UI_PAGE_MOD,       /* 调制分析（V32ANA1!，交付包 603695b2） */
     UI_PAGE_SYSTEM,
+    UI_PAGE_IMAGE,     /* CRC-checked image payload recovered from real symbols */
     UI_PAGE_COUNT
 };
 

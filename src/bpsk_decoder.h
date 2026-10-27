@@ -1,7 +1,9 @@
 #ifndef V32_BPSK_DECODER_H
 #define V32_BPSK_DECODER_H
 #include "v32cap3.h"
+#include "decoded_bit_sink.h"
 typedef struct {
+    decoded_bit_sink_t sink;void *sink_context;
     void *tracker,*resampler;
     uint32_t cfg,fid,fcw,decim,channel;
     int have_frame,baud,invert,test,coarse_ready,locked,used,window_n,window_at;

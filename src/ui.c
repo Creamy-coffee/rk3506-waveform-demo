@@ -25,6 +25,7 @@
 #include "modulation_view.h"
 #include "ook_decoder.h"
 #include "bpsk_decoder.h"
+#include "image_transport.h"
 #include "v32cap3.h"       /* SYSTEM 页要读 UART 的帧数/CRC 错误统计 */
 #include "fft.h"
 #include "bl_interp.h"
@@ -203,6 +204,12 @@ static lv_obj_t *s_lbl_moddecision_key;
 static lv_obj_t *s_lbl_modbaud,*s_lbl_ook_info,*s_lbl_ook_bits,*s_chip_ook_on,*s_chip_ook_baud,*s_chip_ook_test;
 static ook_decoder_t s_ook;
 static bpsk_decoder_t s_bpsk;
+static image_receiver_t s_image;
+static bool s_image_enabled=false;
+static lv_obj_t *s_image_canvas,*s_image_status,*s_image_info,*s_image_link;
+static uint16_t s_image_pixels[320*320];
+static uint32_t s_image_drawn_revision=UINT32_MAX,s_image_packet_ms;
+static uint64_t s_image_packets_seen;
 static bool s_bpsk_invert=false,s_bpsk_symbols=true;
 static lv_obj_t *s_chip_bpsk_inv,*s_chip_bpsk_view;
 static bool s_ook_on=true,s_ook_test=false;
@@ -264,6 +271,10 @@ static void cb_mod_window(lv_event_t *e);
 static void cb_ook_on(lv_event_t *e);
 static void cb_ook_baud(lv_event_t *e);
 static void cb_ook_test(lv_event_t *e);
+static void cb_image_mode(lv_event_t *e);
+static void cb_image_clear(lv_event_t *e);
+static void analysis_apply(int type,int ch,int rate);
+static void an_chips_refresh(void);
 static void cb_bpsk_inv(lv_event_t *e);
 static void cb_bpsk_view(lv_event_t *e);
 static void cb_ch1(lv_event_t *e);
@@ -2312,6 +2323,62 @@ static void build_ai(lv_obj_t *pg)
  * 页面 5：SYSTEM（这一页显示真实数据）
  * ========================================================= */
 /* ==================== 页面：调制分析（V32ANA1!） ==================== */
+static void build_image(lv_obj_t *pg)
+{
+    lv_obj_t *panel=mk_panel(pg,0,0,MAIN_W,MAIN_H);
+    mk_label(panel,6,0,"图片接收 · IMAGE RX",V32_FONT_SMALL_B,V32_C_PANEL_TITLE);
+    s_image_canvas=lv_canvas_create(panel);
+    lv_canvas_set_buffer(s_image_canvas,s_image_pixels,320,320,LV_COLOR_FORMAT_RGB565);
+    lv_obj_set_pos(s_image_canvas,6,30);
+    s_image_status=mk_label(panel,350,36,"等待数据",V32_FONT_ROWVAL,V32_C_WARN);
+    s_image_link=mk_label(panel,350,76,"OOK / 2FSK / BPSK · Manchester",V32_FONT_SMALL,V32_C_NOTE);
+    s_image_info=mk_label(panel,350,112,"0 / 0 packets\nCRC OK: 0\n32 x 32 mono first",V32_FONT_SMALL,V32_C_METRIC_VALUE);
+    lv_obj_set_width(s_image_info,MAIN_W-390);
+    lv_label_set_long_mode(s_image_info,LV_LABEL_LONG_WRAP);
+    lv_obj_t *row=mk(panel,350,MAIN_H-75,MAIN_W-390,36);
+    lv_obj_set_flex_flow(row,LV_FLEX_FLOW_ROW);lv_obj_set_style_pad_column(row,8,0);
+    const char *names[]={"OOK","2FSK","BPSK"};const int modes[]={5,3,6};
+    for(int i=0;i<3;i++){
+        lv_obj_t *b=mk_chip(row,names[i],NULL);
+        lv_obj_add_event_cb(b,cb_image_mode,LV_EVENT_CLICKED,(void*)(intptr_t)modes[i]);
+    }
+    mk_chip(row,"复位",cb_image_clear);
+}
+
+static void image_refresh(void)
+{
+    if(s_image.revision!=s_image_drawn_revision){
+        for(unsigned i=0;i<320*320;i++)s_image_pixels[i]=0x1082;
+        if(s_image.have_image){
+            unsigned scale=320/(s_image.width>s_image.height?s_image.width:s_image.height);
+            unsigned ox=(320-scale*s_image.width)/2,oy=(320-scale*s_image.height)/2;
+            for(unsigned y=0;y<s_image.height;y++)for(unsigned x=0;x<s_image.width;x++){
+                int bit=image_receiver_pixel(&s_image,x,y);
+                uint16_t color=bit<0?0x528a:bit?0x0000:0xffff;
+                for(unsigned dy=0;dy<scale;dy++)for(unsigned dx=0;dx<scale;dx++)
+                    s_image_pixels[(oy+y*scale+dy)*320+ox+x*scale+dx]=color;
+            }
+        }
+        lv_obj_invalidate(s_image_canvas);s_image_drawn_revision=s_image.revision;
+    }
+    uint32_t now=lv_tick_get();
+    if(s_image.packets!=s_image_packets_seen){s_image_packets_seen=s_image.packets;s_image_packet_ms=now;}
+    lv_label_set_text(s_image_status,s_image.complete?"CRC OK · 图已接收":s_image.have_image?"接收中":"等待数据");
+    lv_obj_set_style_text_color(s_image_status,s_image.complete?V32_C_GREEN:V32_C_WARN,0);
+    char link[128],info[384];
+    snprintf(link,sizeof link,"%s · %s · CH%d · %d Bd",s_image_enabled?"RX ON":"RX OFF",
+             s_an_type==5?"OOK":s_an_type==3?"2FSK":s_an_type==6?"BPSK":"SELECT MODE",s_an_ch+1,OOK_RATES[s_ook_rate]);
+    lv_label_set_text(s_image_link,link);
+    snprintf(info,sizeof info,"%u / %u packets · %u%%\n%u x %u · %u bytes\nCRC errors: %llu · invalid: %llu\nDuplicates: %llu · gaps: %llu\nLast packet: %s%u ms\nManchester · repeat to repair\n%s",
+             s_image.received,s_image.chunks,s_image.chunks?100*s_image.received/s_image.chunks:0,
+             s_image.width,s_image.height,(unsigned)s_image.total_bytes,
+             (unsigned long long)s_image.crc_errors,(unsigned long long)s_image.invalid_packets,
+             (unsigned long long)s_image.duplicates,(unsigned long long)s_image.gaps,
+             s_image.packets?"":"-- / ",s_image.packets?now-s_image_packet_ms:0,
+             s_image.packets && now-s_image_packet_ms>3000?"NO NEW PACKETS · last image held":"CRC OK applies to received image data");
+    lv_label_set_text(s_image_info,info);
+}
+
 static void build_mod(lv_obj_t *pg)
 {
     lv_obj_set_flex_flow(pg, LV_FLEX_FLOW_ROW);
@@ -2873,6 +2940,19 @@ static void cb_win_cycle(lv_event_t *e)
     ui_tick();
 }
 
+static void cb_image_clear(lv_event_t *e)
+{
+    LV_UNUSED(e);image_receiver_clear(&s_image);s_image_packets_seen=0;s_image_packet_ms=0;
+    s_image_drawn_revision=UINT32_MAX;ook_reset(&s_ook);bpsk_reset(&s_bpsk);image_refresh();
+}
+
+static void cb_image_mode(lv_event_t *e)
+{
+    int mode=(int)(intptr_t)lv_event_get_user_data(e);
+    s_image_enabled=true;cb_image_clear(e);s_ook_on=true;s_ook_test=false;s_ook_rate=3;
+    analysis_apply(mode,s_an_ch,1);an_chips_refresh();
+}
+
 /*
  * 手动调制模式：AA5 SET_MODULATION 下发（自动跟 COMMIT）。
  * 同时对 AM/FM/PM 补发旧式 A5 E0 命令 —— 现行 FPGA 固件只认旧命令，
@@ -2945,7 +3025,7 @@ static const char *AN_RATE_NAME[3] = { "档8k", "标准", "宽档" };
 static void auto_chip_refresh(void)
 {
     if(!s_chip_auto)return;
-    const bool tune=S.page==UI_PAGE_MOD && S.use_real;
+    const bool tune=(S.page==UI_PAGE_MOD || S.page==UI_PAGE_IMAGE) && S.use_real;
     chip_set_text(s_chip_auto,tune?"↺ 对频":"⊞ 自动");
     if(tune && !s_an_type)lv_obj_add_state(s_chip_auto,LV_STATE_DISABLED);
     else lv_obj_remove_state(s_chip_auto,LV_STATE_DISABLED);
@@ -3123,7 +3203,7 @@ static void cb_run(lv_event_t *e)
 static void cb_auto(lv_event_t *e)
 {
     LV_UNUSED(e);
-    if(S.page==UI_PAGE_MOD && S.use_real) {
+    if((S.page==UI_PAGE_MOD || S.page==UI_PAGE_IMAGE) && S.use_real) {
         if(!s_an_type)return;
         v32_meas_view_t measured;
         uint32_t hz=0;
@@ -3257,7 +3337,7 @@ static void ctrl_set_page(int page)
 {
     for(int i = 0; i < UI_PAGE_COUNT; i++) {
         if(s_ctrl_grp[i] == NULL) continue;
-        if(i == page) lv_obj_remove_flag(s_ctrl_grp[i], LV_OBJ_FLAG_HIDDEN);
+        if(i == page || (page==UI_PAGE_IMAGE && i==UI_PAGE_MOD)) lv_obj_remove_flag(s_ctrl_grp[i], LV_OBJ_FLAG_HIDDEN);
         else          lv_obj_add_flag(s_ctrl_grp[i], LV_OBJ_FLAG_HIDDEN);
     }
     /* 没挂到 s_ctrl_grp 的那几组，逐个按页开关 */
@@ -3268,6 +3348,11 @@ static void ctrl_set_page(int page)
     GRP_SHOW(s_g_ai,  page == UI_PAGE_AI);
     GRP_SHOW(s_g_sys, page == UI_PAGE_SYSTEM);
     #undef GRP_SHOW
+    lv_obj_t *image_hidden[]={s_chip_mv,s_chip_mw,s_chip_ook_test};
+    for(int i=0;i<3;i++)if(image_hidden[i]){
+        if(page==UI_PAGE_IMAGE)lv_obj_add_flag(image_hidden[i],LV_OBJ_FLAG_HIDDEN);
+        else if(page==UI_PAGE_MOD)lv_obj_remove_flag(image_hidden[i],LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void build_controls(lv_obj_t *root)
@@ -3484,7 +3569,7 @@ static void nav_selected(lv_obj_t *b, bool on)
 static void build_nav(lv_obj_t *root)
 {
     static const char *TXT[UI_PAGE_COUNT] = {
-        "示波器", "频谱", "锁相", "重建", "调制", "系统"
+        "示波器", "频谱", "锁相", "重建", "调制", "系统", "图片"
     };
 
     lv_obj_t *nav = mk(root, 0, NAV_Y0, V32_SHELL_W, V32_ROW_NAV);
@@ -4640,6 +4725,9 @@ static void tick_mod(void)
     static float a[PLOT_MAX_PTS];
     const int n = PLOT_MAX_PTS;
     if(!S.running)return;
+    s_ook.sink=s_image_enabled && (s_an_type==5 || s_an_type==3)?image_receiver_symbol:NULL;
+    s_bpsk.sink=s_image_enabled && s_an_type==6?image_receiver_symbol:NULL;
+    s_ook.sink_context=s_bpsk.sink_context=&s_image;
     real_update();
 
     /* 连点合并窗口：最后一次点击 250ms 后才真正下发 */
@@ -5131,6 +5219,7 @@ void ui_create(void)
     build_ai    (s_page[UI_PAGE_AI]);
     if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] mod\n");
     build_mod   (s_page[UI_PAGE_MOD]);
+    image_receiver_clear(&s_image);build_image(s_page[UI_PAGE_IMAGE]);image_refresh();
     if(getenv("WAVE_TDBG")) fprintf(stderr, "[build] system\n");
     build_system(s_page[UI_PAGE_SYSTEM]);
 
@@ -5188,6 +5277,7 @@ int ui_page_from_name(const char *name)
     /* 插入 UI_PAGE_MOD 之后，"4" 已经变成调制页，不能再当 system 用 */
     if(!strcmp(name, "mod")   || !strcmp(name, "modem") || !strcmp(name, "4")) return UI_PAGE_MOD;
     if(!strcmp(name, "system")|| !strcmp(name, "sys") || !strcmp(name, "5")) return UI_PAGE_SYSTEM;
+    if(!strcmp(name,"image") || !strcmp(name,"img") || !strcmp(name,"6"))return UI_PAGE_IMAGE;
     return -1;
 }
 
@@ -5220,6 +5310,7 @@ void ui_tick(void)
             }
             break;
         case UI_PAGE_SYSTEM: tick_system(); break;
+        case UI_PAGE_IMAGE: tick_mod();image_refresh();break;
         default: break;
     }
     tick_clock();

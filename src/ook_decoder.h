@@ -1,11 +1,13 @@
 #ifndef V32_OOK_DECODER_H
 #define V32_OOK_DECODER_H
 #include "v32cap3.h"
+#include "decoded_bit_sink.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 /* Known-rate OOK observation decoder. No protocol framing, FEC or BER claims. */
 typedef struct {
+    decoded_bit_sink_t sink;void *sink_context;
     uint32_t cfg,fid,fcw,decim,channel,mode;
     int have_frame,baud,levels,state,have_state,have_edge,good_edges,locked;
     double fs,t,step,last_edge,next_center,sum,decision_center;
@@ -14,10 +16,15 @@ typedef struct {
     unsigned long long bits,erasures,alternating_checks,alternating_errors;
     char recent[65];int recent_n;
 } ook_decoder_t;
-static inline void ook_reset(ook_decoder_t *r){memset(r,0,sizeof *r);}
+static inline void ook_reset(ook_decoder_t *r){
+    decoded_bit_sink_t sink=r->sink;void *context=r->sink_context;
+    if(sink && r->have_frame)sink(context,-1);
+    memset(r,0,sizeof *r);r->sink=sink;r->sink_context=context;
+}
 static inline int ook_float_compare(const void *a,const void *b){float x=*(const float*)a,y=*(const float*)b;return (x>y)-(x<y);}
 static inline void ook_timing_reset(ook_decoder_t *r){r->have_edge=r->have_state=r->good_edges=r->locked=r->count=r->have_bit=0;r->sum=0;}
 static inline void ook_emit(ook_decoder_t *r,int bit,int alternating){
+    if(r->sink)r->sink(r->sink_context,bit);
     if(r->recent_n==64){memmove(r->recent,r->recent+1,63);r->recent_n=63;}
     r->recent[r->recent_n++]=bit<0?'?':(char)('0'+bit);r->recent[r->recent_n]=0;
     if(bit<0){r->erasures++;r->have_bit=0;return;}
