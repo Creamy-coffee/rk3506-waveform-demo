@@ -4768,7 +4768,16 @@ static void tick_mod(void)
                          s_an_have_target?s_an_target_fcw:av.fcw);
     v32_ana_view_t queued;
     bool drained_ana=false;
-    while(v32_pop_ana(&queued)) {
+    /* The UART producer runs concurrently. Never wait for an empty queue:
+       on a slow target/repeated BPSK reacquisition it may never become empty,
+       starving LVGL input and rendering indefinitely. Preserve FIFO ordering;
+       overflow/frame gaps still reach the decoder's normal discontinuity path. */
+    const uint32_t ana_work_start=lv_tick_get();
+    unsigned ana_work_count=0;
+    while(ana_work_count<4 &&
+          (ana_work_count==0 || lv_tick_get()-ana_work_start<12u) &&
+          v32_pop_ana(&queued)) {
+        ana_work_count++;
         drained_ana=true;
         if(s_an_type && !s_an_send_pending && !s_an_tx_failed &&
            ana_echo_matches(&queued,s_an_type,s_an_ch,s_an_rate,
