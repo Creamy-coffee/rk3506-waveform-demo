@@ -202,5 +202,13 @@ int main(int argc,char **argv)
     lv_tick_inc(4000);image_refresh();assert(strstr(lv_label_get_text(s_image_info),"NO NEW PACKETS"));draw(d);save(argv[1],"image_stale");
     cb_image_clear(NULL);assert(!s_image.have_image && !s_image.complete);
     ui_set_page(UI_PAGE_SYSTEM);assert(ui_page_from_name("5")==UI_PAGE_SYSTEM);
+    /* Invoke the actual reset event: child indices in the scope toolbar are
+       groups, not dropdown widgets. A bad cast used to crash the live GUI. */
+    const int reset_pages[]={UI_PAGE_SCOPE,UI_PAGE_MOD,UI_PAGE_LOCK,UI_PAGE_IMAGE};
+    for(unsigned k=0;k<sizeof reset_pages/sizeof reset_pages[0];k++){
+        ui_set_page(reset_pages[k]);S.tb_idx=TIMEBASE_DEF+1;S.tau_idx=TAU_DEF+1;
+        cb_reset(NULL);draw(d);
+        assert(S.tb_idx==TIMEBASE_DEF && S.tau_idx==TAU_DEF && !s_tb_manual && S.running);
+    }
     unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale");return 0;
 }

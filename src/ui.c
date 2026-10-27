@@ -247,6 +247,7 @@ static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
 static bool      s_fft_cur_on;       /* 重建页下方图标题，随能否重建变化 */
 static lv_obj_t *s_lbl_wave;           /* 重建页右上角：波形类型 */
 static lv_obj_t *s_dd_tb;              /* 时基下拉框，真实模式下要跟着窗口同步 */
+static lv_obj_t *s_dd_tau;             /* Typed reference; toolbar child order is not a widget type. */
 
 /*
  * 原来这里还有 s_slider_noise / s_lbl_noise（控制条上的「噪声」滑条）。
@@ -2362,7 +2363,13 @@ static void image_refresh(void)
         lv_obj_invalidate(s_image_canvas);s_image_drawn_revision=s_image.revision;
     }
     uint32_t now=lv_tick_get();
-    if(s_image.packets!=s_image_packets_seen){s_image_packets_seen=s_image.packets;s_image_packet_ms=now;}
+    if(s_image.packets!=s_image_packets_seen){
+        s_image_packets_seen=s_image.packets;s_image_packet_ms=now;
+        if(getenv("IMAGE_TRACE"))fprintf(stderr,"[image-rx] t_ms=%u id=%08x crc32=%08x size=%ux%u bytes=%u received=%u chunks=%u complete=%u packets=%llu crc_errors=%llu gaps=%llu\n",
+            now,s_image.image_id,s_image.image_crc,s_image.width,s_image.height,(unsigned)s_image.total_bytes,
+            s_image.received,s_image.chunks,s_image.complete,(unsigned long long)s_image.packets,
+            (unsigned long long)s_image.crc_errors,(unsigned long long)s_image.gaps);
+    }
     lv_label_set_text(s_image_status,s_image.complete?"CRC OK · 图已接收":s_image.have_image?"接收中":"等待数据");
     lv_obj_set_style_text_color(s_image_status,s_image.complete?V32_C_GREEN:V32_C_WARN,0);
     char link[128],info[384];
@@ -3298,13 +3305,11 @@ static void cb_reset(lv_event_t *e)
     /* 控件回位（设了下拉框会触发 VALUE_CHANGED，顺手把状态也同步了） */
     lv_dropdown_set_selected(s_dd_freq, (uint32_t)FREQ_DEF);
     {
-        lv_obj_t *dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_SCOPE], 1);
-        if(dd) lv_dropdown_set_selected(dd, (uint32_t)TIMEBASE_DEF);
+        if(s_dd_tb) lv_dropdown_set_selected(s_dd_tb, (uint32_t)TIMEBASE_DEF);
         if(s_chip_win) { chip_set_text(s_chip_win, WIN_NAME[WIN_DEF]); chip_selected(s_chip_win, true); }
         /* 频谱通道回「自动」 */
         fft_ch_set(0);
-        dd = lv_obj_get_child(s_ctrl_grp[UI_PAGE_LOCK], 1);
-        if(dd) lv_dropdown_set_selected(dd, (uint32_t)TAU_DEF);
+        if(s_dd_tau) lv_dropdown_set_selected(s_dd_tau, (uint32_t)TAU_DEF);
     }
     chip_set_text(s_chip_ch1, "CH1 开"); chip_selected(s_chip_ch1, true);
     chip_set_text(s_chip_ch2, "CH2 开"); chip_selected(s_chip_ch2, true);
@@ -3498,7 +3503,7 @@ static void build_controls(lv_obj_t *root)
     s_g_tau = gl;
     s_chip_mod = mk_chip(gl, "调制 自动", cb_mod_cycle);
     chip_selected_c(s_chip_mod, false, V32_C_WARN);
-    lv_obj_t *dd_t = mk_dropdown(gl, TAU_OPTS, TAU_DEF, cb_tau);
+    lv_obj_t *dd_t = mk_dropdown(gl, TAU_OPTS, TAU_DEF, cb_tau);s_dd_tau=dd_t;
     lv_obj_set_style_max_width(dd_t, V32_SEL_MAX_W, LV_PART_MAIN);
     s_ctrl_grp[UI_PAGE_LOCK] = gl;
 

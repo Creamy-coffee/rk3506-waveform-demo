@@ -68,6 +68,10 @@ int main(int argc,char **argv){
         for(unsigned b=0;b<4;b++)bad[64+b]=(uint8_t)(crc>>(8*b));image_accept_packet(&r,bad);
     }
     assert(!r.complete && !r.received && r.crc_errors==1);
+    image_receiver_clear(&r);ook_decoder_t cut={0};cut.sink=image_receiver_symbol;cut.sink_context=&r;
+    cut.locked=1;cut.have_edge=1;cut.bits=123;
+    ook_timing_reset(&cut);assert(r.gaps==1 && !cut.locked && cut.bits==123 && cut.sink==image_receiver_symbol);
+    ook_timing_reset(&cut);assert(r.gaps==1); /* Already unlocked: no duplicate discontinuity. */
     physical_symbols(5,0,0);physical_symbols(3,0,0);
     physical_symbols(6,.7,0);physical_symbols(6,2.3,80);
     puts("IMAGE_TRANSPORT_PASS polarity_pair_phase_CRC_duplicate_gap_OOK_FSK_BPSK");

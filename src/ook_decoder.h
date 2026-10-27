@@ -22,7 +22,11 @@ static inline void ook_reset(ook_decoder_t *r){
     memset(r,0,sizeof *r);r->sink=sink;r->sink_context=context;
 }
 static inline int ook_float_compare(const void *a,const void *b){float x=*(const float*)a,y=*(const float*)b;return (x>y)-(x<y);}
-static inline void ook_timing_reset(ook_decoder_t *r){r->have_edge=r->have_state=r->good_edges=r->locked=r->count=r->have_bit=0;r->sum=0;}
+static inline void ook_unlock(ook_decoder_t *r){
+    if(r->locked && r->sink)r->sink(r->sink_context,-1);
+    r->locked=0;
+}
+static inline void ook_timing_reset(ook_decoder_t *r){ook_unlock(r);r->have_edge=r->have_state=r->good_edges=r->count=r->have_bit=0;r->sum=0;}
 static inline void ook_emit(ook_decoder_t *r,int bit,int alternating){
     if(r->sink)r->sink(r->sink_context,bit);
     if(r->recent_n==64){memmove(r->recent,r->recent+1,63);r->recent_n=63;}
@@ -60,7 +64,7 @@ static inline void binary_push(ook_decoder_t *r,const v32_ana_view_t *v,int baud
     for(int i=0;i<V32_ANA_POINTS;i++,r->t++){
         float y=v->y[i];double t=r->t;
         if(!v->yvalid[i] || !isfinite(y) || (!fsk && y<0)){
-            if(r->locked)ook_emit(r,-1,alternating);
+            if(r->locked){ook_emit(r,-1,alternating);r->locked=0;}
             ook_timing_reset(r);continue;
         }
         if(!r->levels)continue;
@@ -73,7 +77,7 @@ static inline void binary_push(ook_decoder_t *r,const v32_ana_view_t *v,int baud
             if(r->have_edge){
                 double dt=edge-r->last_edge,k=floor(dt/r->step+.5);
                 if(k>=1 && k<=32 && fabs(dt-k*r->step)<=.20*r->step)r->good_edges++;
-                else {r->good_edges=0;r->locked=0;r->have_bit=0;}
+                else {r->good_edges=0;ook_unlock(r);r->have_bit=0;}
             }
             r->have_edge=1;r->last_edge=edge;r->next_center=edge+.5*r->step;r->sum=0;r->count=0;
             if(r->good_edges>=3)r->locked=1;
