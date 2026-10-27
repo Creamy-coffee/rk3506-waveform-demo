@@ -3137,6 +3137,27 @@ static void cb_auto(lv_event_t *e)
         uint32_t fcw=v32_fcw_from_hz((double)hz);
         s_an_retune_error=0;
         if(s_an_have_target && !s_an_send_pending && !s_an_tx_failed && fcw==s_an_target_fcw)return;
+        /* A verified BPSK receiver already tracks small carrier offsets. Do not
+         * discard valid bits for FFT-peak jitter; the actual DDC/readback stays
+         * unchanged. Explicit frequency commands remain exact. */
+        v32_ana_view_t active;
+        if(s_an_type==6 && s_ook_on && s_ook_test && s_an_have_target &&
+           !s_an_send_pending && !s_an_tx_failed &&
+           s_bpsk.have_frame && s_bpsk.locked && s_bpsk.pn_locked &&
+           s_bpsk.pn_checks>=256 && !s_bpsk.pn_errors && !s_bpsk.erasures &&
+           v32_get_ana(&active) && active.valid && !active.flags && active.nvalid==256 &&
+           ana_echo_matches(&active,s_an_type,s_an_ch,s_an_rate,s_an_target_fcw) &&
+           active.cfg_id==s_bpsk.cfg && active.mode==6 && active.kind==0 &&
+           active.channel==(unsigned)s_an_ch && active.fcw==s_an_target_fcw &&
+           s_bpsk.fcw==active.fcw && s_bpsk.channel==active.channel &&
+           s_bpsk.decim==active.decim && s_bpsk.baud==OOK_RATES[s_ook_rate]) {
+            uint32_t delta=fcw>s_an_target_fcw?fcw-s_an_target_fcw:s_an_target_fcw-fcw;
+            uint32_t tolerance=v32_fcw_from_hz((double)s_bpsk.baud/16.0);
+            if(delta<=tolerance) {
+                fprintf(stderr,"[ana-retune] keep verified BPSK ch=%d target_fcw=%u measured_hz=%u delta_hz=%.3f tolerance_hz=%.3f\n",s_an_ch,s_an_target_fcw,hz,(double)delta*65000000.0/4294967296.0,(double)s_bpsk.baud/16.0);
+                return;
+            }
+        }
         analysis_apply(s_an_type,s_an_ch,s_an_rate);
         /* Snapshot the selected channel's fresh measurement. Do not silently
          * fall back to a different channel or 10 MHz during the debounce. */

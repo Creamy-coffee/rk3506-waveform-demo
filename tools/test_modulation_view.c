@@ -17,6 +17,7 @@ int __wrap_v32_cmd_apply(int mode,int channel,int rate,uint32_t fcw,int focus){
 }
 static char fixture[128];
 static unsigned raw_id;
+static uint32_t fixture_fcw=66076420;
 static void flush_cb(lv_display_t *d,const lv_area_t *a,uint8_t *p){(void)a;(void)p;lv_display_flush_ready(d);}
 static void put(uint8_t *p,uint32_t v){for(int i=0;i<4;i++)p[i]=(uint8_t)(v>>(8*i));}
 static uint32_t take32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
@@ -34,7 +35,7 @@ static void fixture_write(unsigned fid,unsigned cfg,unsigned mode,unsigned chann
     }
     uint8_t b[1076]={0};memcpy(b,"V32ANA1!",8);put(b+8,1);put(b+12,fid);put(b+16,65000000);put(b+20,4096);put(b+24,256);put(b+28,flags);put(b+32,cfg);
     unsigned kind=(mode==4||mode==6)?0:(mode==1||mode==5)?1:(mode==2||mode==3)?2:3;
-    put(b+36,kind|(channel<<8)|(mode<<16));put(b+40,66076420);
+    put(b+36,kind|(channel<<8)|(mode<<16));put(b+40,fixture_fcw);
     for(int i=0;i<256;i++){
         double p=2*M_PI*1000*(i+(fid-1)*256)/(65000000.0/4096);uint32_t x;
         if(mode==4)x=(uint16_t)(int16_t)(((i/16)&1)?150:-150)|((uint32_t)(uint16_t)(int16_t)(((i/32)&1)?150:-150)<<16);
@@ -167,6 +168,22 @@ int main(int argc,char **argv)
     fixture_write(12,5,2,1,0,0,1,1);append_meas(2000000,4000000,3);assert(v32_init_file(fixture)==0);
     cb_auto(NULL);assert(s_an_override_fcw==v32_fcw_from_hz(4000000) && !s_an_retune_error);
     analysis_apply(1,0,1);assert(!s_an_override); /* A different user config cancels the snapshot. */
+    /* Only a fresh, error-free known reference may hold small FFT jitter. */
+    s_an_type=6;s_an_ch=0;s_an_rate=1;s_an_send_pending=0;s_an_tx_failed=0;
+    s_an_target_fcw=fixture_fcw=v32_fcw_from_hz(2000000);s_an_have_target=1;s_ook_on=1;s_ook_test=1;s_ook_rate=3;
+    fixture_write(20,9,6,0,0,0,1,1);append_meas(2000024,3000000,3);assert(v32_init_file(fixture)==0);
+    bpsk_reset(&s_bpsk);s_bpsk.have_frame=1;s_bpsk.cfg=9;s_bpsk.fcw=fixture_fcw;s_bpsk.channel=0;s_bpsk.decim=4096;s_bpsk.baud=1000;
+    s_bpsk.locked=s_bpsk.pn_locked=1;s_bpsk.pn_checks=10000;s_bpsk.bits=10287;
+    int before_commands=config_calls;cb_auto(NULL);
+    assert(config_calls==before_commands && !s_an_send_pending && s_bpsk.bits==10287 && s_bpsk.pn_checks==10000);
+    s_bpsk.pn_errors=1;cb_auto(NULL);assert(s_an_send_pending && !s_bpsk.bits);analysis_send_now();assert(config_calls==before_commands+1);
+    /* A large new carrier must retune even when the last old frame was good. */
+    s_an_target_fcw=fixture_fcw=v32_fcw_from_hz(2000000);s_an_tx_failed=0;
+    fixture_write(21,10,6,0,0,0,1,1);append_meas(3000000,3000000,3);assert(v32_init_file(fixture)==0);
+    bpsk_reset(&s_bpsk);s_bpsk.have_frame=1;s_bpsk.cfg=10;s_bpsk.fcw=fixture_fcw;s_bpsk.channel=0;s_bpsk.decim=4096;s_bpsk.baud=1000;
+    s_bpsk.locked=s_bpsk.pn_locked=1;s_bpsk.pn_checks=10000;s_bpsk.bits=10287;
+    cb_auto(NULL);assert(s_an_send_pending && s_an_override_fcw==v32_fcw_from_hz(3000000));
+    fixture_fcw=66076420;
     s_an_send_pending=0;s_an_type=0;an_chips_refresh();assert(lv_obj_has_state(s_chip_auto,LV_STATE_DISABLED));
     ui_set_page(UI_PAGE_SCOPE);assert(!lv_obj_has_state(s_chip_auto,LV_STATE_DISABLED));
     assert(strstr(lv_label_get_text(lv_obj_get_child(s_chip_auto,0)),"自动"));record_config=0;
