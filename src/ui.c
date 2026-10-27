@@ -4559,14 +4559,14 @@ static void bpsk_status_refresh(void)
     const char *headline="○ BPSK 等待判决", *decision="等待判决";
     bool verified=false;
     if(s_bpsk.locked) {
-        headline="○ BPSK 候选判决"; decision="候选判决";
+        headline="○ BPSK 待定判决"; decision="待定判决";
         if(s_ook_test) {
-            headline="○ PN7 校验中"; decision="PN7校验中";
+            headline="○ PN7 比对中"; decision="PN7比对中";
             if(s_bpsk.pn_locked && s_bpsk.pn_checks>0) {
                 if(s_bpsk.pn_errors) {
-                    headline="○ PN7 检出错误"; decision="PN7有错";
+                    headline="○ PN7 检出误码"; decision="PN7有误";
                 } else if(s_bpsk.erasures) {
-                    headline="○ PN7匹配/有擦除"; decision="匹配/有擦除";
+                    headline="○ PN7匹配/无效位"; decision="匹配/无效位";
                 } else {
                     headline="● PN7 参考匹配"; decision="PN7匹配";
                     verified=true;

@@ -45,7 +45,15 @@ static void fixture_write(unsigned fid,unsigned cfg,unsigned mode,unsigned chann
 static void draw(lv_display_t *d){test_ms+=40;lv_tick_inc(40);ui_tick();lv_obj_update_layout(lv_screen_active());lv_obj_invalidate(lv_screen_active());lv_refr_now(d);}
 static void save(const char *dir,const char *name){char p[1024];snprintf(p,sizeof p,"%s/%s.ppm",dir,name);FILE *f=fopen(p,"wb");assert(f);fprintf(f,"P6\n1024 600\n255\n");for(int i=0;i<1024*600;i++){uint8_t b[3]={pixels[i]>>16,pixels[i]>>8,pixels[i]};fwrite(b,1,3,f);}fclose(f);}
 static unsigned next_cp(const unsigned char **p){unsigned c=*(*p)++;if(c<128)return c;unsigned n=(c&0xe0)==0xc0?1:(c&0xf0)==0xe0?2:3;c&=(1u<<(6-n))-1;while(n--)c=(c<<6)|(*(*p)++&63);return c;}
-static void glyphs(void){const unsigned char *p=(const unsigned char *)"波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测";while(*p){unsigned cp=next_cp(&p);lv_font_glyph_dsc_t g;assert(V32_FONT_SMALL->get_glyph_dsc(V32_FONT_SMALL,&g,cp,0));assert(V32_FONT_BASE->get_glyph_dsc(V32_FONT_BASE,&g,cp,0));}}
+static void glyphs(void){
+    const char *text="波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测○● BPSK PN7 待定判决比对中匹配检出误码有无效位/";
+    const lv_font_t *fonts[]={&lv_font_v32_12,&lv_font_v32_16,&lv_font_v32_18,&lv_font_v32_20,&lv_font_v32_12_bold,&lv_font_v32_16_bold,&lv_font_v32_18_bold,&lv_font_v32_20_bold};
+    for(unsigned k=0;k<sizeof fonts/sizeof fonts[0];k++){
+        const unsigned char *p=(const unsigned char *)text;
+        while(*p){unsigned cp=next_cp(&p);lv_font_glyph_dsc_t g;int present=fonts[k]->get_glyph_dsc(fonts[k],&g,cp,0);if(!present)fprintf(stderr,"MISSING_GLYPH font=%u U+%04X\n",k,cp);assert(present);}
+    }
+}
+
 int main(int argc,char **argv)
 {
     assert(argc>=2 && argc<=4);snprintf(fixture,sizeof fixture,"/tmp/v32_modulation_view_%ld.bin",(long)getpid());float lo,hi,out[1024],v[3]={10,10,10};assert(mod_view_range(v,3,1,&lo,&hi)&&lo==0&&hi>10);
@@ -104,12 +112,12 @@ int main(int argc,char **argv)
     /* Wrong-rate lock must never imply verified bits, even with low EVM. */
     bpsk_decoder_t saved_bpsk=s_bpsk;int saved_test=s_ook_test;
     s_bpsk.locked=1;s_bpsk.pn_locked=0;s_bpsk.pn_checks=0;s_bpsk.pn_errors=0;s_bpsk.erasures=0;
-    s_ook_test=0;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"候选判决"));
-    s_ook_test=1;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7校验中"));
-    s_bpsk.pn_locked=1;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7校验中"));
+    s_ook_test=0;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"待定判决"));
+    s_ook_test=1;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7比对中"));
+    s_bpsk.pn_locked=1;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7比对中"));
     s_bpsk.pn_checks=100;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7匹配"));
-    s_bpsk.erasures=3;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"匹配/有擦除"));
-    s_bpsk.pn_errors=1;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7有错"));
+    s_bpsk.erasures=3;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"匹配/无效位"));
+    s_bpsk.pn_errors=1;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7有误"));
     s_bpsk.locked=0;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"等待判决"));
     s_bpsk=saved_bpsk;s_ook_test=saved_test;bpsk_status_refresh();
     cb_bpsk_view(NULL);draw(d);assert(s_bpsk_symbols && strstr(lv_label_get_text(s_lbl_modana_units),"symbols"));save(argv[1],"bpsk_wait");cb_bpsk_view(NULL);
