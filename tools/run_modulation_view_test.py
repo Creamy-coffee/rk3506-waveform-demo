@@ -17,7 +17,7 @@ sources=[root/'src/ui.c',root/'src/modulation_view.h',root/'src/ook_decoder.h',r
 sources += [root/'src/bpsk_decoder.c',root/'src/bpsk_decoder.h',root/'src/bpsk_coarse.h',root/'src/raw_capture.h']
 before={str(x.relative_to(root)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sources}
 cmd=['gcc','-std=gnu99','-O1','-g','-fno-omit-frame-pointer','-fsanitize=address,undefined,float-cast-overflow','-DLV_CONF_INCLUDE_SIMPLE','-DLV_CONF_PATH='+str(root/'lv_conf.h'),'-DLV_LVGL_H_INCLUDE_SIMPLE','-I'+str(root/'src'),'-I'+str(a.lvgl.resolve()),'-I'+str(root),str(root/'tools/test_modulation_view.c'),str(root/'src/plot.c'),str(root/'src/v32cap3.c'),str(root/'src/wave_source_v32.c'),*[str(x) for x in objects],str(archives[0]),'-lm','-lpthread','-o',str(out/'test_modulation_view')]
-cmd.append('-Wl,--wrap=clock_gettime')
+cmd.append('-Wl,--wrap=clock_gettime,--wrap=v32_cmd_apply')
 liquid=list(build.rglob('libliquid.a'));assert len(liquid)==1
 cmd.insert(cmd.index('-lm'),str(liquid[0]))
 cmd.insert(1,'-I'+str(build/'third_party/liquid-dsp-1.7.0/include'))

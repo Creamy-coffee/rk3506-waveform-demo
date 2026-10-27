@@ -173,7 +173,7 @@ static lv_obj_t *s_lbl_fps, *s_lbl_uptime;
 static lv_obj_t *s_lbl_v32_rate, *s_lbl_v32_loss;   /* FPGA 链路实时统计 */
 static lv_obj_t *s_lbl_clock, *s_lbl_run_status;
 
-static lv_obj_t *s_chip_ch1, *s_chip_ch2, *s_chip_ai, *s_chip_run;
+static lv_obj_t *s_chip_ch1, *s_chip_ch2, *s_chip_ai, *s_chip_run, *s_chip_auto;
 static lv_obj_t *s_dd_freq;
 static lv_obj_t *s_lbl_den_title;
 static lv_obj_t *s_lbl_recon_badge;      /* 示波器页右上角「重建」牌 */
@@ -225,6 +225,8 @@ static ana_history_t s_history;
 #define s_aroll_len s_history.length
 static uint32_t s_an_target_fcw;
 static int s_an_have_target, s_an_tx_failed;
+static int s_an_retune_error, s_an_override;
+static uint32_t s_an_override_fcw;
 static lv_obj_t *s_chip_mt, *s_chip_mc, *s_chip_mr;  /* 制式/通道/档位 芯片 */
 /* 当前下发的分析配置（回显匹配以此为准）：
  * type 0=关 1AM 2FM 3FSK 4QPSK 5OOK 6BPSK 7PM（A5 E0 枚举） */
@@ -2895,6 +2897,7 @@ static void analysis_apply(int type, int ch, int rate)
     ook_reset(&s_ook);
     bpsk_reset(&s_bpsk);
     s_an_type = type; s_an_ch = ch; s_an_rate = rate;
+    s_an_retune_error=0;s_an_override=0;
     s_an_last_tap_ms = lv_tick_get();
     s_an_send_pending = 1;      /* 命令延后 250ms 发（等连点结束） */
 }
@@ -2920,7 +2923,8 @@ static void analysis_send_now(void)
         s_an_send_pending = 0;
         return;
     }
-    const uint32_t fcw=v32_fcw_from_hz(center);
+    if(s_an_override)center=(double)s_an_override_fcw*65000000.0/4294967296.0;
+    const uint32_t fcw=s_an_override?s_an_override_fcw:v32_fcw_from_hz(center);
     s_an_tx_failed=(v32_cmd_apply(s_an_type,s_an_ch,s_an_rate,fcw,2)!=0);
     if(!s_an_tx_failed) { s_an_target_fcw=fcw;s_an_have_target=1; }
     else fprintf(stderr,"[ana-cfg] write failed; configuration not confirmed\n");
@@ -2938,8 +2942,18 @@ static const char *AN_TYPE_NAME[8] = {
 };
 static const char *AN_RATE_NAME[3] = { "档8k", "标准", "宽档" };
 
+static void auto_chip_refresh(void)
+{
+    if(!s_chip_auto)return;
+    const bool tune=S.page==UI_PAGE_MOD && S.use_real;
+    chip_set_text(s_chip_auto,tune?"↺ 对频":"⊞ 自动");
+    if(tune && !s_an_type)lv_obj_add_state(s_chip_auto,LV_STATE_DISABLED);
+    else lv_obj_remove_state(s_chip_auto,LV_STATE_DISABLED);
+}
+
 static void an_chips_refresh(void)
 {
+    auto_chip_refresh();
     if(s_chip_mt) { char b[16]; snprintf(b, sizeof b, "制式 %s", AN_TYPE_NAME[s_an_type]);
                     chip_set_text(s_chip_mt, b);
                     chip_selected_c(s_chip_mt, s_an_type != 0, V32_C_MATH); }
@@ -3109,6 +3123,27 @@ static void cb_run(lv_event_t *e)
 static void cb_auto(lv_event_t *e)
 {
     LV_UNUSED(e);
+    if(S.page==UI_PAGE_MOD && S.use_real) {
+        if(!s_an_type)return;
+        v32_meas_view_t measured;
+        uint32_t hz=0;
+        if(v32_get_meas(&measured) && (measured.fft_valid & (1u<<s_an_ch)))
+            hz=s_an_ch?measured.fft_hz1:measured.fft_hz0;
+        if(!hz || hz>=32500000u) {
+            s_an_retune_error=1;
+            fprintf(stderr,"[ana-retune] rejected: no fresh valid carrier for ch=%d; no command sent\n",s_an_ch);
+            ui_tick();return;
+        }
+        uint32_t fcw=v32_fcw_from_hz((double)hz);
+        s_an_retune_error=0;
+        if(s_an_have_target && !s_an_send_pending && !s_an_tx_failed && fcw==s_an_target_fcw)return;
+        analysis_apply(s_an_type,s_an_ch,s_an_rate);
+        /* Snapshot the selected channel's fresh measurement. Do not silently
+         * fall back to a different channel or 10 MHz during the debounce. */
+        s_an_override=1;s_an_override_fcw=fcw;
+        fprintf(stderr,"[ana-retune] requested ch=%d hz=%u fcw=%u\n",s_an_ch,hz,fcw);
+        ui_tick();return;
+    }
     s_tb_manual = 0;      /* 自动设置 = 交回 auto_decimation 管 */
 
     if(dbg_on()) fprintf(stderr, "[auto] pressed use_real=%d full_n=%d\n", (int)S.use_real, s_full_n);
@@ -3400,7 +3435,7 @@ static void build_controls(lv_obj_t *root)
      * 挨着的两个常用键，捏乱了之后第一反应就是先按自动。 */
     s_chip_ai = mk_chip(bar, "重建 开", cb_ai);   /* 全局开关 */
     chip_selected(s_chip_ai, S.ai);              /* S.ai 初始为 true，补一次选中色 */
-    mk_chip(bar, "⊞ 自动", cb_auto);
+    s_chip_auto=mk_chip(bar, "⊞ 自动", cb_auto);
     mk_chip(bar, "↺ 复位", cb_reset);
     mk_chip(bar, "⛶ 全屏", cb_fullscreen);
     s_chip_run = mk_chip(bar, "⏸暂停", cb_run);   /* 暂停放最右（照 scope_proto） */
@@ -5113,6 +5148,7 @@ void ui_set_page(int page)
         nav_selected(s_nav[i], i == page);
     }
     ctrl_set_page(page);
+    auto_chip_refresh();
 
     if(page == UI_PAGE_AI) s_ai_autoframed = false;   /* 进页先允许一次自动框窗 */
 
@@ -5155,7 +5191,13 @@ void ui_tick(void)
         case UI_PAGE_FFT:    tick_fft();    break;
         case UI_PAGE_LOCK:   tick_lock();   break;
         case UI_PAGE_AI:     tick_ai();     break;
-        case UI_PAGE_MOD:    tick_mod();    break;
+        case UI_PAGE_MOD:
+            tick_mod();
+            if(s_an_retune_error) {
+                lv_label_set_text(s_lbl_mst,"○ 频率无效");
+                lv_obj_set_style_text_color(s_lbl_mst,V32_C_WARN,0);
+            }
+            break;
         case UI_PAGE_SYSTEM: tick_system(); break;
         default: break;
     }

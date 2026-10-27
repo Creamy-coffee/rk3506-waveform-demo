@@ -8,6 +8,13 @@ static uint32_t pixels[1024*600];
 static unsigned long long test_ms=1000;
 int __real_clock_gettime(clockid_t,struct timespec *);
 int __wrap_clock_gettime(clockid_t id,struct timespec *ts){if(id==CLOCK_MONOTONIC){ts->tv_sec=test_ms/1000;ts->tv_nsec=(test_ms%1000)*1000000;return 0;}return __real_clock_gettime(id,ts);}
+static int record_config,config_calls,last_mode,last_channel,last_rate,last_focus;
+static uint32_t last_fcw;
+int __real_v32_cmd_apply(int,int,int,uint32_t,int);
+int __wrap_v32_cmd_apply(int mode,int channel,int rate,uint32_t fcw,int focus){
+    if(!record_config)return __real_v32_cmd_apply(mode,channel,rate,fcw,focus);
+    config_calls++;last_mode=mode;last_channel=channel;last_rate=rate;last_fcw=fcw;last_focus=focus;return 0;
+}
 static char fixture[128];
 static unsigned raw_id;
 static void flush_cb(lv_display_t *d,const lv_area_t *a,uint8_t *p){(void)a;(void)p;lv_display_flush_ready(d);}
@@ -42,11 +49,16 @@ static void fixture_write(unsigned fid,unsigned cfg,unsigned mode,unsigned chann
     }
     put(b+1072,crc(b,1072));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
 }
+static void append_meas(unsigned hz0,unsigned hz1,unsigned valid){
+    FILE *f=fopen(fixture,"ab");assert(f);uint8_t b[128]={0};memcpy(b,"V32MEAS!",8);
+    put(b+8,V32_MEAS_VERSION);put(b+12,128);put(b+16,raw_id);put(b+24,raw_id*1000000u);put(b+32,65000000);
+    put(b+84,hz0);put(b+88,hz1);b[92]=(uint8_t)valid;put(b+124,crc(b,124));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
+}
 static void draw(lv_display_t *d){test_ms+=40;lv_tick_inc(40);ui_tick();lv_obj_update_layout(lv_screen_active());lv_obj_invalidate(lv_screen_active());lv_refr_now(d);}
 static void save(const char *dir,const char *name){char p[1024];snprintf(p,sizeof p,"%s/%s.ppm",dir,name);FILE *f=fopen(p,"wb");assert(f);fprintf(f,"P6\n1024 600\n255\n");for(int i=0;i<1024*600;i++){uint8_t b[3]={pixels[i]>>16,pixels[i]>>8,pixels[i]};fwrite(b,1,3,f);}fclose(f);}
 static unsigned next_cp(const unsigned char **p){unsigned c=*(*p)++;if(c<128)return c;unsigned n=(c&0xe0)==0xc0?1:(c&0xf0)==0xe0?2:3;c&=(1u<<(6-n))-1;while(n--)c=(c<<6)|(*(*p)++&63);return c;}
 static void glyphs(void){
-    const char *text="波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测○● BPSK PN7 待定判决比对中匹配检出误码有无效位/";
+    const char *text="波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测○● BPSK PN7 待定判决比对中匹配检出误码有无效位对频频率无效/↺⊞";
     const lv_font_t *fonts[]={&lv_font_v32_12,&lv_font_v32_16,&lv_font_v32_18,&lv_font_v32_20,&lv_font_v32_12_bold,&lv_font_v32_16_bold,&lv_font_v32_18_bold,&lv_font_v32_20_bold};
     for(unsigned k=0;k<sizeof fonts/sizeof fonts[0];k++){
         const unsigned char *p=(const unsigned char *)text;
@@ -138,5 +150,25 @@ int main(int argc,char **argv)
     s_an_type=2;fixture_write(1,5,2,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(strstr(lv_label_get_text(s_lbl_modana_units),"Hz"));save(argv[1],"fm");
     S.running=false;const int previous=s_aroll_len;fixture_write(2,5,2,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(s_aroll_len==previous);S.running=true;draw(d);assert(s_aroll_len>previous);
     fixture_write(3,5,2,1,0,0,32768,1);assert(v32_init_file(fixture)==0);draw(d);assert(fabs(wave_source_v32_frame_rate_hz()-65000000.0/32768)<1e-6);
+    /* Explicit retune selects only a fresh measurement of the selected channel. */
+    record_config=1;config_calls=0;s_an_type=2;s_an_ch=1;s_an_rate=1;s_an_send_pending=0;
+    s_an_have_target=1;s_an_target_fcw=66076420;s_an_tx_failed=0;
+    fixture_write(10,5,2,1,0,0,1,1);append_meas(2000000,3000000,3);assert(v32_init_file(fixture)==0);
+    v32_meas_view_t measured;assert(v32_get_meas(&measured) && measured.fft_hz1==3000000);
+    ui_set_page(UI_PAGE_MOD);assert(strstr(lv_label_get_text(lv_obj_get_child(s_chip_auto,0)),"对频"));
+    cb_auto(NULL);assert(s_an_send_pending && s_an_override && s_an_override_fcw==v32_fcw_from_hz(3000000));
+    analysis_send_now();assert(config_calls==1 && last_mode==2 && last_channel==1 && last_rate==1 && last_focus==2 && last_fcw==v32_fcw_from_hz(3000000));
+    assert(s_an_target_fcw==last_fcw && !s_an_tx_failed);
+    s_ook.bits=123;cb_auto(NULL);assert(config_calls==1 && !s_an_send_pending && s_ook.bits==123);
+    test_ms+=2000;cb_auto(NULL);assert(s_an_retune_error && config_calls==1 && !s_an_send_pending && s_an_target_fcw==last_fcw);
+    assert(strstr(lv_label_get_text(s_lbl_mst),"频率无效"));save(argv[1],"retune_stale");
+    fixture_write(11,5,2,1,0,0,1,1);append_meas(2000000,3000000,1);assert(v32_init_file(fixture)==0);
+    cb_auto(NULL);assert(s_an_retune_error && config_calls==1); /* CH0 cannot substitute for invalid CH1. */
+    fixture_write(12,5,2,1,0,0,1,1);append_meas(2000000,4000000,3);assert(v32_init_file(fixture)==0);
+    cb_auto(NULL);assert(s_an_override_fcw==v32_fcw_from_hz(4000000) && !s_an_retune_error);
+    analysis_apply(1,0,1);assert(!s_an_override); /* A different user config cancels the snapshot. */
+    s_an_send_pending=0;s_an_type=0;an_chips_refresh();assert(lv_obj_has_state(s_chip_auto,LV_STATE_DISABLED));
+    ui_set_page(UI_PAGE_SCOPE);assert(!lv_obj_has_state(s_chip_auto,LV_STATE_DISABLED));
+    assert(strstr(lv_label_get_text(lv_obj_get_child(s_chip_auto,0)),"自动"));record_config=0;
     unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs");return 0;
 }
