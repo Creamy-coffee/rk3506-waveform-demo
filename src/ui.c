@@ -4552,6 +4552,33 @@ static void mod_draw_upper(const v32_ana_view_t *av,bool have_ana,bool match)
     else lv_label_set_text_fmt(s_lbl_modraw_units,"%s [%s] %.1f..%.1f",av->kind==2u?"df":"phase",av->kind==2u?"Hz":"deg",(double)lo,(double)hi);
 }
 
+/* A decision-directed lock can also occur at a wrong multiple of Rs.
+ * Only held-out reference checks establish PN7 consistency, not protocol sync. */
+static void bpsk_status_refresh(void)
+{
+    const char *headline="○ BPSK 等待判决", *decision="等待判决";
+    bool verified=false;
+    if(s_bpsk.locked) {
+        headline="○ BPSK 候选判决"; decision="候选判决";
+        if(s_ook_test) {
+            headline="○ PN7 校验中"; decision="PN7校验中";
+            if(s_bpsk.pn_locked && s_bpsk.pn_checks>0) {
+                if(s_bpsk.pn_errors) {
+                    headline="○ PN7 检出错误"; decision="PN7有错";
+                } else if(s_bpsk.erasures) {
+                    headline="○ PN7匹配/有擦除"; decision="匹配/有擦除";
+                } else {
+                    headline="● PN7 参考匹配"; decision="PN7匹配";
+                    verified=true;
+                }
+            }
+        }
+    }
+    lv_label_set_text(s_lbl_mst,headline);
+    lv_obj_set_style_text_color(s_lbl_mst,verified?V32_C_GREEN:V32_C_WARN,0);
+    lv_label_set_text(s_lbl_m5,decision);
+}
+
 static void tick_mod(void)
 {
     static float a[PLOT_MAX_PTS];
@@ -4736,9 +4763,7 @@ static void tick_mod(void)
         if(av.mode==6u){
             lv_label_set_text_fmt(s_lbl_modbaud,"%d Bd",OOK_RATES[s_ook_rate]);
             if(s_ook_on){
-                lv_label_set_text(s_lbl_mst,s_bpsk.locked?"● BPSK bit 同步":"○ BPSK 等待同步");
-                lv_obj_set_style_text_color(s_lbl_mst,s_bpsk.locked?V32_C_GREEN:V32_C_WARN,0);
-                lv_label_set_text(s_lbl_m5,s_bpsk.locked?"同步":"等待同步");
+                bpsk_status_refresh();
                 lv_label_set_text_fmt(s_lbl_ook_info,"CFO~%+.0fHz\nEVM %.3f | INV%d\nn=%llu ?=%llu",s_bpsk.cfo_hz,(double)s_bpsk.evm,s_bpsk_invert,s_bpsk.bits,s_bpsk.erasures);
                 double sps=(65000000.0/av.decim)/OOK_RATES[s_ook_rate];
                 if(sps<6 || sps>256)lv_label_set_text(s_lbl_ook_info,"Rs / R unsupported\nNeed 6..256 SPS");

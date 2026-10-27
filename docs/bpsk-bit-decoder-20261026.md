@@ -55,3 +55,6 @@ file ../out/waveform_demo build_bpsk_bits/bpsk_capture_decode
 拟用CH2=1MHz/BPSK/内部PN7/1000bit/s/相位0与180度/原幅度/0偏置，最终以VISA读回和实际包共同确认。之后先停GUI与守护，独占抓6秒raw.bin，直接配置核实mode6/kind0/ch0/R4096/DDC1MHz；运行同核心工具，上传原始流、JSON及bit导出串供本端独立审核。GUI与raw的cfg/计数分开。
 
 全部附件齐才回阶段号+BPSK_BITS_DONE并附文件，最长保持10分钟，不自动切其他制式；结束恢复原AM并核验，屏端恢复唯一GUI/AM后回GUI_RUNNING。无新FPGA bit要求，若发现硬件数据不连续另用证据定位。
+# 状态显示修正（2026-10-27）
+
+`locked` 是候选符号判决资格，不是已验证的符号率或协议同步。实测1000 Bd数据按2000 Bd处理也可能低EVM、locked=1且零擦除，但PN7无法匹配。界面现区分等待判决、候选判决、PN7校验中、PN7参考匹配、有错误和有擦除；只有当前候选锁定、PN7已锁、训练后检查数大于0、错误及擦除均为0时给绿色参考匹配。未开参考校验不再显示bit同步，参考匹配也不宣称协议同步或通用BER。完整bit、计数、波形及星座继续显示。

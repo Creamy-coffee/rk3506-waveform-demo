@@ -100,7 +100,18 @@ int main(int argc,char **argv)
     s_an_type=4;s_an_ch=1;an_chips_refresh();fixture_write(1,4,4,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(strstr(lv_label_get_text(s_lbl_modana_units),"not decoded"));save(argv[1],"iq");
     assert(strstr(lv_label_get_text(s_lbl_modraw_title),"时间") && !strcmp(lv_label_get_text(s_lbl_m5),"未解码"));
     v32_ana_view_t digital;assert(v32_get_ana(&digital));assert(digital.nvalid==256 && digital.q[0]<0);
-    s_an_type=6;s_bpsk_symbols=false;an_chips_refresh();fixture_write(1,6,6,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.mode==6 && digital.nvalid==256);assert(!strcmp(lv_label_get_text(s_lbl_m5),"等待同步"));save(argv[1],"bpsk");
+    s_an_type=6;s_bpsk_symbols=false;an_chips_refresh();fixture_write(1,6,6,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.mode==6 && digital.nvalid==256);assert(!strcmp(lv_label_get_text(s_lbl_m5),"等待判决"));save(argv[1],"bpsk");
+    /* Wrong-rate lock must never imply verified bits, even with low EVM. */
+    bpsk_decoder_t saved_bpsk=s_bpsk;int saved_test=s_ook_test;
+    s_bpsk.locked=1;s_bpsk.pn_locked=0;s_bpsk.pn_checks=0;s_bpsk.pn_errors=0;s_bpsk.erasures=0;
+    s_ook_test=0;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"候选判决"));
+    s_ook_test=1;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7校验中"));
+    s_bpsk.pn_locked=1;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7校验中"));
+    s_bpsk.pn_checks=100;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7匹配"));
+    s_bpsk.erasures=3;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"匹配/有擦除"));
+    s_bpsk.pn_errors=1;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"PN7有错"));
+    s_bpsk.locked=0;bpsk_status_refresh();assert(!strcmp(lv_label_get_text(s_lbl_m5),"等待判决"));
+    s_bpsk=saved_bpsk;s_ook_test=saved_test;bpsk_status_refresh();
     cb_bpsk_view(NULL);draw(d);assert(s_bpsk_symbols && strstr(lv_label_get_text(s_lbl_modana_units),"symbols"));save(argv[1],"bpsk_wait");cb_bpsk_view(NULL);
     s_an_type=5;an_chips_refresh();fixture_write(1,7,5,1,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(v32_get_ana(&digital));assert(digital.y[0]==0 && digital.nvalid==256);assert(s_ook.locked && s_ook.bits>5);assert(strstr(lv_label_get_text(s_lbl_modraw_title),"OOK"));save(argv[1],"ook");
     uint32_t ook_fcw=s_an_target_fcw;int ook_pending=s_an_send_pending;
