@@ -14,7 +14,7 @@ skip={'main.c.o','ui.c.o','plot.c.o','v32cap3.c.o','wave_source_v32.c.o','bpsk_d
 objects=[x for x in (build/'CMakeFiles/waveform_demo.dir/src').rglob('*.o') if x.name not in skip]
 assert len(objects)>=14
 sources=[root/'src/ui.c',root/'src/modulation_view.h',root/'src/ook_decoder.h',root/'src/plot.c',root/'src/plot.h',root/'src/v32cap3.c',root/'src/v32cap3.h',root/'src/wave_source_v32.c',root/'src/wave_source.h',root/'tools/test_modulation_view.c']
-sources += [root/'src/bpsk_decoder.c',root/'src/bpsk_decoder.h',root/'src/bpsk_coarse.h']
+sources += [root/'src/bpsk_decoder.c',root/'src/bpsk_decoder.h',root/'src/bpsk_coarse.h',root/'src/raw_capture.h']
 before={str(x.relative_to(root)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sources}
 cmd=['gcc','-std=gnu99','-O1','-g','-fno-omit-frame-pointer','-fsanitize=address,undefined,float-cast-overflow','-DLV_CONF_INCLUDE_SIMPLE','-DLV_CONF_PATH='+str(root/'lv_conf.h'),'-DLV_LVGL_H_INCLUDE_SIMPLE','-I'+str(root/'src'),'-I'+str(a.lvgl.resolve()),'-I'+str(root),str(root/'tools/test_modulation_view.c'),str(root/'src/plot.c'),str(root/'src/v32cap3.c'),str(root/'src/wave_source_v32.c'),*[str(x) for x in objects],str(archives[0]),'-lm','-lpthread','-o',str(out/'test_modulation_view')]
 cmd.append('-Wl,--wrap=clock_gettime')

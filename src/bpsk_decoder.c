@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #define BPSK_PI 3.14159265358979323846
 #include "bpsk_coarse.h"
 
@@ -46,6 +47,12 @@ static void emit(bpsk_decoder_t *r,int bit)
     if(bit<0)r->erasures++;else r->bits++;
     if(r->test)pn_bit(r,bit);
 }
+static void trace_erasure(const bpsk_decoder_t *r,const char *reason,float i,float q)
+{
+    const char *enabled=getenv("BPSK_TRACE");
+    if(enabled && !strcmp(enabled,"1"))
+        fprintf(stderr,"[bpsk-erasure] cfg=%u fid=%u recovered=%llu bits=%llu erasures_before=%llu pn_locked_before=%d pn_checks=%llu reason=%s I=%.6f Q=%.6f evm=%.6f\n",r->cfg,r->fid,r->recovered,r->bits,r->erasures,r->pn_locked,r->pn_checks,reason,(double)i,(double)q,(double)r->evm);
+}
 static void process(bpsk_decoder_t *r,float complex input)
 {
     float complex out[16],symbols[2];unsigned n=0,ns=0;
@@ -65,9 +72,10 @@ static void process(bpsk_decoder_t *r,float complex input)
             }
             r->evm=sqrtf(error/r->window_n);
             int good=r->recovered>=256 && r->window_n==64 && r->evm<.25f && positive>=8 && positive<=56 && transitions>=4;
-            if(!good){if(r->locked)emit(r,-1);r->locked=0;r->pn_locked=r->training_n=r->training_tick=0;continue;}
+            if(!good){if(r->locked){trace_erasure(r,"window_qualification",a,b);emit(r,-1);}r->locked=0;r->pn_locked=r->training_n=r->training_tick=0;continue;}
             r->locked=1;
             int bit=(fabsf(a)<.35f || fabsf(b)>.6f)?-1:((a>=0)^r->invert);
+            if(bit<0)trace_erasure(r,"symbol_threshold",a,b);
             emit(r,bit);
             r->sym_i[r->sym_at]=a;r->sym_q[r->sym_at]=b;r->sym_at=(r->sym_at+1)%128;if(r->sym_n<128)r->sym_n++;
         }

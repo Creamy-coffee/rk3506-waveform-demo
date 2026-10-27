@@ -21,6 +21,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include "raw_capture.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -829,12 +830,20 @@ static void v32_feed(const uint8_t *data, int n)
 static void *reader_main(void *arg)
 {
     uint8_t tmp[V32_RXBUF / 2];   /* 一次读不超过缓冲一半，绝不会被截断 */
+    raw_capture_t capture={0};
+    const char *capture_path=getenv("WAVE_RAW_CAPTURE");
+    if(capture_path && *capture_path) {
+        int started=raw_capture_start(&capture,capture_path,8u*1024u*1024u);
+        if(started<0)fprintf(stderr,"[rawcap] start failed errno=%d; UART continues without capture\n",errno);
+        else fprintf(stderr,"[rawcap] started %s max=8388608 queue=1048576\n",capture_path);
+    }
     (void)arg;
     if(getenv("WAVE_MEASDBG")) fprintf(stderr, "[rx] 读线程已启动 fd=%d\n", s_fd);
 
     while (!s_stop) {
         const ssize_t n = read(s_fd, tmp, sizeof tmp);
         if (n > 0) {
+            raw_capture_feed(&capture,tmp,(size_t)n);
             v32_feed(tmp, (int)n);
             /* 每 2 秒打一次接收统计：帧死在哪一步（头/CRC/序列/样点）一眼看到，
                不用再靠猜。WAVE_MEASDBG=1 时输出。 */
@@ -878,6 +887,7 @@ static void *reader_main(void *arg)
             usleep(20000);
         }
     }
+    raw_capture_finish(&capture);
     return NULL;
 }
 

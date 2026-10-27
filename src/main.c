@@ -686,6 +686,9 @@ int main(int argc, char **argv)
         usleep(3000);
     }
 
+    /* Drain an optional diagnostic capture and join the existing UART reader. */
+    const wave_source_t *finished_source=wave_source_get();
+    if(finished_source && finished_source->deinit)finished_source->deinit();
     printf("\n[app] exit\n");
     return 0;
 }
