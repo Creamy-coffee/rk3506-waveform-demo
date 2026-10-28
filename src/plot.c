@@ -58,6 +58,7 @@ typedef struct {
     char  peak_txt[32];      /* 必须常驻：lv_draw_label 渲染时才读这段内存 */
 
     float iq_phase;          /* 度，数学约定：0°=+I 向右，逆时针为正 */
+    bool iq_valid;
 
     bool  cur_vis;           /* 测量光标 */
 
@@ -276,9 +277,16 @@ void plot_set_iq(lv_obj_t *plot, float phase_deg)
 {
     plot_t *p = PLOT_OF(plot);
     if(p == NULL) return;
-    if(p->iq_phase==phase_deg)return;
+    if(p->iq_valid && p->iq_phase==phase_deg)return;
+    p->iq_valid=true;
     p->iq_phase = phase_deg;
     lv_obj_invalidate(plot);
+}
+
+void plot_hide_iq(lv_obj_t *plot)
+{
+    plot_t *p=PLOT_OF(plot);
+    if(p && p->iq_valid){p->iq_valid=false;lv_obj_invalidate(plot);}
 }
 
 void plot_set_ticks(lv_obj_t *plot, const char *const *xl, int nx,
@@ -576,6 +584,7 @@ static void draw_iq(lv_layer_t *layer, plot_t *p,
         lv_draw_arc(layer, &ad);
     }
 
+    if(!p->iq_valid){text(layer,cx-45,cy-10,"NO PHASE",V32_C_NOTE,V32_FONT_SMALL);return;}
     /* 矢量：JS 是 ctx.lineTo(cx + cos(θ)*r*.82, cy - sin(θ)*r*.82) */
     const float rad = p->iq_phase * 3.14159265f / 180.f;
     const int32_t vr = r * 82 / 100;
@@ -612,7 +621,10 @@ static void draw_ticks(lv_layer_t *layer, plot_t *p,
             /* 框下 4px（框本身 2px）居中 */
             lv_point_t sz;
             lv_text_get_size(&sz, p->tk_x[i], V32_FONT_SMALL, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-            text_w(layer, cx - sz.x / 2, gy + gh + 4, sz.x + 8, p->tk_x[i], V32_C_LABEL, V32_FONT_SMALL);
+            int32_t tx=cx-sz.x/2;
+            if(tx<ox+4)tx=ox+4;
+            if(tx+sz.x>ox+ow-4)tx=ox+ow-4-sz.x;
+            text_w(layer, tx, gy + gh + 4, sz.x + 8, p->tk_x[i], V32_C_LABEL, V32_FONT_SMALL);
         }
     }
     if(p->tk_ny > 0) {
@@ -621,7 +633,8 @@ static void draw_ticks(lv_layer_t *layer, plot_t *p,
             /* 右对齐贴在框左侧 8px（scope_proto: textAlign='right', x=PL.x-8） */
             lv_point_t sz;
             lv_text_get_size(&sz, p->tk_y[j], V32_FONT_SMALL, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-            text_w(layer, gx - 8 - sz.x, cy - sz.y / 2, sz.x + 8, p->tk_y[j], V32_C_LABEL, V32_FONT_SMALL);
+            int32_t tx=gx-8-sz.x;if(tx<ox+2)tx=ox+2;
+            text_w(layer, tx, cy - sz.y / 2, sz.x + 8, p->tk_y[j], V32_C_LABEL, V32_FONT_SMALL);
         }
     }
     (void)ow;
@@ -638,22 +651,25 @@ static void draw_cursors(lv_layer_t *layer, plot_t *p,
     lv_draw_line_dsc_t ld;
     lv_draw_line_dsc_init(&ld);
     ld.color = V32_C_TRIGGER;
-    ld.width = 1;
+    ld.width = 2;
     ld.opa   = LV_OPA_COVER;
 
     int32_t vx[2] = {0, 0}, hy[2] = {0, 0};
     int nv = 0, nh = 0;
     for(int i = 0; i < p->cur_n && i < 4; i++) {
+        ld.color=(i%2)?V32_C_CURSOR_B:V32_C_CURSOR_A;
         if(i < 2) {                              /* 竖线：时间光标 */
             const int32_t x = x0 + (int32_t)(p->cur_x[i] * (float)(w - 1));
             for(int32_t y = y0; y < y0 + h - 1; y += 8)
                 line(layer, &ld, x, y, x, (y + 4 < y0 + h - 1) ? y + 4 : y0 + h - 1);
             if(nv < 2) vx[nv++] = x;
+            text_plated(layer,x+5<x0+w-30?x+5:x-27,y0+16,i?"T2":"T1",ld.color,V32_FONT_SMALL_B);
         } else {                                 /* 横线：电压光标 */
             const int32_t y = y0 + (int32_t)(p->cur_y[i - 2] * (float)(h - 1));   /* i-2：cur_y[] 只有 2 个 */
             for(int32_t x = x0; x < x0 + w - 1; x += 8)
                 line(layer, &ld, x, y, (x + 4 < x0 + w - 1) ? x + 4 : x0 + w - 1, y);
             if(nh < 2) hy[nh++] = y;
+            text_plated(layer,x0+10,y+4<y0+h-22?y+4:y-22,i==2?"V1":"V2",ld.color,V32_FONT_SMALL_B);
         }
     }
     /* 交点小方块（scope_proto: 4×4 实心方块） */
@@ -664,6 +680,7 @@ static void draw_cursors(lv_layer_t *layer, plot_t *p,
     rd.radius   = 1;
     for(int a = 0; a < nv; a++)
         for(int b = 0; b < nh; b++) {
+            rd.bg_color=a?V32_C_CURSOR_B:V32_C_CURSOR_A;
             lv_area_t r = { vx[a] - 2, hy[b] - 2, vx[a] + 1, hy[b] + 1 };
             lv_draw_rect(layer, &rd, &r);
         }
@@ -765,7 +782,7 @@ static void draw_trigger(lv_layer_t *layer, plot_t *p,
     line(layer, &ld, x, y0, x, y0 + h - 1);
 
     /* JS: ctx.fillText('T', w*.46+4, 28) */
-    text(layer, x + 4, y0 + 18, "T", V32_C_TRIGGER, V32_FONT_SMALL);
+    if(p->mode!=PLOT_FFT)text(layer, x + 4, y0 + 18, "T", V32_C_TRIGGER, V32_FONT_SMALL);
 }
 
 /* 包络虚线: 3 段画 2 段跳, 无效点断口 */
@@ -838,10 +855,23 @@ static void draw_peak(lv_layer_t *layer, plot_t *p,
     if(tx < tx_min) tx = tx_min;
     if(tx > tx_max) tx = tx_max;
     if(tx_max < tx_min) tx = tx_min;
-    text(layer, tx, y0 + 22, p->peak_txt, V32_C_FFT, V32_FONT_SMALL);
+    /* Peak frequency already has a dedicated sidebar; avoid a second title-row label. */
+    (void)tx;
 }
 
 /* ==================== 主绘制回调 ==================== */
+
+bool plot_get_data_area(lv_obj_t *plot,lv_area_t *area)
+{
+    plot_t *p=PLOT_OF(plot);if(!p || !area)return false;
+    lv_obj_get_coords(plot,area);
+    int bw=lv_obj_get_style_border_width(plot,LV_PART_MAIN);
+    area->x1+=bw;area->x2-=bw;area->y1+=bw;area->y2-=bw;
+    if(p->tk_ny>0){area->x1+=80;area->y1+=20;}
+    if(p->mode==PLOT_FFT){area->x1+=58;area->y1+=62;area->y2-=30;}
+    if(p->tk_nx>0)area->y2-=18;
+    return area->x2>area->x1 && area->y2>area->y1;
+}
 
 static void plot_draw_cb(lv_event_t *e)
 {
@@ -868,11 +898,16 @@ static void plot_draw_cb(lv_event_t *e)
 
     /* 有刻度文字时，网格往里收：左 42px 给电压刻度，下 18px 给时间刻度 */
     int32_t ox = x0, oy = y0, ow = w, oh = h;
-    if(p->tk_ny > 0) { x0 += 64; w -= 64; }
+    if(p->tk_ny > 0) { x0 += 80; w -= 80; }
     if(p->tk_nx > 0) { h -= 18; }
     if(p->tk_ny > 0) { y0 += 20; h -= 20; }   /* 顶部信息条 */
 
+    if(p->mode==PLOT_FFT){x0+=58;w-=58;y0+=62;h-=92;}
     draw_grid(layer, p, x0, y0, w, h);
+    if(p->mode==PLOT_FFT){
+        static const char *db[]={"0","-25","-50","-75","-100"};
+        for(int i=0;i<5;i++)text_w(layer,ox+6,y0+i*(h-1)/4-8,48,db[i],V32_C_LABEL,V32_FONT_SMALL);
+    }
 
     if(p->mode == PLOT_IQ) {
         draw_iq(layer, p, x0, y0, w, h);
@@ -936,8 +971,11 @@ static void plot_draw_cb(lv_event_t *e)
 
     /* 角落坐标文字（参考稿 FFT 页画在画布左下角）。
      * 用 text_plated：这两处会被曲线穿过，白底上不垫底板就读不清。 */
-    if(p->axis_l[0]) text_plated(layer, x0 + 8,   y0 + h - 20, p->axis_l, V32_C_TEXT, V32_FONT_SMALL);
-    if(p->axis_r[0]) text_plated(layer, x0 + w - 80, y0 + h - 20, p->axis_r, V32_C_TEXT, V32_FONT_SMALL);
+    if(p->axis_l[0]) text_plated(layer, x0 + 8, p->mode==PLOT_FFT?y0+h+5:y0+h-20, p->axis_l, V32_C_TEXT, V32_FONT_SMALL);
+    if(p->axis_r[0]) {
+        lv_point_t size;lv_text_get_size(&size,p->axis_r,V32_FONT_SMALL,0,0,LV_COORD_MAX,LV_TEXT_FLAG_NONE);
+        text_plated(layer,x0+w-size.x-8,p->mode==PLOT_FFT?y0+h+5:y0+h-20,p->axis_r,V32_C_TEXT,V32_FONT_SMALL);
+    }
 
     /* 曲线右端的小图例 */
     if(p->leg0[0]) text(layer, x0 + w - 60, y0 + 6,      p->leg0, V32_C_CH1, V32_FONT_SMALL);

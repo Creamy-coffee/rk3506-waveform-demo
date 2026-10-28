@@ -79,6 +79,8 @@ void plot_set_peak(lv_obj_t *plot, bool vis, float x, const char *txt);
 
 /* ---- IQ 专用：矢量角度（数学约定，0°=+I 向右，逆时针为正）---- */
 void plot_set_iq(lv_obj_t *plot, float phase_deg);
+void plot_hide_iq(lv_obj_t *plot);
+bool plot_get_data_area(lv_obj_t *plot,lv_area_t *area);
 
 /* ---- 画布内的角落文字（参考稿 FFT 页的 "0 MHz" / "32.5 MHz"）---- */
 void plot_set_axis_labels(lv_obj_t *plot, const char *left, const char *right);

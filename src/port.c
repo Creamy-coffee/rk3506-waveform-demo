@@ -330,7 +330,7 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
     data->state            = LV_INDEV_STATE_RELEASED;
     if (!t || t->fd < 0) return;
 
-    /* ---- 1) 把缓冲区里的事件全部吃掉 ---- */
+    /* ---- 1) Deliver one complete input report to LVGL at a time. ---- */
     bool got_ev = false;
     struct input_event ev;
     while (read(t->fd, &ev, sizeof ev) == (ssize_t)sizeof ev) {
@@ -344,6 +344,11 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
                 /* 一帧结束：这一帧有几个活触点就是几根手指 */
                 if (t->slot_mode) frame_commit_b(t);
                 else              frame_commit_a(t);
+                /* A slow render may leave both press and release queued.
+                   Consuming both here loses the entire click. LVGL drains
+                   the next report immediately via continue_reading. */
+                data->continue_reading=true;
+                break;
             }
             continue;
         }
@@ -489,8 +494,8 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
         s_last_tx = data->point.x;
         s_last_ty = data->point.y;
     } else {
-        data->point.x = (int32_t)(nd >= 1 ? map_x(t, t->rx[0]) : 0);
-        data->point.y = (int32_t)(nd >= 1 ? map_y(t, t->ry[0]) : 0);
+        data->point.x = (int32_t)(nd >= 1 ? map_x(t, t->rx[0]) : s_last_tx);
+        data->point.y = (int32_t)(nd >= 1 ? map_y(t, t->ry[0]) : s_last_ty);
         data->state   = LV_INDEV_STATE_RELEASED;
     }
 }

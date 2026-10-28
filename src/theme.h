@@ -163,7 +163,7 @@
 #define V32_C_PANEL_TITLE    lv_color_hex(0xC2D3E6)  /* .panel-title */
 
 /* 指标行 .metric */
-#define V32_C_METRIC_LABEL   lv_color_hex(0x97ADC5)
+#define V32_C_METRIC_LABEL   lv_color_hex(0xC2CDDA)
 #define V32_C_METRIC_VALUE   lv_color_hex(0xEFF5FC)
 #define V32_C_METRIC_BORDER  lv_color_hex(0x23334A)
 
@@ -177,11 +177,11 @@
 /* 提示文字 */
 #define V32_C_TEXT           lv_color_hex(0xDCE8F6)  /* :root color */
 #define V32_C_FSNOTE         lv_color_hex(0x91A7BF)  /* .fullscreen-note */
-#define V32_C_NOTE           lv_color_hex(0xA5BAD0)  /* .note */
+#define V32_C_NOTE           lv_color_hex(0xB9C9DC)  /* .note */
 #define V32_C_HINT           lv_color_hex(0x62B5FF)  /* .touch-hint */
 #define V32_C_MINI           lv_color_hex(0x91A7BF)  /* .mini */
 #define V32_C_LABEL          lv_color_hex(0xA5BAD0)  /* .group label */
-#define V32_C_KV_KEY         lv_color_hex(0x97ADC5)  /* .kv span */
+#define V32_C_KV_KEY         lv_color_hex(0xC2CDDA)  /* .kv span */
 #define V32_C_KV_BORDER      lv_color_hex(0x23334A)
 #define V32_C_SUBHEAD        lv_color_hex(0x91A7BF)  /* .subhead */
 #define V32_C_WARN           lv_color_hex(0xFFD166)  /* 模拟件的黄色警示 */
@@ -219,6 +219,8 @@
 #define V32_C_GRID           lv_color_hex(0x203044)  /* grid() 网格 */
 #define V32_C_GRID_CENTER    lv_color_hex(0x435D78)  /* 中心虚线 */
 #define V32_C_TRIGGER        lv_color_hex(0xFF81B5)  /* 触发线 + "T" */
+#define V32_C_CURSOR_A       lv_color_hex(0xF4F7FF)  /* T1/V1: bright neutral */
+#define V32_C_CURSOR_B       lv_color_hex(0xDDB1FF)  /* T2/V2: distinct from both traces */
 #define V32_C_IQ_RING        lv_color_hex(0x2B435B)  /* 矢量图同心圆 */
 
 /* ==================== 字体 ==================== */

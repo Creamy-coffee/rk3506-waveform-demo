@@ -380,5 +380,14 @@ uint32_t v32_fcw_from_hz(double hz);   /* round(hz * 2^32 / 65e6) */
 int v32_pop_ana(v32_ana_view_t *out); /* queued frame; out->valid reports receive freshness */
 int v32_cmd_apply(int mode,int channel,int rate,uint32_t fcw,int focus); /* one write, no implicit OFF */
 
+#include "harmonic_receiver.h"
+typedef struct {
+    v32_harmonic_measurement m;
+    uint32_t seq,age_ms;
+    int valid;
+} v32_harmonic_view_t;
+int v32_get_harmonic(v32_harmonic_view_t *out);
+int v32_cmd_harmonic(int enable,int channel,uint32_t fcw);
+
 #endif /* V32CAP3_H */
 

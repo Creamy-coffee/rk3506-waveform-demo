@@ -56,11 +56,35 @@ static void append_meas(unsigned hz0,unsigned hz1,unsigned valid){
     put(b+8,V32_MEAS_VERSION);put(b+12,128);put(b+16,raw_id);put(b+24,raw_id*1000000u);put(b+32,65000000);
     put(b+84,hz0);put(b+88,hz1);b[92]=(uint8_t)valid;put(b+124,crc(b,124));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
 }
+static void append_spec(void){
+    FILE *f=fopen(fixture,"ab");assert(f);uint8_t b[2096]={0};memcpy(b,"V32SPEC!",8);
+    put(b+8,1);put(b+12,sizeof b);put(b+16,raw_id);put(b+24,4096);put(b+28,2048);put(b+32,1000000);put(b+36,0);put(b+40,120);
+    memset(b+44,64,2048);b[44+64]=240;put(b+2092,crc(b,2092));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
+}
+static void append_harmonic(unsigned id,unsigned channel,unsigned noise_mask,unsigned flags){
+    FILE *f=fopen(fixture,"ab");assert(f);uint8_t b[216]={0};memcpy(b,"V32HRM1!",8);
+    put(b+8,2);put(b+12,216);put(b+16,id);put(b+20,7);put(b+24,65000000);put(b+28,4096);
+    put(b+32,66076420);put(b+36,1);put(b+44,0x80000200u|flags);put(b+48,channel);put(b+56,31);put(b+60,noise_mask);
+    for(int i=0;i<5;i++){unsigned band=i?1000:1000000;put(b+72+i*8,band);put(b+112+i*8,0);put(b+152+i*8,band*6);put(b+192+i*4,63*(i+1));}
+    put(b+212,crc(b,212));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
+}
+static void append_lock_meas(unsigned qual,unsigned flags){
+    FILE *f=fopen(fixture,"ab");assert(f);uint8_t b[128]={0};memcpy(b,"V32MEAS!",8);
+    put(b+8,V32_MEAS_VERSION);put(b+12,128);put(b+16,raw_id);put(b+24,raw_id*1000000u);put(b+32,65000000);
+    put(b+40,v32_fcw_from_hz(1000000));put(b+44,409600);put(b+48,409600);put(b+52,65536);
+    b[60]=0;b[61]=32;b[62]=qual;put(b+64,V32_ST_REQUIRED);b[68]=flags;
+    put(b+84,1000000);put(b+88,1000000);b[92]=3;put(b+124,crc(b,124));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
+}
+static void append_iq(void){
+    FILE *f=fopen(fixture,"ab");assert(f);uint8_t b[1068]={0};memcpy(b,"V32IQ01!",8);
+    put(b+8,1);put(b+12,1);put(b+16,65000000);put(b+20,4096);put(b+24,256);put(b+32,3);
+    for(int i=0;i<256;i++){b[40+4*i]=100;b[42+4*i]=100;}put(b+1064,crc(b,1064));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
+}
 static void draw(lv_display_t *d){test_ms+=40;lv_tick_inc(40);ui_tick();lv_obj_update_layout(lv_screen_active());lv_obj_invalidate(lv_screen_active());lv_refr_now(d);}
 static void save(const char *dir,const char *name){char p[1024];snprintf(p,sizeof p,"%s/%s.ppm",dir,name);FILE *f=fopen(p,"wb");assert(f);fprintf(f,"P6\n1024 600\n255\n");for(int i=0;i<1024*600;i++){uint8_t b[3]={pixels[i]>>16,pixels[i]>>8,pixels[i]};fwrite(b,1,3,f);}fclose(f);}
 static unsigned next_cp(const unsigned char **p){unsigned c=*(*p)++;if(c<128)return c;unsigned n=(c&0xe0)==0xc0?1:(c&0xf0)==0xe0?2:3;c&=(1u<<(6-n))-1;while(n--)c=(c<<6)|(*(*p)++&63);return c;}
 static void glyphs(void){
-    const char *text="波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测○● BPSK PN7 待定判决比对中匹配检出误码有无效位对频频率无效/↺⊞图片接收中图已复位";
+    const char *text="波形原始包络窗口等待有效数据分析历史相对频偏峰值码中心载波参考实测○● BPSK PN7 待定判决比对中匹配检出误码有无效位对频频率无效/↺⊞图片接收中图已复位示波器操作调整时间两路公共量程回到恢复默认冻结再次运行继续显示串口采集不停止软件帧内对齐不是硬件单次开启后拖动读取左右缩放上下增益展开长时基跨帧存在死区实际到帧率刷新两者不同采样点数";
     const lv_font_t *fonts[]={&lv_font_v32_12,&lv_font_v32_16,&lv_font_v32_18,&lv_font_v32_20,&lv_font_v32_12_bold,&lv_font_v32_16_bold,&lv_font_v32_18_bold,&lv_font_v32_20_bold};
     for(unsigned k=0;k<sizeof fonts/sizeof fonts[0];k++){
         const unsigned char *p=(const unsigned char *)text;
@@ -70,6 +94,17 @@ static void glyphs(void){
 
 int main(int argc,char **argv)
 {
+    /* Physical regression: 1MHz at dec64 aliases to 15.625kHz. A trusted,
+       independent full-band measurement must recover dec1, not lock to alias. */
+    assert(scope_decimation_target(65000000,1024,64,1000000,1,20,0,0)==1);
+    assert(scope_decimation_target(65000000,1024,64,15625,0,20,0,0)==64);
+    assert(scope_decimation_target(65000000,1024,64,1000000,1,20,1,0)==16);
+    assert(scope_decimation_target(65000000,1024,1,1000,1,20,0,0)==128);
+    assert(scope_decimation_target(65000000,1024,1,0,0,0,0,1)==1);
+    assert(scope_decimation_target(65000000,1024,1,15869,0,0,0,1)==1);
+    float range_lo,range_scale;scope_auto_range(-4,8,&range_lo,&range_scale);assert(fabsf(1.f/range_scale-32)<1e-5f);
+    assert(range_lo<=-4 && range_lo+1.f/range_scale>=8);
+    scope_auto_range(-100,100,&range_lo,&range_scale);assert(fabsf(1.f/range_scale-220)<1e-4f);
     assert(argc>=2 && argc<=4);snprintf(fixture,sizeof fixture,"/tmp/v32_modulation_view_%ld.bin",(long)getpid());float lo,hi,out[1024],v[3]={10,10,10};assert(mod_view_range(v,3,1,&lo,&hi)&&lo==0&&hi>10);
     v[1]=NAN;mod_view_resample(v,3,out,9,0,20);assert(isnan(out[4]) && isfinite(out[0]) && isfinite(out[8]));
     float amp[5]={0,.5f,1,NAN,-1},up[5],dn[5];
@@ -221,9 +256,9 @@ int main(int argc,char **argv)
        groups, not dropdown widgets. A bad cast used to crash the live GUI. */
     const int reset_pages[]={UI_PAGE_SCOPE,UI_PAGE_MOD,UI_PAGE_LOCK,UI_PAGE_IMAGE};
     for(unsigned k=0;k<sizeof reset_pages/sizeof reset_pages[0];k++){
-        ui_set_page(reset_pages[k]);S.tb_idx=TIMEBASE_DEF+1;S.tau_idx=TAU_DEF+1;
+        ui_set_page(reset_pages[k]);S.tb_idx=TIMEBASE_DEF+1;
         cb_reset(NULL);draw(d);
-        assert(S.tb_idx==TIMEBASE_DEF && S.tau_idx==TAU_DEF && !s_tb_manual && S.running);
+        assert(S.tb_idx==TIMEBASE_DEF && !s_tb_manual && S.running);
     }
     ui_set_page(UI_PAGE_SCOPE);s_cur_on=0;draw(d);save(argv[1],"scope_home");
     assert(lv_obj_has_flag(lv_obj_get_parent(s_lbl_cur_t1),LV_OBJ_FLAG_HIDDEN));
@@ -246,5 +281,61 @@ int main(int argc,char **argv)
     assert(flush_count==before);
     plot_set_trace(probe,0,trace,8,V32_C_CH2,2);lv_refr_now(d);assert(flush_count>before);
     lv_obj_delete(probe);
-    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale scope_layout_cached_redraw_style_change");return 0;
+    /* A valid, constant RAW frame has no AC frequency. Do not report FFT bin1. */
+    s_tb_manual=0;fixture_write(200,20,1,0,0,0,1,1);
+    FILE *zero_file=fopen(fixture,"r+b");assert(zero_file);uint8_t zero_raw[4140];
+    assert(fread(zero_raw,1,sizeof zero_raw,zero_file)==sizeof zero_raw);
+    memset(zero_raw+40,0,4096);put(zero_raw+4136,crc(zero_raw,4136));
+    rewind(zero_file);assert(fwrite(zero_raw,1,sizeof zero_raw,zero_file)==sizeof zero_raw);fclose(zero_file);
+    assert(v32_init_file(fixture)==0);ui_set_page(UI_PAGE_SCOPE);draw(d);
+    assert(!strcmp(lv_label_get_text(s_lbl_scope_freq),"—"));
+    /* Mismatched RAW/SPEC sample rates must never mix axes or cursor data. */
+    S.running=true;fixture_write(210,21,1,0,0,0,1,1);append_spec();assert(v32_init_file(fixture)==0);
+    ui_set_page(UI_PAGE_FFT);fft_ch_set(1);draw(d);assert(s_spec_in_use);
+    assert(fabsf(s_spec_peak_hz-15625.f)<.1f);
+    assert(strstr(lv_label_get_text(s_lbl_fft_res),"244.1Hz"));
+    s_fft_cur_on=1;s_fft_cur_x=64.f/2048.f;fft_cursor_tick();
+    assert(strstr(lv_label_get_text(s_lbl_fft_cur),"15.625kHz"));
+    assert(strstr(lv_label_get_text(s_lbl_fft_cur),"-7.1 dBFS"));save(argv[1],"spectrum_fpga");
+    /* Host THD must use exact powers, not the v2 on-wire zero placeholder. */
+    fixture_write(215,22,1,0,0,0,1,1);append_harmonic(1,0,0,0);assert(v32_init_file(fixture)==0);
+    s_hrm_on=1;s_hrm_baseline_seq=0;draw(d);assert(strstr(lv_label_get_text(s_hrm_thd),"6.325"));
+    assert(strstr(lv_label_get_text(s_hrm_orders[1]),"-30.0"));save(argv[1],"spectrum_harmonics");
+    hrm_settings(NULL);assert(s_hrm_dialog);draw(d);save(argv[1],"harmonic_settings");hrm_close(NULL);
+    fixture_write(216,22,1,0,0,0,1,1);append_harmonic(2,0,30,0);assert(v32_init_file(fixture)==0);draw(d);
+    assert(!strcmp(lv_label_get_text(s_hrm_thd),"< NOISE"));
+    fixture_write(217,22,1,0,0,0,1,1);append_harmonic(3,1,0,0);assert(v32_init_file(fixture)==0);draw(d);
+    assert(!strcmp(lv_label_get_text(s_hrm_thd),"—"));
+    test_ms+=1600;lv_tick_inc(1600);assert(v32_init_file(fixture)==0);draw(d);
+    assert(strstr(lv_label_get_text(s_hrm_note),"超时"));s_hrm_on=0;
+    fixture_write(218,22,1,0,0,0,1,1);append_spec();assert(v32_init_file(fixture)==0);draw(d);
+    S.running=false;fft_ch_set(2);draw(d);assert(!s_spec_in_use && s_real_fft_ch==1);
+    assert(strstr(lv_label_get_text(s_lbl_fft_res),"63.477kHz"));
+    float old_mag[4096];memcpy(old_mag,s_real_mag,sizeof old_mag);cb_win_cycle(NULL);
+    assert(memcmp(old_mag,s_real_mag,sizeof old_mag));save(argv[1],"spectrum_local_paused");
+    S.running=true;S.win_idx=0;s_fft_cur_on=0;
+    fixture_write(211,22,1,0,0,0,1,1);append_lock_meas(3,0);assert(v32_init_file(fixture)==0);
+    ui_set_page(UI_PAGE_LOCK);draw(d);assert(strstr(lv_label_get_text(s_lbl_lock_state),"锁定"));
+    assert(strstr(lv_label_get_text(s_lbl_lock_phase),"45.00"));save(argv[1],"lock_qualified");
+    fixture_write(212,22,1,0,0,0,1,1);append_lock_meas(1,0);assert(v32_init_file(fixture)==0);draw(d);
+    assert(!strcmp(lv_label_get_text(s_lbl_lock_phase),"—"));save(argv[1],"lock_single_channel");
+    fixture_write(213,22,1,0,0,0,1,1);append_lock_meas(3,1);assert(v32_init_file(fixture)==0);draw(d);
+    assert(!strcmp(lv_label_get_text(s_lbl_lock_phase),"—"));
+    test_ms+=2000;lv_tick_inc(2000);fixture_write(214,22,1,0,0,0,1,1);append_iq();assert(v32_init_file(fixture)==0);draw(d);
+    assert(!strcmp(lv_label_get_text(s_lbl_lock_phase),"—"));assert(strstr(lv_label_get_text(s_lbl_lock_state),"NCO"));save(argv[1],"lock_iq_reference");
+    ui_set_page(UI_PAGE_SYSTEM);draw(d);save(argv[1],"system_large");
+    cb_scope_help(NULL);assert(s_help_overlay);draw(d);save(argv[1],"scope_help");cb_help_close(NULL);assert(!s_help_overlay);
+    /* Scope must remain RAW even when legacy IQ frames arrive. */
+    fixture_write(219,22,1,0,0,0,1,1);assert(v32_init_file(fixture)==0);ui_set_page(UI_PAGE_SCOPE);draw(d);
+    char raw_axis[80];snprintf(raw_axis,sizeof raw_axis,"%s",lv_label_get_text(lv_obj_get_child(s_chip_tb,0)));
+    append_iq();assert(v32_init_file(fixture)==0);draw(d);
+    assert(!strcmp(raw_axis,lv_label_get_text(lv_obj_get_child(s_chip_tb,0))));
+    lv_area_t grid,widget;assert(plot_get_data_area(s_plot_scope,&grid));lv_obj_get_coords(s_plot_scope,&widget);
+    int border=lv_obj_get_style_border_width(s_plot_scope,LV_PART_MAIN);
+    assert(grid.x1==widget.x1+80+border && grid.y1==widget.y1+20+border);save(argv[1],"scope_raw_only");
+    s_an_type=0;
+    const int expected_modes[]={1,2,7,5,3,6,0};
+    for(unsigned i=0;i<7;i++){cb_an_type(NULL);assert(s_an_type==expected_modes[i]);}
+    analysis_apply(4,0,1);assert(s_an_type==0);
+    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale scope_layout_cached_redraw_style_change harmonics scope_RAW_only supported_modes");return 0;
 }

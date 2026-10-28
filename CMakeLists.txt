@@ -43,6 +43,7 @@ add_executable(waveform_demo
     src/demo_signal.c
     src/wave_source.c
     src/wave_source_v32.c
+    src/harmonic_receiver.c
     src/v32cap3.c
     src/fft.c
     src/bl_interp.c
