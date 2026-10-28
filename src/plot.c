@@ -132,6 +132,7 @@ void plot_set_mode(lv_obj_t *plot, plot_mode_t mode)
 {
     plot_t *p = PLOT_OF(plot);
     if(p == NULL) return;
+    if(p->mode==mode && p->divx>0)return;
     p->mode = mode;
 
     /* 分格数照抄参考稿：
@@ -177,15 +178,16 @@ static int set_trace(lv_obj_t *plot, int idx, const float *y, int n,
     if(p == NULL || idx < 0 || idx >= PLOT_MAX_TRACE) return 0;
 
     trace_t *t = &p->tr[idx];
+    const int style_changed=!lv_color_eq(t->color,color) || t->width!=width || t->vis!=vis;
     t->color = color;
     t->width = width;
     t->vis   = vis;
 
-    if(y == NULL || n <= 0) { t->n = 0; return 1; }
+    if(y == NULL || n <= 0) { int changed=style_changed || t->n!=0;t->n = 0; return changed; }
     if(n > PLOT_MAX_PTS) n = PLOT_MAX_PTS;
     /* 数据完全一致（暂停/锚定后的稳态帧）就不重绘 —— 高频 set_trace
        的场景下这一下 memcmp 能省掉整块 plot 的软件渲染。 */
-    if(t->n == n && memcmp(t->y, y, (size_t)n * sizeof(float)) == 0) return 0;
+    if(t->n == n && memcmp(t->y, y, (size_t)n * sizeof(float)) == 0) return style_changed;
     memcpy(t->y, y, (size_t)n * sizeof(float));
     t->n = n;
     return 1;
@@ -203,14 +205,15 @@ void plot_set_trace(lv_obj_t *plot, int idx, const float *y, int n,
 
 void plot_hide_trace(lv_obj_t *plot, int idx)
 {
-    set_trace(plot, idx, NULL, 0, V32_C_TEXT, 1, false);
-    lv_obj_invalidate(plot);
+    if(set_trace(plot, idx, NULL, 0, V32_C_TEXT, 1, false))lv_obj_invalidate(plot);
 }
 
 void plot_set_trigger(lv_obj_t *plot, bool vis, float x)
 {
     plot_t *p = PLOT_OF(plot);
     if(p == NULL) return;
+    x=(x<0.f)?0.f:(x>1.f?1.f:x);
+    if(p->trig_vis==vis && p->trig_x==x)return;
     p->trig_vis = vis;
     p->trig_x = (x < 0.f) ? 0.f : (x > 1.f ? 1.f : x);
     lv_obj_invalidate(plot);
@@ -220,6 +223,8 @@ void plot_set_trigger_level(lv_obj_t *plot, bool vis, float y01)
 {
     plot_t *p = PLOT_OF(plot);
     if(p == NULL) return;
+    y01=(y01<0.f)?0.f:(y01>1.f?1.f:y01);
+    if(p->trig_lev_vis==vis && p->trig_y==y01)return;
     p->trig_lev_vis = vis;
     p->trig_y = (y01 < 0.f) ? 0.f : (y01 > 1.f ? 1.f : y01);
     lv_obj_invalidate(plot);
@@ -271,6 +276,7 @@ void plot_set_iq(lv_obj_t *plot, float phase_deg)
 {
     plot_t *p = PLOT_OF(plot);
     if(p == NULL) return;
+    if(p->iq_phase==phase_deg)return;
     p->iq_phase = phase_deg;
     lv_obj_invalidate(plot);
 }
@@ -284,8 +290,8 @@ void plot_set_ticks(lv_obj_t *plot, const char *const *xl, int nx,
     int changed = (p->tk_nx != nx || p->tk_ny != ny);
     p->tk_nx = (nx > 6) ? 6 : nx;
     p->tk_ny = (ny > 5) ? 5 : ny;
-    for(int i = 0; i < p->tk_nx; i++) { snprintf(p->tk_x[i], sizeof p->tk_x[i], "%s", xl[i] ? xl[i] : ""); }
-    for(int j = 0; j < p->tk_ny; j++) { snprintf(p->tk_y[j], sizeof p->tk_y[j], "%s", yl[j] ? yl[j] : ""); }
+    for(int i = 0; i < p->tk_nx; i++) { const char *s=xl[i]?xl[i]:"";if(strcmp(p->tk_x[i],s))changed=1;snprintf(p->tk_x[i], sizeof p->tk_x[i], "%s",s); }
+    for(int j = 0; j < p->tk_ny; j++) { const char *s=yl[j]?yl[j]:"";if(strcmp(p->tk_y[j],s))changed=1;snprintf(p->tk_y[j], sizeof p->tk_y[j], "%s",s); }
     if(changed) lv_obj_invalidate(plot);
 }
 
@@ -325,6 +331,9 @@ void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, b
     if(p == NULL) return;
     if(n < 0) n = 0;
     if(n > 4) n = 4;
+    float nx[4]={0},ny[4]={0};
+    for(int i=0;i<n;i++){if(i<2)nx[i]=xs?xs[i]:0.5f;else ny[i-2]=ys?ys[i-2]:0.5f;}
+    if(p->cur_n==n && p->cur_vis==(show && n>0) && !memcmp(p->cur_x,nx,sizeof nx) && !memcmp(p->cur_y,ny,sizeof ny))return;
     p->cur_n   = n;
     p->cur_vis = show && n > 0;
     memset(p->cur_x,0,sizeof p->cur_x);memset(p->cur_y,0,sizeof p->cur_y);

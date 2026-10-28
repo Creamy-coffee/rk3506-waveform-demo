@@ -18,7 +18,8 @@ int __wrap_v32_cmd_apply(int mode,int channel,int rate,uint32_t fcw,int focus){
 static char fixture[128];
 static unsigned raw_id;
 static uint32_t fixture_fcw=66076420;
-static void flush_cb(lv_display_t *d,const lv_area_t *a,uint8_t *p){(void)a;(void)p;lv_display_flush_ready(d);}
+static unsigned flush_count;
+static void flush_cb(lv_display_t *d,const lv_area_t *a,uint8_t *p){(void)a;(void)p;flush_count++;lv_display_flush_ready(d);}
 static void put(uint8_t *p,uint32_t v){for(int i=0;i<4;i++)p[i]=(uint8_t)(v>>(8*i));}
 static uint32_t take32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
 static uint32_t crc(const uint8_t *p,size_t n){uint32_t c=~0u;for(size_t i=0;i<n;i++){c^=p[i];for(int k=0;k<8;k++)c=(c>>1)^((c&1)?0xedb88320u:0);}return ~c;}
@@ -224,5 +225,26 @@ int main(int argc,char **argv)
         cb_reset(NULL);draw(d);
         assert(S.tb_idx==TIMEBASE_DEF && S.tau_idx==TAU_DEF && !s_tb_manual && S.running);
     }
-    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale");return 0;
+    ui_set_page(UI_PAGE_SCOPE);s_cur_on=0;draw(d);save(argv[1],"scope_home");
+    assert(lv_obj_has_flag(lv_obj_get_parent(s_lbl_cur_t1),LV_OBJ_FLAG_HIDDEN));
+    s_cur_on=1;draw(d);save(argv[1],"scope_cursors");
+    assert(!lv_obj_has_flag(lv_obj_get_parent(s_lbl_cur_t1),LV_OBJ_FLAG_HIDDEN));
+    assert(lv_obj_has_flag(lv_obj_get_parent(s_lbl_m_vmax),LV_OBJ_FLAG_HIDDEN));
+    lv_area_t metric,panel;lv_obj_get_coords(lv_obj_get_parent(s_lbl_cur_dv),&metric);
+    lv_obj_get_coords(lv_obj_get_parent(lv_obj_get_parent(s_lbl_cur_dv)),&panel);assert(metric.y2<panel.y2);
+    s_cur_on=0;draw(d);cb_fullscreen(NULL);draw(d);save(argv[1],"scope_fullscreen");cb_fullscreen(NULL);
+    /* Unchanged geometry must not cause a redraw; style-only changes must. */
+    lv_obj_t *probe=plot_create(lv_screen_active(),PLOT_SCOPE);lv_obj_set_size(probe,160,90);
+    float trace[8]={.1,.2,.3,.4,.5,.6,.7,.8};
+    plot_set_trace(probe,0,trace,8,V32_C_CH1,2);plot_hide_trace(probe,2);
+    plot_set_trigger(probe,true,.2f);plot_set_trigger_level(probe,true,.5f);
+    plot_set_cursors(probe,0,NULL,NULL,false);lv_obj_update_layout(lv_screen_active());lv_refr_now(d);
+    unsigned before=flush_count;
+    plot_set_trace(probe,0,trace,8,V32_C_CH1,2);plot_hide_trace(probe,2);
+    plot_set_trigger(probe,true,.2f);plot_set_trigger_level(probe,true,.5f);
+    plot_set_cursors(probe,0,NULL,NULL,false);plot_set_mode(probe,PLOT_SCOPE);lv_refr_now(d);
+    assert(flush_count==before);
+    plot_set_trace(probe,0,trace,8,V32_C_CH2,2);lv_refr_now(d);assert(flush_count>before);
+    lv_obj_delete(probe);
+    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale scope_layout_cached_redraw_style_change");return 0;
 }

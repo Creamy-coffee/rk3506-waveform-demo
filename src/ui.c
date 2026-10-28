@@ -38,6 +38,26 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdarg.h>
+
+/* LVGL 9 invalidates and reallocates a label even when its text is identical.
+   Keep formatting and values unchanged, but leave unchanged panels out of the
+   software redraw. These wrappers apply only to this translation unit. */
+static void label_text_changed(lv_obj_t *obj,const char *text)
+{
+    if(!text || strcmp(lv_label_get_text(obj),text))lv_label_set_text(obj,text);
+}
+static void label_format_changed(lv_obj_t *obj,const char *fmt,...)
+{
+    if(!fmt){lv_label_set_text_fmt(obj,NULL);return;}
+    char local[512];va_list ap,copy;va_start(ap,fmt);va_copy(copy,ap);
+    int n=vsnprintf(local,sizeof local,fmt,ap);va_end(ap);
+    if(n>=0 && n<(int)sizeof local)label_text_changed(obj,local);
+    else if(n>=0){char *large=malloc((size_t)n+1);if(large){vsnprintf(large,(size_t)n+1,fmt,copy);label_text_changed(obj,large);free(large);}}
+    va_end(copy);
+}
+#define lv_label_set_text label_text_changed
+#define lv_label_set_text_fmt label_format_changed
 
 /* =========================================================
  * 布局常量（由 theme.h 里的 CSS 数字算出来）
@@ -158,6 +178,7 @@ static lv_obj_t *s_nav[UI_PAGE_COUNT];
 static lv_obj_t *s_aside[UI_PAGE_COUNT];      /* 可 NULL（SYSTEM 页没有右栏） */
 
 static lv_obj_t *s_plot_scope, *s_plot_fft, *s_plot_iq, *s_plot_lock;
+static lv_obj_t *s_scope_acq;
 static lv_obj_t *s_plot_raw, *s_plot_den;
 
 static lv_obj_t *s_lbl_scope_freq, *s_lbl_v1, *s_lbl_v2, *s_lbl_phase;
@@ -1983,6 +2004,18 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
  * ========================================================= */
 static void build_scope(lv_obj_t *pg)
 {
+    lv_obj_t *header=mk_panel(pg,0,0,MAIN_W,40);
+    lv_obj_set_style_pad_all(header,6,0);
+    mk_label(header,8,1,"V32",V32_FONT_BIG_B,V32_C_BRAND);
+    mk_label(header,66,4,"OSCILLOSCOPE",V32_FONT_SMALL_B,V32_C_TEXT);
+    mk_label(header,260,4,"CH1",V32_FONT_SMALL_B,V32_C_CH1);
+    mk_label(header,314,4,"CH2",V32_FONT_SMALL_B,V32_C_CH2);
+    mk_label(header,374,4,"65 MSPS",V32_FONT_SMALL,V32_C_NOTE);
+    s_scope_acq=mk_label(header,510,4,"LIVE  |  RAW -- /s  |  UI -- fps",V32_FONT_SMALL,V32_C_LIVE);
+    lv_obj_set_width(s_scope_acq,MAIN_W-535);
+    lv_obj_set_style_text_align(s_scope_acq,LV_TEXT_ALIGN_RIGHT,0);
+    lv_obj_t *body=mk(pg,0,48,MAIN_W,MAIN_H-48);
+    pg=body;
     lv_obj_set_flex_flow(pg, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(pg, V32_PAGE_GAP, LV_PART_MAIN);
 
@@ -1990,7 +2023,7 @@ static void build_scope(lv_obj_t *pg)
     /* 光标拖动：按下和移动都抓最近那条线 */
     lv_obj_add_event_cb(s_plot_scope, cb_scope_touch, LV_EVENT_PRESSING, NULL);
     lv_obj_set_flex_grow(s_plot_scope, 1);
-    lv_obj_set_height(s_plot_scope, MAIN_H);
+    lv_obj_set_height(s_plot_scope, MAIN_H-48);
 
     lv_obj_t *tr = mk_title_row(s_plot_scope, V32_PLOT_TITLE_X, V32_PLOT_TITLE_Y);
     lv_obj_t *t0 = mk_label(tr, 0, 0, "时域波形", V32_FONT_SMALL, V32_C_PLOT_TITLE);
@@ -2011,7 +2044,7 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_add_flag(tr, LV_OBJ_FLAG_HIDDEN);
 
     /* ---- 右侧读数栏 ---- */
-    lv_obj_t *aside = mk(pg, 0, 0, ASIDE_W, MAIN_H);
+    lv_obj_t *aside = mk(pg, 0, 0, ASIDE_W, MAIN_H-48);
     s_aside[UI_PAGE_SCOPE] = aside;
     lv_obj_set_flex_flow(aside, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(aside, V32_RIGHT_GAP, LV_PART_MAIN);
@@ -3619,11 +3652,45 @@ static uint32_t s_last_sec = 0;
 static uint32_t s_fps_t0 = 0, s_fps_f0 = 0;
 static uint32_t s_app_t0 = 0;
 
+static void scope_metric_layout(void)
+{
+    static int shown=-1;
+    if(shown==!!s_cur_on)return;
+    shown=!!s_cur_on;
+    lv_obj_t *values[]={s_lbl_v1,s_lbl_m_vmax,s_lbl_m_vmin,s_lbl_m_vamp,
+        s_lbl_m_vrms,s_lbl_m_vavg,s_lbl_m_per,s_lbl_scope_freq,s_lbl_m_duty,s_lbl_m_rise,
+        s_lbl_cur_t1,s_lbl_cur_t2,s_lbl_cur_dt,s_lbl_cur_idt,s_lbl_cur_v1,s_lbl_cur_v2,s_lbl_cur_dv};
+    int y=TITLE_H;
+    for(int i=0;i<17;i++){
+        lv_obj_t *row=lv_obj_get_parent(values[i]);
+        bool visible=i<10 || shown;
+        if(shown && (i==1 || i==2 || i==3 || i==5 || i==9))visible=false;
+        if(visible){lv_obj_remove_flag(row,LV_OBJ_FLAG_HIDDEN);lv_obj_set_y(row,y);y+=METRIC_H;}
+        else lv_obj_add_flag(row,LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void scope_acquisition_status(void)
+{
+    if(!s_scope_acq || S.page!=UI_PAGE_SCOPE)return;
+    static uint32_t t0,raw0,flips0;
+    uint32_t now=lv_tick_get(),flips=0;drm_display_flip_stats(&flips,NULL);
+    const v32_stats_t *st=v32_get_stats();
+    if(!t0){t0=now;raw0=st->frames_ok;flips0=flips;return;}
+    uint32_t dt=now-t0;if(dt<500)return;
+    const char *state=!S.running?"PAUSED":(S.use_real&&!s_real_valid)?"NO DATA":"LIVE";
+    lv_label_set_text_fmt(s_scope_acq,"%s | RAW %.1f/s | UI %.1f fps",state,
+        (st->frames_ok-raw0)*1000.0/dt,(flips-flips0)*1000.0/dt);
+    lv_obj_set_style_text_color(s_scope_acq,(!S.running || (S.use_real&&!s_real_valid))?V32_C_WARN:V32_C_LIVE,0);
+    t0=now;raw0=st->frames_ok;flips0=flips;
+}
+
 static void tick_scope(void)
 {
     static float ch1[PLOT_MAX_PTS], ch2[PLOT_MAX_PTS];
     const int n = PLOT_MAX_PTS;
 
+    scope_metric_layout();
     real_update();
 
     /*
@@ -5329,6 +5396,7 @@ void ui_tick(void)
         case UI_PAGE_IMAGE: tick_mod();image_refresh();break;
         default: break;
     }
+    scope_acquisition_status();
     tick_clock();
 }
 
