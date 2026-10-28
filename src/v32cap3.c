@@ -476,6 +476,83 @@ int v32_get_ddc(v32_ddc_view_t *out)
     return out->valid;
 }
 
+/* ---------------- 谐波帧 V32HRM1!（谐波候选 16556a03，交付包 20261028） ----------------
+ *
+ * 解包本身交给交付包原样的 src/harmonic_receiver.c（不读串口、不建线程、
+ * 不分配堆内存），这里只负责：找到 216 字节包 → 校验长度/版本 → 交给
+ * v32_harmonic_decode → 存快照。
+ *
+ * 新鲜度按**协议**算：同一个 result_id 的重复包不刷新时间戳。原因是
+ * 0x20 里的 age_ticks 是"结果离现在多少 ADC 时钟"，若每次重发都归零，
+ * 一个已经过期的结果能靠重复包永远看起来是新的。所以记录每个 result_id
+ * 第一次到达的时刻，age_ms 从那一刻起单调增长。
+ */
+static const char               s_magic_hrm[] = V32_HRM_MAGIC;
+static v32_harmonic_measurement s_hrm;
+static uint32_t                 s_hrm_first_ms;    /* 当前 result_id 首次到达 */
+static uint32_t                 s_hrm_last_rid;
+static uint32_t                 s_hrm_seq;
+static uint32_t                 s_hrm_rx;
+static int                      s_hrm_used;
+
+static void handle_hrm(const uint8_t *p)
+{
+    v32_harmonic_measurement m;
+    if(!v32_harmonic_decode(p, V32_HRM_BYTES, &m)) {
+        /* 已单独校验过 CRC，走到这里说明头/元数据不自洽 */
+        s_st.header_errors++;
+        return;
+    }
+    const uint32_t now = mono_ms();
+    pthread_mutex_lock(&s_lock);
+    if(!s_hrm_used || m.result_id != s_hrm_last_rid) {
+        s_hrm_first_ms = now;          /* 新结果才重置新鲜度起点 */
+        s_hrm_last_rid = m.result_id;
+        s_hrm_used     = 1;
+    }
+    s_hrm_seq++;                       /* 包计数：重复包也计，便于判断"有没有在发" */
+    s_hrm_rx++;
+    s_hrm = m;
+    pthread_mutex_unlock(&s_lock);
+
+    {
+        static int dbg = -1;
+        if(dbg < 0) dbg = getenv("WAVE_MEASDBG") ? 1 : 0;
+        static uint32_t last_dbg_rid = 0xFFFFFFFFu;
+        if(dbg && m.result_id != last_dbg_rid) {
+            last_dbg_rid = m.result_id;
+            double thd = (double)m.thd_q24 * 100.0 / 16777216.0;
+            fprintf(stderr, "[hrm] t_ms=%u rid=%u cfg=%u v=%u ch=%u nfft=%u dec=%u fcw=%u "
+                    "validm=0x%x noisem=0x%x flags=0x%x thd=%.4f%% thd_valid=%d below_noise=%d\n",
+                    (unsigned)now, (unsigned)m.result_id, (unsigned)m.cfg_id,
+                    (unsigned)m.version, (unsigned)m.channel, (unsigned)m.nfft,
+                    (unsigned)m.decimation, (unsigned)m.reference_fcw,
+                    (unsigned)m.valid_mask, (unsigned)m.noise_mask,
+                    (unsigned)m.flags, thd, m.thd_valid, m.thd_below_noise);
+        }
+    }
+}
+
+int v32_get_harm(v32_harmonic_measurement *out, uint32_t *age_ms)
+{
+    pthread_mutex_lock(&s_lock);
+    const int used = s_hrm_used;
+    if(out) *out = s_hrm;
+    const uint32_t first = s_hrm_first_ms;
+    pthread_mutex_unlock(&s_lock);
+    if(!used) return 0;
+    if(age_ms) *age_ms = mono_ms() - first;
+    return 1;
+}
+
+uint32_t v32_harm_rx_count(void)
+{
+    pthread_mutex_lock(&s_lock);
+    const uint32_t n = s_hrm_rx;
+    pthread_mutex_unlock(&s_lock);
+    return n;
+}
+
 
 int v32_get_meas(v32_meas_view_t *out)
 {
@@ -604,6 +681,7 @@ static void v32_feed(const uint8_t *data, int n)
             if (memcmp(s_buf + i, s_magic_iq, V32_MAGIC_LEN) == 0)   { at = i; is_meas = 3; break; }
             if (memcmp(s_buf + i, s_magic_ddc, V32_MAGIC_LEN) == 0)  { at = i; is_meas = 4; break; }
             if (memcmp(s_buf + i, s_magic_ana, V32_MAGIC_LEN) == 0)  { at = i; is_meas = 5; break; }
+            if (memcmp(s_buf + i, s_magic_hrm, V32_MAGIC_LEN) == 0)  { at = i; is_meas = 6; break; }
         }
         if (at < 0) {
             /* 保留可能是「被拆开的魔数前缀」的尾巴，其余丢弃 */
@@ -651,6 +729,20 @@ static void v32_feed(const uint8_t *data, int n)
             handle_ana(s_buf);
             memmove(s_buf, s_buf + V32_ANA_BYTES, (size_t)(s_len - (int)V32_ANA_BYTES));
             s_len -= (int)V32_ANA_BYTES;
+            continue;
+        }
+        if (is_meas == 6) {                                  /* V32HRM1! 谐波帧 */
+            if (s_len < (int)V32_HRM_BYTES) break;
+            if(rd32(s_buf+12) != (uint32_t)V32_HRM_BYTES ||
+               crc32_calc(s_buf, (int)V32_HRM_BYTES - 4) != rd32(s_buf + V32_HRM_BYTES - 4)) {
+                /* 长度不符或 CRC 坏：只右移 1 字节重新找魔数，别整段 216 丢掉 */
+                s_st.crc_errors++; s_st.discarded_bytes++;
+                memmove(s_buf, s_buf + 1, (size_t)(s_len - 1)); s_len--;
+                continue;
+            }
+            handle_hrm(s_buf);
+            memmove(s_buf, s_buf + V32_HRM_BYTES, (size_t)(s_len - (int)V32_HRM_BYTES));
+            s_len -= (int)V32_HRM_BYTES;
             continue;
         }
         if (is_meas == 4) {                                  /* V32DDC3! 新锁相帧 */
@@ -1083,6 +1175,15 @@ int v32_init_file(const char *path)
     return 0;
 }
 
+/* 测试专用：把一段字节直接喂给解析器，等价于读线程收到这一块数据。
+ * 只为让主机端能在没有板子/没有串口时验证碎片拼接与重同步；
+ * 不打开设备、不起线程、不影响正常路径。 */
+void v32_test_feed_bytes(const uint8_t *data, int n)
+{
+    if (!s_crc_ready) crc_init();
+    v32_feed(data, n);
+}
+
 void v32_shutdown(void)
 {
     if (s_th_running) {
@@ -1171,6 +1272,36 @@ int v32_cmd_auto_dec(void)
 {
     const uint8_t c[2] = { 0xA5, 0xFF };
     return send_raw(c, 2);
+}
+
+/*
+ * 谐波配置 A5 F0..F3。
+ *
+ * 与 DDC 的 E0..E5 是两套独立寄存器：这里不动制式/通道/速率/cfg。
+ * 顺序按对方协议表固定：F3 00（关）→ F0 ch → F1 高16位（只暂存）→
+ * F2 低16位（提交合并）→ F3 01（开）。F1 单独发不会生效，这是最容易
+ * 只发一半就"没反应"的地方，和 E1/E2 那个坑同型。
+ *
+ * 一次 write 发完整组：协议要求同一串口所有者顺序发送，寄存器里有
+ * 半更新窗口，中间插进别的命令会写坏 FCW。
+ */
+int v32_cmd_harm_config(uint32_t channel, uint32_t fcw)
+{
+    if(channel > 1u || fcw >= 0x80000000u) return -1;
+    const uint8_t d[] = {
+        0xa5, 0xf3, 0x00,                                  /* 先关 */
+        0xa5, 0xf0, (uint8_t)channel,
+        0xa5, 0xf1, (uint8_t)((fcw >> 16) & 0xFF), (uint8_t)((fcw >> 24) & 0xFF),
+        0xa5, 0xf2, (uint8_t)(fcw & 0xFF),         (uint8_t)((fcw >> 8) & 0xFF),
+        0xa5, 0xf3, 0x01
+    };
+    return send_raw(d, (int)sizeof d);
+}
+
+int v32_cmd_harm_off(void)
+{
+    const uint8_t d[3] = { 0xa5, 0xf3, 0x00 };
+    return send_raw(d, 3);
 }
 
 uint32_t v32_fcw_from_hz(double hz)

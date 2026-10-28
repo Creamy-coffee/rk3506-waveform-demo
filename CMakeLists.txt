@@ -44,6 +44,7 @@ add_executable(waveform_demo
     src/wave_source.c
     src/wave_source_v32.c
     src/v32cap3.c
+    src/harmonic_receiver.c
     src/fft.c
     src/bl_interp.c
     src/fonts/lv_font_v32_12.c
@@ -84,6 +85,19 @@ add_executable(fsk_capture_decode tools/decode_ook_capture.c)
 target_compile_definitions(fsk_capture_decode PRIVATE FSK_CAPTURE=1)
 target_include_directories(fsk_capture_decode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(fsk_capture_decode PRIVATE m)
+
+# 谐波帧 V32HRM1! 的主机回归（碎片/坏CRC/重同步/v1v2/低于噪声撤回）。
+# 不含 LVGL、不开串口：直接喂字节给 v32cap3 的解析器，所以板子不在也能跑。
+add_executable(test_harmonic_decode
+    tools/test_harmonic_decode.c
+    src/v32cap3.c
+    src/harmonic_receiver.c
+    src/wave_source_v32.c)
+target_include_directories(test_harmonic_decode PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(test_harmonic_decode PRIVATE m pthread)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(test_harmonic_decode PRIVATE -UNDEBUG)
+endif()
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(waveform_demo PRIVATE -O2 -Wall -Wextra)

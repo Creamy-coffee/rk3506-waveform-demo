@@ -42,6 +42,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "harmonic_receiver.h"   /* 谐波帧 V32HRM1! 的解包结构体 */
+
 #define V32_MAGIC_LEN        8
 #define V32_HEADER_BYTES     40
 /*
@@ -323,6 +325,48 @@ int v32_get_ana(v32_ana_view_t *out);
 
 /* RAW 时基焦点：A5 E5 f，f=0/1/2 = CH0/CH1/自动（不改分析通道，不递增 cfg_id） */
 int v32_cmd_focus(int f);
+
+/* ============ 谐波帧 V32HRM1!（谐波候选 16556a03，交付包 20261028，216 B）============
+ *
+ * 与 V32CAP3/MEAS/SPEC/ANA 是**并列的另一种帧**，走同一个串口、同一个读线程，
+ * 由 v32_feed 的魔数扫描分发到这里；本模块不新开读者、不建线程。
+ *
+ * 布局（全部小端，CRC32 覆盖 [0,212)，与 zlib.crc32 同语义）：
+ *   0   char[8] "V32HRM1!"    8  version(1|2)   12 length=216
+ *   16  result_id   20 cfg_id   24 adc_fs   28 nfft   32 reference_fcw
+ *   36  decimation  40 age_ticks  44 flags   48 channel  52 window
+ *   56  valid_mask  60 noise_mask  64 v2固定0/v1的THD Q24  68 dropped_frames
+ *   72  band_power[5] u64   112 noise_power[5] u64   152 signal_x6[5] u64
+ *   192 peak_bin[5] u32     212 crc32
+ *
+ * 三个必须记住的点（都是对方文档明确划的红线）：
+ *   1. **v2 线上 thd_q24 字段恒为 0**，必须用 harmonic_receiver.c 里的整数
+ *      开方自己算；直接显示这个 0 就是"0% 失真"的假读数。
+ *   2. **HARM 的 cfg_id / result_id 与 ANA 独立**，不能拿 ANA 的 cfg 变化
+ *      去结束谐波的"切换中"状态。
+ *   3. 有限二至五阶 THD，不是 THD+N / SINAD / ADC 性能认证。
+ */
+#define V32_HRM_MAGIC     "V32HRM1!"
+#define V32_HRM_BYTES     216
+
+/* 取最近一包谐波结果。
+ * out 为 NULL 时只查有没有收到过。返回 1 = 有可读结果（是否可显示还要看
+ * out->thd_valid / thd_below_noise / 年龄）。*age_ms 是"距第一次收到这个
+ * result_id 过去了多久"——重复包不会把它刷新回 0，这是协议要求的。*/
+int v32_get_harm(v32_harmonic_measurement *out, uint32_t *age_ms);
+
+/* 谐波配置（A5 F0..F3）。fcw = round(f_ref*2^32/65e6)。
+ * 顺序固定：先 F3 00 关，再 F0 ch、F1 高16位、F2 低16位提交，最后 F3 01 开。
+ * 与 ANA 的 E0..E5 配置彼此独立，不改 DDC 制式/通道/速率/cfg。*/
+int v32_cmd_harm_config(uint32_t channel, uint32_t fcw);
+/* 只关不开：A5 F3 00 */
+int v32_cmd_harm_off(void);
+/* 累计发出/收到的谐波包数（诊断用，界面上可显示"未启用/无数据"） */
+uint32_t v32_harm_rx_count(void);
+
+/* 测试专用：把字节直接喂给解析器（等价于读线程收到一块数据）。
+ * 主机端在没有板子/串口时用它验证碎片拼接、错 CRC 重同步。 */
+void v32_test_feed_bytes(const uint8_t *data, int n);
 
 /* ============ 下行控制帧 V32AA5C!（协作包 20261024，只发不答）============
  * 24 B 头（magic/ver/cmd/seq/plen）+ payload + CRC32。设备不回 ACK；
