@@ -1,5 +1,10 @@
 # Display clarity, RAW-only scope and harmonic receiver — 2026-10-28
 
+Later follow-up: the user installed bit 16556a03, JTAG identity was confirmed,
+and received HRM data passed a short functional check. Math, drag and host-frame
+single capture were subsequently repaired. See [scope-controls-20261028.md](scope-controls-20261028.md)
+for the newer deployment and the distinction from hardware single-shot capture.
+
 The scope always displays the two physical ADC RAW channels. The former scope
 demodulation button and automatic takeover by legacy IQ frames are removed.
 Modulation configuration belongs to the modulation page. Its selectable list is

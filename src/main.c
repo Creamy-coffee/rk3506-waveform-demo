@@ -53,6 +53,7 @@
 
 static volatile sig_atomic_t s_quit = 0;
 static volatile sig_atomic_t s_snap_req = 0;
+static volatile sig_atomic_t s_dump_req = 0;
 static const char *s_snap_path = NULL;      /* SIGUSR1 截图目标 */
 
 static void on_signal(int sig)
@@ -66,6 +67,7 @@ static void on_sigusr1(int sig)
     (void)sig;
     s_snap_req = 1;
 }
+static void on_sigusr2(int sig){(void)sig;s_dump_req=1;}
 
 static void do_snapshot(const char *path)
 {
@@ -656,6 +658,7 @@ int main(int argc, char **argv)
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGUSR1, on_sigusr1);        /* kill -USR1 <pid> 即截图 */
+    signal(SIGUSR2, on_sigusr2);        /* Queue a layout dump on the UI thread. */
 
     uint32_t last_data = tick_cb();
     uint32_t last_sw   = last_data;
@@ -677,6 +680,7 @@ int main(int argc, char **argv)
         }
 
         /* 运行中收到 SIGUSR1 -> 立刻截图 */
+        if(s_dump_req){s_dump_req=0;lv_obj_update_layout(lv_screen_active());ui_dump_layout();fflush(stdout);}
         if (s_snap_req) {
             s_snap_req = 0;
             do_snapshot(s_snap_path ? s_snap_path : "/tmp/wave_frame.ppm");

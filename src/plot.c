@@ -918,6 +918,7 @@ static void plot_draw_cb(lv_event_t *e)
     else {
         draw_one_trace(layer, p, 0, x0, y0, w, h);
         draw_one_trace(layer, p, 1, x0, y0, w, h);
+        draw_one_trace(layer, p, 2, x0, y0, w, h);
         /* AM 上下包络(金色虚线), 叠在载波迹线上 */
         if(p->env_vis && p->env_n >= 2 && p->mode == PLOT_SCOPE) {
             lv_draw_line_dsc_t ed;

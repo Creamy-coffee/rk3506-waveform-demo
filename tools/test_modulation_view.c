@@ -19,6 +19,9 @@ static char fixture[128];
 static unsigned raw_id;
 static uint32_t fixture_fcw=66076420;
 static unsigned flush_count;
+static int fake_touch;static int32_t fake_touch_x,fake_touch_y;
+void __real_port_touch_last_point(int32_t*,int32_t*);
+void __wrap_port_touch_last_point(int32_t *x,int32_t *y){if(fake_touch){*x=fake_touch_x;*y=fake_touch_y;}else __real_port_touch_last_point(x,y);}
 static void flush_cb(lv_display_t *d,const lv_area_t *a,uint8_t *p){(void)a;(void)p;flush_count++;lv_display_flush_ready(d);}
 static void put(uint8_t *p,uint32_t v){for(int i=0;i<4;i++)p[i]=(uint8_t)(v>>(8*i));}
 static uint32_t take32(const uint8_t *p){return (uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
@@ -337,5 +340,57 @@ int main(int argc,char **argv)
     const int expected_modes[]={1,2,7,5,3,6,4,0};
     for(unsigned i=0;i<8;i++){cb_an_type(NULL);assert(s_an_type==expected_modes[i]);}
     analysis_apply(4,0,1);assert(s_an_type==4);
-    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale scope_layout_cached_redraw_style_change harmonics scope_RAW_only supported_modes");return 0;
+    /* Actual math samples, paused edits and rendered third trace, not just chip text. */
+    ui_set_page(UI_PAGE_SCOPE);s_trig_mode=0;S.running=false;s_cur_on=0;s_zoom_span=128;s_zoom_start=0;
+    S.ch1=S.ch2=false;
+    for(int mode=1;mode<=4;mode++){
+        s_math_mode=mode;draw(d);
+        for(int i=0;i<s_full_n;i++){
+            float wanted=scope_math_sample(s_full0[i],s_full1[i],mode);
+            assert((isnan(wanted)&&isnan(s_math[i])) || fabsf(s_math[i]-wanted)<1e-5f);
+        }
+        assert(!lv_obj_has_flag(s_math_note,LV_OBJ_FLAG_HIDDEN));
+    }
+    static float saved_divisor[WAVE_MAX_FRAME];memcpy(saved_divisor,s_full1,s_full_n*sizeof(float));
+    memset(s_full1,0,s_full_n*sizeof(float));s_math_mode=4;draw(d);
+    assert(strstr(lv_label_get_text(s_math_note),"DIV ZERO"));memcpy(s_full1,saved_divisor,s_full_n*sizeof(float));
+    s_math_mode=3;draw(d);assert(plot_get_data_area(s_plot_scope,&grid));
+    int green=0;for(int y=grid.y1+30;y<grid.y2-10;y++)for(int x=grid.x1+5;x<grid.x2-5;x++)if((pixels[y*1024+x]&0xffffff)==0x80e4b3)green++;
+    assert(green>30);save(argv[1],"math_product_only");S.ch1=S.ch2=true;s_math_mode=0;
+    s_math_mode=1;s_zoom_span=s_full_n*2;draw(d);assert(strstr(lv_label_get_text(s_math_note),"FRAME ONLY"));s_zoom_span=128;s_math_mode=0;
+    assert(isnan(scope_math_sample(5,0,4)) && scope_math_sample(5,2,4)==2.5f);
+    /* A complete pre/post trigger must align to 20%, not clamp first crossing. */
+    float pulse[512];for(int i=0;i<512;i++)pulse[i]=(i%100)<50?-50:50;
+    int start=scope_trigger_start(pulse,512,200,0,0);assert(start==10 && pulse[start+40-1]<0 && pulse[start+40]>=0);
+    assert(scope_trigger_start(pulse,512,200,100,0)<0);
+    S.running=true;s_trig_mode=2;s_trig_counts=10000;
+    uint32_t held=s_real_fid;fixture_write(221,23,1,0,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);
+    assert(s_trig_wait && s_real_fid==held);
+    s_trig_counts=0;cb_single(NULL);
+    fixture_write(222,23,1,0,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);
+    assert(s_single_done && !s_single_armed && !S.running && s_trig_hit);held=s_real_fid;save(argv[1],"single_hold");
+    fixture_write(223,23,1,0,0,0,1,1);assert(v32_init_file(fixture)==0);draw(d);assert(s_real_fid==held);
+    cb_run(NULL);assert(S.running && !s_single_done && !s_trig_mode);
+    s_single_done=1;S.running=false;cb_auto(NULL);assert(S.running && !s_single_done && !s_single_armed);s_trig_mode=0;
+    /* Drag the chosen physical channel without changing ADC values. */
+    S.running=false;fake_touch=1;s_move_channel=0;s_vertical_offset[0]=s_vertical_offset[1]=0;
+    fake_touch_x=(grid.x1+grid.x2)/2;fake_touch_y=(grid.y1+grid.y2)/2;
+    lv_obj_send_event(s_plot_scope,LV_EVENT_PRESSED,NULL);fake_touch_y-=40;lv_obj_send_event(s_plot_scope,LV_EVENT_PRESSING,NULL);lv_obj_send_event(s_plot_scope,LV_EVENT_RELEASED,NULL);
+    assert(s_vertical_offset[0]>.05f && s_vertical_offset[1]==0);save(argv[1],"scope_vertical_pan");
+    cb_position_zero(NULL);assert(s_vertical_offset[0]==0 && s_vertical_offset[1]==0);
+    /* Cursor remains attached even when dragged past the other cursor. */
+    s_cur_on=1;fake_touch_x=grid.x1+(int)(.3f*(grid.x2-grid.x1));fake_touch_y=grid.y1+30;
+    lv_obj_send_event(s_plot_scope,LV_EVENT_PRESSED,NULL);fake_touch_x=grid.x1+(int)(.85f*(grid.x2-grid.x1));
+    lv_obj_send_event(s_plot_scope,LV_EVENT_PRESSING,NULL);lv_obj_send_event(s_plot_scope,LV_EVENT_RELEASED,NULL);assert(s_cur_x[0]>.8f && s_cur_x[1]<.8f);s_cur_on=0;
+    lv_indev_t *touch=lv_indev_create();assert(touch);ui_set_page(UI_PAGE_FFT);lv_obj_update_layout(lv_screen_active());assert(plot_get_data_area(s_plot_fft,&grid));
+    fake_touch_x=grid.x1+(grid.x2-grid.x1)/4;fake_touch_y=(grid.y1+grid.y2)/2;lv_obj_send_event(s_plot_fft,LV_EVENT_PRESSED,NULL);float cursor_start=s_fft_cur_x;
+    fake_touch_x=grid.x1+3*(grid.x2-grid.x1)/4;lv_obj_send_event(s_plot_fft,LV_EVENT_PRESSING,NULL);assert(s_fft_cur_x>cursor_start+.4f);save(argv[1],"spectrum_drag");fake_touch=0;
+    /* Exercise the historical overrun: full 4096-point RAW while math is ON. */
+    uint8_t full_raw[44+4096*4]={0};memcpy(full_raw,"V32CAP3!",8);put(full_raw+8,3);put(full_raw+12,++raw_id);
+    put(full_raw+16,65000000);put(full_raw+20,1);put(full_raw+24,4096);put(full_raw+32,raw_id*1000000u);
+    for(int i=0;i<4096;i++){int16_t a=(int16_t)(200*sin(i*.1)),b=(int16_t)(100*cos(i*.1));memcpy(full_raw+40+4*i,&a,2);memcpy(full_raw+42+4*i,&b,2);}
+    put(full_raw+sizeof full_raw-4,crc(full_raw,sizeof full_raw-4));FILE *full_file=fopen(fixture,"wb");assert(full_file);assert(fwrite(full_raw,1,sizeof full_raw,full_file)==sizeof full_raw);fclose(full_file);
+    assert(v32_init_file(fixture)==0);S.running=true;s_trig_mode=0;s_math_mode=3;ui_set_page(UI_PAGE_SCOPE);draw(d);assert(s_full_n==4096);
+    assert(s_math[4095]==s_full0[4095]*s_full1[4095]);
+    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale scope_layout_cached_redraw_style_change harmonics scope_RAW_only supported_modes math4096 drag trigger_single");return 0;
 }

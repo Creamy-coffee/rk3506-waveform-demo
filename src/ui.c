@@ -32,6 +32,7 @@
 #include "drm_disp.h"
 #include "port.h"
 #include "scope_acquisition.h"
+#include "scope_processing.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -1145,10 +1146,16 @@ static float s_cur_x[2] = { 0.30f, 0.70f };
 static float s_cur_y[2] = { 0.35f, 0.65f };
 
 static int   s_trig_mode, s_trig_edge;
-static float s_trig_lev = 0.5f;
+static float s_trig_counts=NAN,s_vertical_offset[2];
+static int s_single_armed,s_single_done,s_trig_wait,s_trig_hit,s_move_channel;
+static uint32_t s_single_baseline;
+static lv_obj_t *s_chip_single,*s_chip_move,*s_math_note;
+static void cb_single(lv_event_t *e);
+static void cb_move_channel(lv_event_t *e);
+static void cb_position_zero(lv_event_t *e);
 
-static int   s_math_mode = 2;    /* 0=关 1=A+B 2=A-B 3=A×B 4=A÷B 5=XY（默认 A-B） */
-static float s_math[PLOT_MAX_PTS];
+static int   s_math_mode = 0;    /* 0=OFF, 1=A+B, 2=A-B, 3=A*B, 4=A/B, 5=XY */
+static float s_math[WAVE_MAX_FRAME];
 static float s_math_y[PLOT_MAX_PTS];
 /*
  * 「零帧」检测：波形帧两路 min/max 各差 <=1 码连续 30 帧，就认为 FPGA
@@ -1333,6 +1340,22 @@ static void real_update(void)
     const int fn = src->read_frame2(f0, f1, src->frame_len);
     if(fn < 64) return;
 
+    s_trig_wait=0;
+    int triggered_start=-1;
+    if(S.page==UI_PAGE_SCOPE && (s_trig_mode || s_single_armed)){
+        int span=s_zoom_span>0 && s_zoom_span<fn?s_zoom_span:fn-fn/4;
+        if(span>fn-fn/4)span=fn-fn/4;
+        if(!isfinite(s_trig_counts)){
+            float lo=f0[0],hi=f0[0];for(int i=1;i<fn;i++){if(f0[i]<lo)lo=f0[i];if(f0[i]>hi)hi=f0[i];}
+            s_trig_counts=(lo+hi)*.5f;
+        }
+        triggered_start=scope_trigger_start(f0,fn,span,s_trig_counts,s_trig_edge);
+        s_trig_hit=triggered_start>=0;
+        if((s_trig_mode==2 || s_single_armed) && (!s_trig_hit || (s_single_armed && st->last_frame_id==s_single_baseline))){
+            s_trig_wait=1;s_real_valid=s_full_n>=2;return;
+        }
+        s_zoom_span=span;
+    }
     /* A rate change invalidates every old roll sample's time coordinate.
        Re-evaluate automatic timebase only after a fresh frame at the new rate. */
     {
@@ -1378,45 +1401,7 @@ static void real_update(void)
         if(d1[i] > b_hi) b_hi = d1[i];
     }
 
-    /* ===== 触发：把触发点钉在屏幕左侧 20% 处 =====
-     * 用 armed 方式找穿越点：先出现"明确在电平另一侧"的样点才算武装，
-     * 之后第一次穿过电平就是触发点。
-     * （**不要**写成"相邻两点必须跨过 lv±hys"——采样率低时一个周期内
-     *  样点跳不过 2×hys，那会变成一次也触发不到，之前踩过这个坑。）
-     */
-    /*
-     * 触发只挪**示波器页**的窗口。
-     * 重建页有它自己的 auto-fit 取窗（框到 10 个周期），频谱页也各有各的窗口；
-     * 两处同时写 s_zoom_start 会互相把对方的窗口拉回去 —— 表现就是
-     * "一开触发，重建页的重建就没了"（其实每帧都在重算，窗口在跳）。
-     */
-    if(s_trig_mode && S.page == UI_PAGE_SCOPE && fn > 8) {
-        float lo = s_full0[0], hi = s_full0[0];
-        for (int i = 1; i < fn; i++) {
-            if (s_full0[i] < lo) lo = s_full0[i];
-            if (s_full0[i] > hi) hi = s_full0[i];
-        }
-        if (hi - lo > 1.0f) {
-            const float lv = lo + (hi - lo) * s_trig_lev;
-            int armed = 0, ti = -1;
-            for (int i = 1; i < fn; i++) {
-                if (s_trig_edge == 0) {
-                    if (s_full0[i-1] <= lv) armed = 1;
-                    if (armed && s_full0[i] >= lv) { ti = i; break; }
-                } else {
-                    if (s_full0[i-1] >= lv) armed = 1;
-                    if (armed && s_full0[i] <= lv) { ti = i; break; }
-                }
-            }
-            const int span = (s_zoom_span > 0 && s_zoom_span <= fn) ? s_zoom_span : fn;
-            if (ti >= 0) {
-                int st = ti - (int)((float)span * 0.2f);
-                if (st < 0) st = 0;
-                if (st > fn - span) st = fn - span;
-                s_zoom_start = st;
-            }
-        }
-    }
+    if(triggered_start>=0)s_zoom_start=triggered_start;
 
     /* 有了样点就算全套测量（跟绘图共用同一帧，读数不会跟波形对不上） */
     {
@@ -1433,17 +1418,6 @@ static void real_update(void)
      * A÷B 除零保护：分母绝对值 < 2 码（约 5 mV）按 0 处理，
      * 否则噪声过零时会画出一条撑满全屏的竖线，把整屏糊掉。
      */
-    if(s_math_mode >= 1 && s_math_mode <= 4) {
-        for(int i = 0; i < fn; i++) {
-            const float a = s_full0[i], b = s_full1[i];
-            switch(s_math_mode) {
-                case 1:  s_math[i] = a + b; break;
-                case 2:  s_math[i] = a - b; break;
-                case 3:  s_math[i] = a * b; break;
-                default: s_math[i] = (fabsf(b) < 2.0f) ? 0.0f : a / b; break;
-            }
-        }
-    }
 
     s_real_vpp0_mv = (a_hi - a_lo) * V32_ADC_MV_PER_LSB;
     s_real_vpp1_mv = (b_hi - b_lo) * V32_ADC_MV_PER_LSB;
@@ -1509,6 +1483,10 @@ static void real_update(void)
     s_real_t_last = lv_tick_get();
     s_real_valid = true;
 
+    if(s_single_armed && S.page==UI_PAGE_SCOPE && s_trig_hit){
+        s_single_armed=0;s_single_done=1;S.running=false;
+        chip_set_text(s_chip_run,"▶ 运行");chip_set_text(s_chip_single,"已触发");
+    }
     if(S.auto_fit && S.page == UI_PAGE_AI) auto_fit_apply(fn);
     auto_decimation();
 }
@@ -1587,8 +1565,6 @@ static void map_window(const float *src, int src_n, float *y01, int n, bool bl)
         float y = (y01[i] - s_real_lo) * s_real_sc;
         /* 纵向增益绕中线展开：gain>1 放大（波形超出屏幕就削顶，和示波器一样） */
         y = 0.5f + (y - 0.5f) * s_gain;
-        if(y < 0.f) y = 0.f;
-        if(y > 1.f) y = 1.f;
         y01[i] = y;
     }
 }
@@ -1699,7 +1675,7 @@ static void update_axis_label(void)
             xp[i] = xb[i];
         }
         for(int j = 0; j < 5; j++) {
-            const float center_mv=(s_real_lo+.5f/s_real_sc)*V32_ADC_MV_PER_LSB;
+            const float center_mv=(s_real_lo+.5f/s_real_sc-s_vertical_offset[0]/(s_real_sc*s_gain))*V32_ADC_MV_PER_LSB;
             const float v = center_mv+(float)(V32_GRID_Y / 2 - j * 2) * mvdiv;
             if(fabsf(v) < 0.5f)         snprintf(yb[j], 12, "0");
             else if(fabsf(v) < 1000.f)  snprintf(yb[j], 12, "%.0fmV", (double)v);
@@ -1753,7 +1729,7 @@ static void update_axis_label(void)
         V32_SEG(tr, V32_C_TRIGGER);
         if(s_trig_mode != 0 && s_real_sc > 0.f && s_m1.vmax > s_m1.vmin) {
             const float k3 = V32_ADC_MV_PER_LSB / 1000.0f;
-            const float lvv = (s_m1.vmin + (s_m1.vmax - s_m1.vmin) * s_trig_lev) * k3;
+            const float lvv = s_trig_counts * k3;
             fmt_mv(lv, sizeof lv, lvv * 1000.f);
             V32_SEG(" ", V32_C_TRIGGER);
             V32_SEG(lv, V32_C_TRIGGER);
@@ -2014,7 +1990,12 @@ static void build_scope(lv_obj_t *pg)
 
     s_plot_scope = plot_create(pg, PLOT_SCOPE);
     /* 光标拖动：按下和移动都抓最近那条线 */
+    lv_obj_add_event_cb(s_plot_scope, cb_scope_touch, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_plot_scope, cb_scope_touch, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(s_plot_scope, cb_scope_touch, LV_EVENT_RELEASED, NULL);
+    s_math_note=mk_label(s_plot_scope,0,0,"",V32_FONT_SMALL,V32_C_MATH);
+    lv_obj_align(s_math_note,LV_ALIGN_TOP_RIGHT,-8,28);
+    lv_obj_set_style_bg_color(s_math_note,V32_C_PLOT,0);lv_obj_set_style_bg_opa(s_math_note,LV_OPA_COVER,0);
     lv_obj_set_flex_grow(s_plot_scope, 1);
     lv_obj_set_height(s_plot_scope, MAIN_H-48);
 
@@ -2081,7 +2062,7 @@ static void build_scope(lv_obj_t *pg)
      *    （反解 ref_scope.png：CHANNELS 面板 y=355..442 共 88px）
      */
     lv_obj_t *p2 = mk_panel(aside, 0, 0, 0,
-                            TITLE_H + (V32_CHIP_H + 7) + V32_PANEL_PAD * 2
+                            TITLE_H + (V32_CHIP_H + 7) * 2 + V32_PANEL_PAD * 2
                             + V32_PANEL_BW * 2);
     lv_obj_set_width(p2, LV_PCT(100));
     mk_title(p2, 0, 0, "通道");
@@ -2093,6 +2074,11 @@ static void build_scope(lv_obj_t *pg)
     s_chip_ch1 = mk_chip(row, "CH1 开", cb_ch1);
     s_chip_ch2 = mk_chip(row, "CH2 开", cb_ch2);
     mk_chip(row,"操作",cb_scope_help);
+    lv_obj_t *actions=mk(p2,0,TITLE_H+V32_CHIP_H+7,210,V32_CHIP_H);
+    lv_obj_set_flex_flow(actions,LV_FLEX_FLOW_ROW);lv_obj_set_style_pad_column(actions,7,0);
+    s_chip_single=mk_chip(actions,"单次",cb_single);
+    s_chip_move=mk_chip(actions,"移 CH1",cb_move_channel);
+    mk_chip(actions,"归零",cb_position_zero);
     chip_selected(s_chip_ch1, S.ch1);
     chip_selected(s_chip_ch2, S.ch2);
 }
@@ -2259,9 +2245,10 @@ static void build_fft(lv_obj_t *pg)
     /* ⚠️ lv_obj_add_event_cb 的 filter 是**单个事件码精确匹配**，
      *    写成 (A|B|C) 是一个谁都不等于的值，回调永远不触发（踩过）。
      *    要听多个事件就注册多次。 */
-    lv_obj_add_event_cb(s_plot_fft, cb_fft_cursor, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_plot_fft, cb_fft_cursor, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_plot_fft, cb_fft_cursor, LV_EVENT_PRESSING, NULL);
     /* 图上的标题/读数标签会挡住图本身，事件不冒泡，所以页容器也挂一份 */
-    lv_obj_add_event_cb(pg, cb_fft_cursor, LV_EVENT_CLICKED, NULL);
+
 
     /*
      * 左下角原来还有一行 LVGL 标签 "0 — 32.5 MHz · dBFS"。
@@ -2828,12 +2815,15 @@ static void cb_scope_help(lv_event_t *e)
         "自动：回到自动量程和窗口；复位：恢复默认显示。\n"
         "暂停：冻结当前波形；再次运行继续显示，串口采集不停止。\n"
         "触发 / 边沿 / 电平：软件帧内对齐；不是硬件单次触发。\n"
+        "单次：等待下一接收帧内边沿后冻结；帧间瞬态可能漏采。\n"
         "光标：开启后拖动 T1 / T2 / V1 / V2，读取 ΔT、ΔV 和 1/ΔT。\n"
         "两指操作：左右缩放时间窗口，上下调整显示增益。\n"
+        "关闭光标后拖动波形：移动选中通道；归零恢复位置。\n"
+        "绿色 M 是运算结果，使用独立量程；除零处断开。\n"
         "全屏：展开波形区；长时基跨帧显示存在采集死区。\n"
         "RAW 是实际到帧率，UI 是显示刷新率；两者不同。",
         V32_FONT_BIG,V32_C_TEXT);
-    lv_obj_set_width(body,880);lv_obj_set_style_text_line_space(body,12,0);
+    lv_obj_set_width(body,880);lv_obj_set_style_text_line_space(body,8,0);
     lv_label_set_long_mode(body,LV_LABEL_LONG_WRAP);
 }
 static void cb_nav(lv_event_t *e)
@@ -2913,33 +2903,40 @@ static void cb_fch_ch2 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(2); }
  */
 static void cb_scope_touch(lv_event_t *e)
 {
-    if(!s_cur_on || s_plot_scope == NULL) return;
-    lv_indev_t *ind = lv_event_get_indev(e);
-    if(ind == NULL) return;
-
-    lv_point_t pt;
-    lv_indev_get_point(ind, &pt);
-
-    lv_area_t a;
-    if(!plot_get_data_area(s_plot_scope,&a))return;
-    const int w = a.x2 - a.x1, h = a.y2 - a.y1;
-    if(w < 10 || h < 10) return;
-
-    float rx = (float)(pt.x - a.x1) / (float)w;
-    float ry = (float)(pt.y - a.y1) / (float)h;
-    if(rx < 0.f) rx = 0.f;
-    if(rx > 1.f) rx = 1.f;
-    if(ry < 0.f) ry = 0.f;
-    if(ry > 1.f) ry = 1.f;
-
-    int best = -1; float bd = 0.08f;
-    for(int i = 0; i < 2; i++) { float d = fabsf(rx - s_cur_x[i]); if(d < bd) { bd = d; best = i; } }
-    for(int i = 0; i < 2; i++) { float d = fabsf(ry - s_cur_y[i]); if(d < bd) { bd = d; best = 2 + i; } }
-    if(best < 0) return;
-
-    if(best < 2) s_cur_x[best] = rx;
-    else         s_cur_y[best - 2] = ry;
-    ui_tick();
+    static int grabbed=-1,last_y,down;
+    lv_event_code_t code=lv_event_get_code(e);
+    if(code==LV_EVENT_RELEASED){down=0;grabbed=-1;return;}
+    lv_area_t a;if(!plot_get_data_area(s_plot_scope,&a))return;
+    int32_t x,y;port_touch_last_point(&x,&y);
+    float rx=fmaxf(0.f,fminf(1.f,(float)(x-a.x1)/(a.x2-a.x1)));
+    float ry=fmaxf(0.f,fminf(1.f,(float)(y-a.y1)/(a.y2-a.y1)));
+    if(code==LV_EVENT_PRESSED){
+        down=1;last_y=y;grabbed=-1;
+        if(s_cur_on){float distance=.08f;
+            for(int i=0;i<2;i++){float d=fabsf(rx-s_cur_x[i]);if(d<distance){distance=d;grabbed=i;}}
+            for(int i=0;i<2;i++){float d=fabsf(ry-s_cur_y[i]);if(d<distance){distance=d;grabbed=i+2;}}
+        }
+    }
+    if(!down)return;
+    if(s_cur_on){
+        if(grabbed<0)return;
+        if(grabbed<2)s_cur_x[grabbed]=rx;else s_cur_y[grabbed-2]=ry;
+    }else if(s_math_mode!=5){
+        s_vertical_offset[s_move_channel]+=(float)(last_y-y)/(a.y2-a.y1);
+        if(s_vertical_offset[s_move_channel]>2.f)s_vertical_offset[s_move_channel]=2.f;
+        if(s_vertical_offset[s_move_channel]<-2.f)s_vertical_offset[s_move_channel]=-2.f;
+    }
+    last_y=y;ui_tick();
+}
+static void cb_move_channel(lv_event_t *e){LV_UNUSED(e);s_move_channel^=1;chip_set_text(s_chip_move,s_move_channel?"移 CH2":"移 CH1");}
+static void cb_position_zero(lv_event_t *e){LV_UNUSED(e);s_vertical_offset[0]=s_vertical_offset[1]=0.f;ui_tick();}
+static void cb_single(lv_event_t *e)
+{
+    LV_UNUSED(e);s_single_armed=1;s_single_done=0;s_trig_wait=1;s_trig_mode=2;
+    s_single_baseline=v32_get_stats()->last_frame_id;S.running=true;
+    if(!isfinite(s_trig_counts))s_trig_counts=(s_m1.vmin+s_m1.vmax)*.5f;
+    chip_set_text(s_chip_single,"等待触发");chip_set_text(s_chip_run,"⏸ 暂停");
+    if(s_chip_trig)chip_set_text(s_chip_trig,"触发 正常");
 }
 
 /* 时基档位表（跟 HTML 原型一致） */
@@ -3034,26 +3031,32 @@ static void trig_refresh(void)
         chip_selected_c(s_chip_edge, true, V32_C_TRIGGER);
     }
     if(s_chip_lev) {
+        if(!isfinite(s_trig_counts))s_trig_counts=(s_m1.vmin+s_m1.vmax)*.5f;
         /* 显示电压而不是百分比：50% 对用户没有意义，
            示波器上这个旋钮标的永远是伏特 */
         const float k3 = V32_ADC_MV_PER_LSB / 1000.0f;
-        const float lv = (s_m1.vmin + (s_m1.vmax - s_m1.vmin) * s_trig_lev) * k3;
+        const float lv = s_trig_counts * k3;
         if(fabsf(lv) < 1.f) snprintf(b, sizeof b, "电平 %.0fmV", (double)(lv*1000.f));
         else                snprintf(b, sizeof b, "电平 %.2fV", (double)lv);
         chip_set_text(s_chip_lev, b);
         chip_selected_c(s_chip_lev, true, V32_C_TRIGGER);
     }
 }
-static void cb_trig_mode(lv_event_t *e) { LV_UNUSED(e); s_trig_mode = (s_trig_mode + 1) % 3; trig_refresh(); ui_tick(); }
+static void cb_trig_mode(lv_event_t *e) { LV_UNUSED(e);s_single_armed=s_single_done=0;s_trig_wait=0;
+    s_trig_mode=(s_trig_mode+1)%3;if(!isfinite(s_trig_counts))s_trig_counts=(s_m1.vmin+s_m1.vmax)*.5f;
+    chip_set_text(s_chip_single,"单次");trig_refresh();ui_tick(); }
 static void cb_trig_edge(lv_event_t *e) { LV_UNUSED(e); s_trig_edge = !s_trig_edge; trig_refresh(); ui_tick(); }
-static void cb_trig_lev_dec(lv_event_t *e){ LV_UNUSED(e); s_trig_lev -= 0.05f; if(s_trig_lev < 0.f) s_trig_lev = 0.f; trig_refresh(); }
-static void cb_trig_lev_inc(lv_event_t *e){ LV_UNUSED(e); s_trig_lev += 0.05f; if(s_trig_lev > 1.f) s_trig_lev = 1.f; trig_refresh(); }
-static void cb_trig_lev_auto(lv_event_t *e){ LV_UNUSED(e); s_trig_lev = 0.5f; trig_refresh(); }
+static void cb_trig_lev_dec(lv_event_t *e){ LV_UNUSED(e);if(!isfinite(s_trig_counts))s_trig_counts=(s_m1.vmin+s_m1.vmax)*.5f; s_trig_counts-=fmaxf(1.f,(s_m1.vmax-s_m1.vmin)*.05f); trig_refresh(); }
+static void cb_trig_lev_inc(lv_event_t *e){ LV_UNUSED(e);if(!isfinite(s_trig_counts))s_trig_counts=(s_m1.vmin+s_m1.vmax)*.5f; s_trig_counts+=fmaxf(1.f,(s_m1.vmax-s_m1.vmin)*.05f); trig_refresh(); }
+static void cb_trig_lev_auto(lv_event_t *e){ LV_UNUSED(e); s_trig_counts=(s_m1.vmin+s_m1.vmax)*.5f; trig_refresh(); }
 
 static void cb_math_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
     s_math_mode = (s_math_mode + 1) % 6;
+    if(s_math_mode>=1 && s_math_mode<=4 && s_full_n>=64 && s_zoom_span>s_full_n*3/4){
+        s_zoom_span=s_full_n*3/4;s_zoom_start=(s_full_n-s_zoom_span)/2;s_tb_manual=1;
+    }
     static const char *nm[6] = { "关", "A+B", "A-B", "A×B", "A÷B", "XY" };
     if(s_chip_math) {
         char b[16];
@@ -3283,6 +3286,7 @@ static void cb_ai(lv_event_t *e)
 static void cb_run(lv_event_t *e)
 {
     LV_UNUSED(e);
+    if(s_single_armed || s_single_done){s_single_armed=s_single_done=s_trig_wait=0;s_trig_mode=0;chip_set_text(s_chip_single,"单次");trig_refresh();}
     S.running = !S.running;
     chip_set_text(s_chip_run, S.running ? "⏸ 暂停" : "▶ 运行");
     set_run_status(S.running);
@@ -3344,6 +3348,8 @@ static void cb_auto(lv_event_t *e)
         fprintf(stderr,"[ana-retune] requested ch=%d hz=%u fcw=%u\n",s_an_ch,hz,fcw);
         ui_tick();return;
     }
+    if(s_single_armed || s_single_done){s_trig_mode=1;s_single_armed=s_single_done=s_trig_wait=0;chip_set_text(s_chip_single,"单次");trig_refresh();}
+    s_vertical_offset[0]=s_vertical_offset[1]=0.f;
     s_tb_manual = 0;      /* 自动设置 = 交回 auto_decimation 管 */
 
     if(dbg_on()) fprintf(stderr, "[auto] pressed use_real=%d full_n=%d\n", (int)S.use_real, s_full_n);
@@ -3393,6 +3399,11 @@ static void cb_reset(lv_event_t *e)
     s_zoom_span  = 0;
     s_zoom_start = 0;
     s_gain       = 1.0f;
+    s_vertical_offset[0]=s_vertical_offset[1]=0.f;
+    s_trig_mode=s_single_armed=s_single_done=s_trig_wait=0;s_trig_counts=NAN;
+    s_math_mode=0;chip_set_text(s_chip_math,"数学 关");chip_set_text(s_chip_single,"单次");
+    chip_selected_c(s_chip_math,false,V32_C_MATH);
+    plot_set_mode(s_plot_scope,PLOT_SCOPE);trig_refresh();
     S.auto_fit   = false;
     /* 控件回位（设了下拉框会触发 VALUE_CHANGED，顺手把状态也同步了） */
     lv_dropdown_set_selected(s_dd_freq, (uint32_t)FREQ_DEF);
@@ -3545,8 +3556,8 @@ static void build_controls(lv_obj_t *root)
     /* Math：关 / A+B / A-B / XY（点一下换一个，亮绿） */
     {
         lv_obj_t *gm = mk_group(gsc, NULL);
-        s_chip_math = mk_chip(gm, "数学 A-B", cb_math_cycle);
-        chip_selected_c(s_chip_math, true, V32_C_MATH);
+        s_chip_math = mk_chip(gm, "数学 关", cb_math_cycle);
+        chip_selected_c(s_chip_math, false, V32_C_MATH);
     }
 
 
@@ -3726,7 +3737,7 @@ static void scope_acquisition_status(void)
     const v32_stats_t *st=v32_get_stats();
     if(!t0){t0=now;raw0=st->frames_ok;flips0=flips;return;}
     uint32_t dt=now-t0;if(dt<500)return;
-    const char *state=!S.running?"PAUSED":(S.use_real&&!s_real_valid)?"NO DATA":"LIVE";
+    const char *state=s_single_done?"SINGLE HOLD":s_trig_wait?"TRIG WAIT":s_trig_mode&&s_trig_hit?"TRIGGERED":!S.running?"PAUSED":(S.use_real&&!s_real_valid)?"NO DATA":"LIVE";
     lv_label_set_text_fmt(s_scope_acq,"%s | RAW %.1f/s | UI %.1f fps",state,
         (st->frames_ok-raw0)*1000.0/dt,(flips-flips0)*1000.0/dt);
     lv_obj_set_style_text_color(s_scope_acq,(!S.running || (S.use_real&&!s_real_valid))?V32_C_WARN:V32_C_LIVE,0);
@@ -3765,6 +3776,7 @@ static void tick_scope(void)
         }
     }
 
+    if(s_math_mode!=5)for(int i=0;i<n;i++){ch1[i]+=s_vertical_offset[0];ch2[i]+=s_vertical_offset[1];}
     if(S.ch1) plot_set_trace(s_plot_scope, 0, ch1, n, V32_C_CH1, 2);
     else      plot_hide_trace(s_plot_scope, 0);
     if(S.ch2) plot_set_trace(s_plot_scope, 1, ch2, n, V32_C_CH2, 2);
@@ -3784,22 +3796,36 @@ static void tick_scope(void)
      */
     if(s_math_mode >= 1 && s_math_mode <= 4 && s_real_valid && s_full_n >= 2
        && !(S.use_real && s_zoom_span > s_full_n)) {
-        float mn = 1e30f, mx = -1e30f;
+        float mn = 1e30f, mx = -1e30f;int finite=0;
+        for(int i=0;i<s_full_n;i++)s_math[i]=scope_math_sample(s_full0[i],s_full1[i],s_math_mode);
         for(int i = 0; i < s_full_n; i++) {
+            if(!isfinite(s_math[i]))continue;
+            finite++;
             if(s_math[i] < mn) mn = s_math[i];
             if(s_math[i] > mx) mx = s_math[i];
         }
-        if(mx - mn < 1e-6f) { mn = -1.f; mx = 1.f; }
+        if(mx-mn<1e-6f){float center=(mn+mx)*.5f,pad=fmaxf(1.f,fabsf(center)*.1f);mn=center-pad;mx=center+pad;}
         map_window_own(s_math, s_full_n, s_math_y, n, mn, 1.0f / (mx - mn));
-        plot_set_trace(s_plot_scope, 2, s_math_y, n, V32_C_MATH, 2);
+        plot_set_trace(s_plot_scope, 2, s_math_y, n, V32_C_MATH, 3);
+        const char *name[]={"","A+B","A-B","A*B","A/B"};
+        double factor=s_math_mode==3?pow(V32_ADC_MV_PER_LSB*.001,2):s_math_mode==4?1:V32_ADC_MV_PER_LSB*.001;
+        lv_label_set_text_fmt(s_math_note,"M %s | %.3g..%.3g %s",name[s_math_mode],mn*factor,mx*factor,s_math_mode==3?"V^2":s_math_mode==4?"ratio":"V");
+        if(!finite){plot_hide_trace(s_plot_scope,2);lv_label_set_text(s_math_note,"M A/B | DIV ZERO / LOW DEN");}
+        lv_obj_remove_flag(s_math_note,LV_OBJ_FLAG_HIDDEN);
     } else {
         plot_hide_trace(s_plot_scope, 2);
+        if(s_math_mode>=1 && s_math_mode<=4){
+            lv_label_set_text(s_math_note,s_real_valid?"M | RAW FRAME ONLY":"M | NO RAW");
+            lv_obj_remove_flag(s_math_note,LV_OBJ_FLAG_HIDDEN);
+        }else lv_obj_add_flag(s_math_note,LV_OBJ_FLAG_HIDDEN);
     }
 
     /* scope_proto：位置 = 顶部小三角（波形被钉在 20% 处），
        电平 = 贯穿绘图区的洋红虚线，随 s_trig_lev 动 */
     plot_set_trigger(s_plot_scope, s_trig_mode!=0, 0.2f);
-    plot_set_trigger_level(s_plot_scope, s_trig_mode!=0, s_trig_lev);
+    float trigger_y=.5f;
+    if(s_real_sc>0)trigger_y=.5f+((s_trig_counts-s_real_lo)*s_real_sc-.5f)*s_gain+s_vertical_offset[0];
+    plot_set_trigger_level(s_plot_scope,s_trig_mode!=0 && isfinite(trigger_y),trigger_y);
 
     const bool use_real = S.use_real;
     const bool real = (use_real && s_real_valid);
@@ -3927,8 +3953,8 @@ static void tick_scope(void)
         const float dts = fabsf(t2 - t1);
         const float vr = (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB / s_gain;
         const float center_mv=(s_real_lo+.5f/s_real_sc)*V32_ADC_MV_PER_LSB;
-        const float v1c = center_mv+(0.5f - s_cur_y[0]) * vr;
-        const float v2c = center_mv+(0.5f - s_cur_y[1]) * vr;
+        const float v1c = center_mv+(0.5f-s_cur_y[0]-s_vertical_offset[0])*vr;
+        const float v2c = center_mv+(0.5f-s_cur_y[1]-s_vertical_offset[0])*vr;
         const float dvm = fabsf(v2c - v1c);
         char b1[16], b2[16];
         fmt_time_s(b1, sizeof b1, t1);           lv_label_set_text(s_lbl_cur_t1, b1);
