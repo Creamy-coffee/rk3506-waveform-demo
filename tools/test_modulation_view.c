@@ -252,6 +252,9 @@ int main(int argc,char **argv)
     for(int i=1;i<4;i++)image_accept_packet(&s_image,image_packets+68*i);
     image_refresh();assert(s_image.complete && s_image.received==4);
     assert(strstr(lv_label_get_text(s_image_status),"CRC OK"));draw(d);save(argv[1],"image_complete");
+    s_image.width=32;s_image.height=16;s_image.revision++;image_refresh();draw(d);save(argv[1],"image_landscape");
+    assert(s_image_pixels[8*IMAGE_CANVAS_WIDTH]==0x1082);
+    assert(s_image_pixels[16*IMAGE_CANVAS_WIDTH]!=0x1082);
     lv_tick_inc(4000);image_refresh();assert(strstr(lv_label_get_text(s_image_info),"NO NEW PACKETS"));draw(d);save(argv[1],"image_stale");
     cb_image_clear(NULL);assert(!s_image.have_image && !s_image.complete);
     ui_set_page(UI_PAGE_SYSTEM);assert(ui_page_from_name("5")==UI_PAGE_SYSTEM);
@@ -376,8 +379,8 @@ int main(int argc,char **argv)
     S.running=false;fake_touch=1;s_move_channel=0;s_vertical_offset[0]=s_vertical_offset[1]=0;
     fake_touch_x=(grid.x1+grid.x2)/2;fake_touch_y=(grid.y1+grid.y2)/2;
     lv_obj_send_event(s_plot_scope,LV_EVENT_PRESSED,NULL);fake_touch_y-=40;lv_obj_send_event(s_plot_scope,LV_EVENT_PRESSING,NULL);lv_obj_send_event(s_plot_scope,LV_EVENT_RELEASED,NULL);
-    assert(s_vertical_offset[0]>.05f && s_vertical_offset[1]==0);save(argv[1],"scope_vertical_pan");
-    cb_position_zero(NULL);assert(s_vertical_offset[0]==0 && s_vertical_offset[1]==0);
+    assert(s_vertical_offset[0]==0 && s_vertical_offset[1]==0);save(argv[1],"scope_vertical_pan_disabled");
+    assert(s_vertical_offset[0]==0 && s_vertical_offset[1]==0);
     /* Cursor remains attached even when dragged past the other cursor. */
     s_cur_on=1;fake_touch_x=grid.x1+(int)(.3f*(grid.x2-grid.x1));fake_touch_y=grid.y1+30;
     lv_obj_send_event(s_plot_scope,LV_EVENT_PRESSED,NULL);fake_touch_x=grid.x1+(int)(.85f*(grid.x2-grid.x1));

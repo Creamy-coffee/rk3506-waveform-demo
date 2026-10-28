@@ -221,8 +221,9 @@ static bpsk_decoder_t s_bpsk;
 static image_receiver_t s_image;
 static bool s_image_enabled=false;
 static lv_obj_t *s_image_canvas,*s_image_status,*s_image_info,*s_image_link;
-#define IMAGE_CANVAS_SIZE 384
-static uint16_t s_image_pixels[IMAGE_CANVAS_SIZE*IMAGE_CANVAS_SIZE];
+#define IMAGE_CANVAS_WIDTH 704
+#define IMAGE_CANVAS_HEIGHT 384
+static uint16_t s_image_pixels[IMAGE_CANVAS_WIDTH*IMAGE_CANVAS_HEIGHT];
 static uint32_t s_image_drawn_revision=UINT32_MAX,s_image_packet_ms;
 static uint64_t s_image_packets_seen;
 static bool s_bpsk_invert=false,s_bpsk_symbols=true;
@@ -1153,7 +1154,6 @@ static uint32_t s_single_baseline;
 static lv_obj_t *s_chip_single,*s_chip_move,*s_math_note;
 static void cb_single(lv_event_t *e);
 static void cb_move_channel(lv_event_t *e);
-static void cb_position_zero(lv_event_t *e);
 
 static int   s_math_mode = 0;    /* 0=OFF, 1=A+B, 2=A-B, 3=A*B, 4=A/B, 5=XY */
 static float s_math[WAVE_MAX_FRAME];
@@ -2082,8 +2082,7 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_t *actions=mk(p2,0,TITLE_H+V32_CHIP_H+7,210,V32_CHIP_H);
     lv_obj_set_flex_flow(actions,LV_FLEX_FLOW_ROW);lv_obj_set_style_pad_column(actions,7,0);
     s_chip_single=mk_chip(actions,"单次",cb_single);
-    s_chip_move=mk_chip(actions,"刻度/移 CH1",cb_move_channel);
-    mk_chip(actions,"归零",cb_position_zero);
+    s_chip_move=mk_chip(actions,"电压轴 CH1",cb_move_channel);
     chip_selected(s_chip_ch1, S.ch1);
     chip_selected(s_chip_ch2, S.ch2);
 }
@@ -2422,15 +2421,18 @@ static void build_image(lv_obj_t *pg)
     lv_obj_t *panel=mk_panel(pg,0,0,MAIN_W,MAIN_H);
     mk_label(panel,6,0,"图片接收 · IMAGE RX",V32_FONT_BIG_B,V32_C_PANEL_TITLE);
     s_image_canvas=lv_canvas_create(panel);
-    lv_canvas_set_buffer(s_image_canvas,s_image_pixels,IMAGE_CANVAS_SIZE,IMAGE_CANVAS_SIZE,LV_COLOR_FORMAT_RGB565);
+    lv_canvas_set_buffer(s_image_canvas,s_image_pixels,IMAGE_CANVAS_WIDTH,IMAGE_CANVAS_HEIGHT,LV_COLOR_FORMAT_RGB565);
     lv_obj_set_pos(s_image_canvas,6,40);
-    s_image_status=mk_label(panel,430,38,"等待数据",V32_FONT_BIG_B,V32_C_WARN);
-    s_image_link=mk_label(panel,430,80,"OOK / 2FSK / BPSK · Manchester",V32_FONT_BASE,V32_C_NOTE);
-    s_image_info=mk_label(panel,430,120,"0 / 0 packets\nCRC OK: 0\n32 x 32 mono first",V32_FONT_BIG,V32_C_METRIC_VALUE);
-    lv_obj_set_width(s_image_info,MAIN_W-470);
+    s_image_status=mk_label(panel,734,38,"等待数据",V32_FONT_BIG_B,V32_C_WARN);
+    s_image_link=mk_label(panel,734,90,"OOK / 2FSK / BPSK · Manchester",V32_FONT_BASE,V32_C_NOTE);
+    s_image_info=mk_label(panel,734,145,"0 / 0 packets\nCRC OK: 0\n32 x 32 mono first",V32_FONT_BIG,V32_C_METRIC_VALUE);
+    lv_obj_set_width(s_image_status,MAIN_W-764);
+    lv_obj_set_width(s_image_link,MAIN_W-764);
+    lv_obj_set_width(s_image_info,MAIN_W-764);
+    lv_obj_set_style_text_font(s_image_info,V32_FONT_BASE,0);
     lv_label_set_long_mode(s_image_info,LV_LABEL_LONG_WRAP);
-    lv_obj_t *row=mk(panel,430,MAIN_H-65,MAIN_W-470,42);
-    lv_obj_set_flex_flow(row,LV_FLEX_FLOW_ROW);lv_obj_set_style_pad_column(row,8,0);
+    lv_obj_t *row=mk(panel,734,MAIN_H-100,MAIN_W-764,90);
+    lv_obj_set_flex_flow(row,LV_FLEX_FLOW_ROW_WRAP);lv_obj_set_style_pad_column(row,8,0);lv_obj_set_style_pad_row(row,6,0);
     const char *names[]={"OOK","2FSK","BPSK"};const int modes[]={5,3,6};
     for(int i=0;i<3;i++){
         lv_obj_t *b=mk_chip(row,names[i],NULL);
@@ -2445,15 +2447,16 @@ static void image_refresh(void)
 {
     const bool redraw=s_image.revision!=s_image_drawn_revision;
     if(redraw){
-        for(unsigned i=0;i<IMAGE_CANVAS_SIZE*IMAGE_CANVAS_SIZE;i++)s_image_pixels[i]=0x1082;
+        for(unsigned i=0;i<IMAGE_CANVAS_WIDTH*IMAGE_CANVAS_HEIGHT;i++)s_image_pixels[i]=0x1082;
         if(s_image.have_image){
-            unsigned scale=IMAGE_CANVAS_SIZE/(s_image.width>s_image.height?s_image.width:s_image.height);
-            unsigned ox=(IMAGE_CANVAS_SIZE-scale*s_image.width)/2,oy=(IMAGE_CANVAS_SIZE-scale*s_image.height)/2;
+            unsigned scale=IMAGE_CANVAS_WIDTH/s_image.width;
+            if(scale>IMAGE_CANVAS_HEIGHT/s_image.height)scale=IMAGE_CANVAS_HEIGHT/s_image.height;
+            unsigned ox=(IMAGE_CANVAS_WIDTH-scale*s_image.width)/2,oy=(IMAGE_CANVAS_HEIGHT-scale*s_image.height)/2;
             for(unsigned y=0;y<s_image.height;y++)for(unsigned x=0;x<s_image.width;x++){
                 int bit=image_receiver_pixel(&s_image,x,y);
                 uint16_t color=bit<0?0x528a:bit?0x0000:0xffff;
                 for(unsigned dy=0;dy<scale;dy++)for(unsigned dx=0;dx<scale;dx++)
-                    s_image_pixels[(oy+y*scale+dy)*IMAGE_CANVAS_SIZE+ox+x*scale+dx]=color;
+                    s_image_pixels[(oy+y*scale+dy)*IMAGE_CANVAS_WIDTH+ox+x*scale+dx]=color;
             }
         }
         lv_obj_invalidate(s_image_canvas);s_image_drawn_revision=s_image.revision;
@@ -2475,13 +2478,13 @@ static void image_refresh(void)
     snprintf(link,sizeof link,"%s · %s · CH%d · %d Bd",s_image_enabled?"RX ON":"RX OFF",
              s_an_type==5?"OOK":s_an_type==3?"2FSK":s_an_type==6?"BPSK":"SELECT MODE",s_an_ch+1,OOK_RATES[s_ook_rate]);
     lv_label_set_text(s_image_link,link);
-    snprintf(info,sizeof info,"%u / %u packets · %u%%\n%u x %u · %u bytes\nCRC errors: %llu · invalid: %llu\nDuplicates: %llu · gaps: %llu\nLast packet: %s%u ms\nManchester · repeat to repair\n%s",
+    snprintf(info,sizeof info,"%u / %u packets · %u%%\n%u x %u · %u bytes\nCRC err %llu / bad %llu\nRepeat %llu / gap %llu\nLast %s%u ms\nManchester\n%s",
              s_image.received,s_image.chunks,s_image.chunks?100*s_image.received/s_image.chunks:0,
              s_image.width,s_image.height,(unsigned)s_image.total_bytes,
              (unsigned long long)s_image.crc_errors,(unsigned long long)s_image.invalid_packets,
              (unsigned long long)s_image.duplicates,(unsigned long long)s_image.gaps,
              s_image.packets?"":"-- / ",s_image.packets?now-s_image_packet_ms:0,
-             s_image.packets && now-s_image_packet_ms>3000?"NO NEW PACKETS · last image held":"CRC OK applies to received image data");
+             s_image.packets && now-s_image_packet_ms>3000?"NO NEW PACKETS":"CRC checks image data");
     lv_label_set_text(s_image_info,info);
 }
 
@@ -2823,9 +2826,8 @@ static void cb_scope_help(lv_event_t *e)
         "单次：等待下一接收帧内边沿后冻结；帧间瞬态可能漏采。\n"
         "光标：开启后拖动 T1 / T2 / V1 / V2，读取 ΔT、ΔV 和 1/ΔT。\n"
         "两指操作：左右缩放时间窗口，上下调整显示增益。\n"
-        "关闭光标后拖动波形：移动选中通道；归零恢复位置。\n"
-        "刻度/移 CH1 或 CH2：选择电压轴与电压光标参考通道。\n"
-        "1 0V / 2 0V 是各路零电压；右侧测量不随位移改变。\n"
+        "电压轴 CH1 或 CH2：选择电压轴与电压光标参考通道。\n"
+        "载波密集时呈带状；包络与解调波形请在调制页观察。\n"
         "绿色 M 是运算结果，使用独立量程；除零处断开。\n"
         "全屏：展开波形区；长时基跨帧显示存在采集死区。\n"
         "RAW 是实际到帧率，UI 是显示刷新率；两者不同。",
@@ -2910,7 +2912,7 @@ static void cb_fch_ch2 (lv_event_t *e) { LV_UNUSED(e); fft_ch_set(2); }
  */
 static void cb_scope_touch(lv_event_t *e)
 {
-    static int grabbed=-1,last_y,down;
+    static int grabbed=-1,down;
     lv_event_code_t code=lv_event_get_code(e);
     if(code==LV_EVENT_RELEASED){down=0;grabbed=-1;return;}
     lv_area_t a;if(!plot_get_data_area(s_plot_scope,&a))return;
@@ -2918,7 +2920,7 @@ static void cb_scope_touch(lv_event_t *e)
     float rx=fmaxf(0.f,fminf(1.f,(float)(x-a.x1)/(a.x2-a.x1)));
     float ry=fmaxf(0.f,fminf(1.f,(float)(y-a.y1)/(a.y2-a.y1)));
     if(code==LV_EVENT_PRESSED){
-        down=1;last_y=y;grabbed=-1;
+        down=1;grabbed=-1;
         if(s_cur_on){float distance=.08f;
             for(int i=0;i<2;i++){float d=fabsf(rx-s_cur_x[i]);if(d<distance){distance=d;grabbed=i;}}
             for(int i=0;i<2;i++){float d=fabsf(ry-s_cur_y[i]);if(d<distance){distance=d;grabbed=i+2;}}
@@ -2928,15 +2930,10 @@ static void cb_scope_touch(lv_event_t *e)
     if(s_cur_on){
         if(grabbed<0)return;
         if(grabbed<2)s_cur_x[grabbed]=rx;else s_cur_y[grabbed-2]=ry;
-    }else if(s_math_mode!=5){
-        s_vertical_offset[s_move_channel]+=(float)(last_y-y)/(a.y2-a.y1);
-        if(s_vertical_offset[s_move_channel]>2.f)s_vertical_offset[s_move_channel]=2.f;
-        if(s_vertical_offset[s_move_channel]<-2.f)s_vertical_offset[s_move_channel]=-2.f;
     }
-    last_y=y;ui_tick();
+    ui_tick();
 }
-static void cb_move_channel(lv_event_t *e){LV_UNUSED(e);s_move_channel^=1;chip_set_text(s_chip_move,s_move_channel?"刻度/移 CH2":"刻度/移 CH1");ui_tick();}
-static void cb_position_zero(lv_event_t *e){LV_UNUSED(e);s_vertical_offset[0]=s_vertical_offset[1]=0.f;ui_tick();}
+static void cb_move_channel(lv_event_t *e){LV_UNUSED(e);s_move_channel^=1;chip_set_text(s_chip_move,s_move_channel?"电压轴 CH2":"电压轴 CH1");ui_tick();}
 static void cb_single(lv_event_t *e)
 {
     LV_UNUSED(e);s_single_armed=1;s_single_done=0;s_trig_wait=1;s_trig_mode=2;
@@ -3791,7 +3788,7 @@ static void tick_scope(void)
     else      plot_hide_trace(s_plot_scope, 1);
 
     float zero=.5f+(-s_real_lo*s_real_sc-.5f)*s_gain;
-    plot_set_voltage_reference(s_plot_scope,s_move_channel,zero+s_vertical_offset[0],zero+s_vertical_offset[1],S.ch1,S.ch2);
+    plot_set_voltage_reference(s_plot_scope,s_move_channel,zero,zero,false,false);
     lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(s_lbl_cur_v1),0),s_move_channel?"CH2 V1":"CH1 V1");
     lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(s_lbl_cur_v2),0),s_move_channel?"CH2 V2":"CH1 V2");
     /* 测量光标（2 竖 + 2 横） */
