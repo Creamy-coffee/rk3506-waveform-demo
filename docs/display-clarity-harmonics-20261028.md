@@ -118,6 +118,17 @@ Host evidence: `firmware/reports/display_clarity_20261028/physical_v3`,
 `clarity_io_20261028`. Earlier physical/physical_v2 attempts are diagnostic
 failures; they are not used as completed navigation acceptance.
 
+After installation the saved user's 32×32 image was transmitted again through
+the actual 1 MHz OOK carrier at 1000 physical Bd. The screen received 4/4 packets,
+image CRC32 `db804838`, packet CRC errors 0 and invalid packets 0. All 1024 pixel
+centers in the 384×384 framebuffer canvas match the source PBM (zero differences).
+Eight duplicate packets and eight image-decoder gap events were recorded; these
+are not a claim of gap-free continuous bit reception. The generator was restored
+by the sender and the display returned to scope. Evidence is under the host
+`display_clarity_20261028/image` directory, including the source PBM, actual screen,
+sender state and pixel comparison. This is an OOK image/UI check, not a new BPSK
+or QPSK acceptance result.
+
 Palette references: [Nord](https://github.com/nordtheme/nord) and
 [Catppuccin](https://github.com/catppuccin/catppuccin). Their dark neutral backgrounds
 and restrained accents informed the display; no external UI code was copied.
