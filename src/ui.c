@@ -751,6 +751,7 @@ static float phase_diff_deg(const float *x0, const float *x1, int n,
 }
 
 static void update_axis_label(void);
+static void vg_label(void);
 static void cb_scope_touch(lv_event_t *e);
 static void trig_refresh(void);   /* 光标拖动：build_scope 里注册，定义在后面 */
 static void sync_timebase_dd(float us_div);
@@ -1203,20 +1204,25 @@ static void roll_push(float a0, float a1, float b0, float b1)
  * 滚动缓冲 -> 屏幕映射：取最近 s_roll_len 点，min/max 分桶到 n 点，
  * 两路**联合**归一（和帧模式同一个哲学：CH1/CH2 共刻度，谁大谁小是真的）。
  */
+/* One calibration is shared by frame data, roll extrema, ticks and cursors. */
+static void scope_scale_refresh(void)
+{
+    if(s_full_n<2)return;
+    const float *a=s_full0,*b=s_full1;int count=s_full_n;
+    if(s_zoom_span>s_full_n && s_roll_len>=4){a=s_roll0;b=s_roll1;count=s_roll_len;}
+    float lo=a[0],hi=a[0];
+    for(int i=0;i<count;i++){if(a[i]<lo)lo=a[i];if(a[i]>hi)hi=a[i];if(b[i]<lo)lo=b[i];if(b[i]>hi)hi=b[i];}
+    if(s_vdiv_mv>0.f){
+        if(s_vdiv_mv<10.f)s_vdiv_mv=10.f;if(s_vdiv_mv>5000.f)s_vdiv_mv=5000.f;
+        float full=s_vdiv_mv*V32_GRID_Y/V32_ADC_MV_PER_LSB;
+        s_real_lo=-full*.5f;s_real_sc=1.f/full;
+    }else scope_auto_range(lo,hi,&s_real_lo,&s_real_sc);
+    s_gain=1.f;
+}
+
 static void map_roll(float *a, float *b, int n)
 {
     if(s_roll_len < 4 || n < 8) return;
-    float mn = 1e30f, mx = -1e30f;
-    for(int i = 0; i < s_roll_len; i++) {
-        if(s_roll0[i] < mn) mn = s_roll0[i];
-        if(s_roll0[i] > mx) mx = s_roll0[i];
-        if(s_roll1[i] < mn) mn = s_roll1[i];
-        if(s_roll1[i] > mx) mx = s_roll1[i];
-    }
-    float span = mx - mn;
-    if(span < 1e-3f) span = 1e-3f;
-    const float sc = 1.0f / span;
-
     const int buckets = n / 2;
     for(int bk = 0; bk < buckets; bk++) {
         const int st = (int)((long)bk * s_roll_len / buckets);
@@ -1231,10 +1237,10 @@ static void map_roll(float *a, float *b, int n)
             if(s_roll1[k] > s_roll1[iB]) iB = k;
         }
         /* 极值按时间先后输出（和 map_window 一样，避免画成锯齿） */
-        const float va0 = (s_roll0[ia < iA ? ia : iA] - mn) * sc;
-        const float va1 = (s_roll0[ia < iA ? iA : ia] - mn) * sc;
-        const float vb0 = (s_roll1[ib < iB ? ib : iB] - mn) * sc;
-        const float vb1 = (s_roll1[ib < iB ? iB : ib] - mn) * sc;
+        const float va0 = (s_roll0[ia < iA ? ia : iA] - s_real_lo) * s_real_sc;
+        const float va1 = (s_roll0[ia < iA ? iA : ia] - s_real_lo) * s_real_sc;
+        const float vb0 = (s_roll1[ib < iB ? ib : iB] - s_real_lo) * s_real_sc;
+        const float vb1 = (s_roll1[ib < iB ? iB : ib] - s_real_lo) * s_real_sc;
         a[2 * bk] = va0; a[2 * bk + 1] = va1;
         b[2 * bk] = vb0; b[2 * bk + 1] = vb1;
     }
@@ -1675,7 +1681,7 @@ static void update_axis_label(void)
             xp[i] = xb[i];
         }
         for(int j = 0; j < 5; j++) {
-            const float center_mv=(s_real_lo+.5f/s_real_sc-s_vertical_offset[0]/(s_real_sc*s_gain))*V32_ADC_MV_PER_LSB;
+            const float center_mv=(s_real_lo+.5f/s_real_sc-s_vertical_offset[s_move_channel]/(s_real_sc*s_gain))*V32_ADC_MV_PER_LSB;
             const float v = center_mv+(float)(V32_GRID_Y / 2 - j * 2) * mvdiv;
             if(fabsf(v) < 0.5f)         snprintf(yb[j], 12, "0");
             else if(fabsf(v) < 1000.f)  snprintf(yb[j], 12, "%.0fmV", (double)v);
@@ -1824,11 +1830,10 @@ void ui_pinch_zoom(float scale, float anchor)
 void ui_pinch_gain(float ratio)
 {
     if(ratio <= 0.f) return;
-    s_gain *= ratio;
-    if(s_gain < ZOOM_GAIN_MIN) s_gain = ZOOM_GAIN_MIN;
-    if(s_gain > ZOOM_GAIN_MAX) s_gain = ZOOM_GAIN_MAX;
-    S.auto_fit = false;          /* 纵向手动调整同样接管，理由见 ui_pinch_zoom */
-    if(S.ch1 || S.ch2) update_axis_label();
+    float current=s_vdiv_mv>0.f?s_vdiv_mv:s_real_sc>0.f?V32_ADC_MV_PER_LSB/(s_real_sc*V32_GRID_Y):100.f;
+    s_vdiv_mv=fmaxf(10.f,fminf(5000.f,current/ratio));s_gain=1.f;
+    s_vdiv_idx=1;for(int i=2;i<10;i++)if(fabsf(VDIVS_MV[i]-s_vdiv_mv)<fabsf(VDIVS_MV[s_vdiv_idx]-s_vdiv_mv))s_vdiv_idx=i;
+    S.auto_fit=false;scope_scale_refresh();vg_label();update_axis_label();
 }
 
 static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
@@ -2077,7 +2082,7 @@ static void build_scope(lv_obj_t *pg)
     lv_obj_t *actions=mk(p2,0,TITLE_H+V32_CHIP_H+7,210,V32_CHIP_H);
     lv_obj_set_flex_flow(actions,LV_FLEX_FLOW_ROW);lv_obj_set_style_pad_column(actions,7,0);
     s_chip_single=mk_chip(actions,"单次",cb_single);
-    s_chip_move=mk_chip(actions,"移 CH1",cb_move_channel);
+    s_chip_move=mk_chip(actions,"刻度/移 CH1",cb_move_channel);
     mk_chip(actions,"归零",cb_position_zero);
     chip_selected(s_chip_ch1, S.ch1);
     chip_selected(s_chip_ch2, S.ch2);
@@ -2819,6 +2824,8 @@ static void cb_scope_help(lv_event_t *e)
         "光标：开启后拖动 T1 / T2 / V1 / V2，读取 ΔT、ΔV 和 1/ΔT。\n"
         "两指操作：左右缩放时间窗口，上下调整显示增益。\n"
         "关闭光标后拖动波形：移动选中通道；归零恢复位置。\n"
+        "刻度/移 CH1 或 CH2：选择电压轴与电压光标参考通道。\n"
+        "1 0V / 2 0V 是各路零电压；右侧测量不随位移改变。\n"
         "绿色 M 是运算结果，使用独立量程；除零处断开。\n"
         "全屏：展开波形区；长时基跨帧显示存在采集死区。\n"
         "RAW 是实际到帧率，UI 是显示刷新率；两者不同。",
@@ -2928,7 +2935,7 @@ static void cb_scope_touch(lv_event_t *e)
     }
     last_y=y;ui_tick();
 }
-static void cb_move_channel(lv_event_t *e){LV_UNUSED(e);s_move_channel^=1;chip_set_text(s_chip_move,s_move_channel?"移 CH2":"移 CH1");}
+static void cb_move_channel(lv_event_t *e){LV_UNUSED(e);s_move_channel^=1;chip_set_text(s_chip_move,s_move_channel?"刻度/移 CH2":"刻度/移 CH1");ui_tick();}
 static void cb_position_zero(lv_event_t *e){LV_UNUSED(e);s_vertical_offset[0]=s_vertical_offset[1]=0.f;ui_tick();}
 static void cb_single(lv_event_t *e)
 {
@@ -2999,14 +3006,14 @@ static void vg_label(void)
         chip_selected(s_chip_vg, true);      /* 照 scope_proto：auto 档高亮 */
         return;
     }
-    if(VDIVS_MV[s_vdiv_idx] >= 1000.f) snprintf(b, sizeof b, "档位 %.1fV", (double)(VDIVS_MV[s_vdiv_idx] / 1000.f));
-    else                               snprintf(b, sizeof b, "档位 %.0fmV", (double)VDIVS_MV[s_vdiv_idx]);
+    if(s_vdiv_mv >= 1000.f) snprintf(b, sizeof b, "档位 %.2fV", (double)(s_vdiv_mv / 1000.f));
+    else                               snprintf(b, sizeof b, "档位 %.0fmV", (double)s_vdiv_mv);
     chip_set_text(s_chip_vg, b);
     chip_selected(s_chip_vg, false);
 }
-static void cb_vg_dec(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx > 0) s_vdiv_idx--; s_vdiv_mv = VDIVS_MV[s_vdiv_idx]; vg_label(); }
-static void cb_vg_inc(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx < 9) s_vdiv_idx++; s_vdiv_mv = VDIVS_MV[s_vdiv_idx]; vg_label(); }
-static void cb_vg_auto(lv_event_t *e){ LV_UNUSED(e); s_vdiv_idx = 0; s_vdiv_mv = 0.f; vg_label(); }
+static void cb_vg_dec(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx > 0) s_vdiv_idx--; s_vdiv_mv = VDIVS_MV[s_vdiv_idx];s_gain=1.f; vg_label();ui_tick(); }
+static void cb_vg_inc(lv_event_t *e) { LV_UNUSED(e); if(s_vdiv_idx < 9) s_vdiv_idx++; s_vdiv_mv = VDIVS_MV[s_vdiv_idx];s_gain=1.f; vg_label();ui_tick(); }
+static void cb_vg_auto(lv_event_t *e){ LV_UNUSED(e); s_vdiv_idx = 0; s_vdiv_mv = 0.f;s_gain=1.f; vg_label();ui_tick(); }
 
 static void cb_cur_cycle(lv_event_t *e)
 {
@@ -3751,6 +3758,7 @@ static void tick_scope(void)
 
     scope_metric_layout();
     real_update();
+    scope_scale_refresh();
 
     /*
      * 深时基（窗口 > 一帧）：改从滚动缓冲取最近一段。
@@ -3782,6 +3790,10 @@ static void tick_scope(void)
     if(S.ch2) plot_set_trace(s_plot_scope, 1, ch2, n, V32_C_CH2, 2);
     else      plot_hide_trace(s_plot_scope, 1);
 
+    float zero=.5f+(-s_real_lo*s_real_sc-.5f)*s_gain;
+    plot_set_voltage_reference(s_plot_scope,s_move_channel,zero+s_vertical_offset[0],zero+s_vertical_offset[1],S.ch1,S.ch2);
+    lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(s_lbl_cur_v1),0),s_move_channel?"CH2 V1":"CH1 V1");
+    lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(s_lbl_cur_v2),0),s_move_channel?"CH2 V2":"CH1 V2");
     /* 测量光标（2 竖 + 2 横） */
     {
         const float xs[2] = { s_cur_x[0], s_cur_x[1] };
@@ -3953,8 +3965,8 @@ static void tick_scope(void)
         const float dts = fabsf(t2 - t1);
         const float vr = (1.0f / s_real_sc) * V32_ADC_MV_PER_LSB / s_gain;
         const float center_mv=(s_real_lo+.5f/s_real_sc)*V32_ADC_MV_PER_LSB;
-        const float v1c = center_mv+(0.5f-s_cur_y[0]-s_vertical_offset[0])*vr;
-        const float v2c = center_mv+(0.5f-s_cur_y[1]-s_vertical_offset[0])*vr;
+        const float v1c = center_mv+(0.5f-s_cur_y[0]-s_vertical_offset[s_move_channel])*vr;
+        const float v2c = center_mv+(0.5f-s_cur_y[1]-s_vertical_offset[s_move_channel])*vr;
         const float dvm = fabsf(v2c - v1c);
         char b1[16], b2[16];
         fmt_time_s(b1, sizeof b1, t1);           lv_label_set_text(s_lbl_cur_t1, b1);

@@ -392,5 +392,20 @@ int main(int argc,char **argv)
     put(full_raw+sizeof full_raw-4,crc(full_raw,sizeof full_raw-4));FILE *full_file=fopen(fixture,"wb");assert(full_file);assert(fwrite(full_raw,1,sizeof full_raw,full_file)==sizeof full_raw);fclose(full_file);
     assert(v32_init_file(fixture)==0);S.running=true;s_trig_mode=0;s_math_mode=3;ui_set_page(UI_PAGE_SCOPE);draw(d);assert(s_full_n==4096);
     assert(s_math[4095]==s_full0[4095]*s_full1[4095]);
-    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale scope_layout_cached_redraw_style_change harmonics scope_RAW_only supported_modes math4096 drag trigger_single");return 0;
+    /* Long timebases and manual volts/div must share exactly the same map. */
+    S.running=false;s_math_mode=0;s_trig_mode=0;s_cur_on=0;s_move_channel=0;s_vertical_offset[0]=s_vertical_offset[1]=0;
+    s_vdiv_mv=5000;s_vdiv_idx=1;s_gain=.05f;s_zoom_span=s_full_n*2;
+    s_roll_len=4;for(int i=0;i<4;i++)s_roll0[i]=s_roll1[i]=(i&1)?100:-100;
+    draw(d);assert(s_gain==1.f);assert(fabsf(V32_ADC_MV_PER_LSB/(s_real_sc*V32_GRID_Y)-5000.f)<.01f);
+    float roll0[8],roll1[8];map_roll(roll0,roll1,8);
+    float lower=1,upper=0;for(int i=0;i<8;i++){if(roll0[i]<lower)lower=roll0[i];if(roll0[i]>upper)upper=roll0[i];}
+    assert(upper-lower<.02f && upper-lower>.01f);save(argv[1],"long_manual_5v");
+    ui_pinch_gain(.001f);assert(s_vdiv_mv==5000 && s_gain==1);ui_pinch_gain(100000);assert(s_vdiv_mv==10 && s_gain==1);
+    s_vdiv_mv=100;s_vdiv_idx=7;s_zoom_span=128;s_cur_on=1;s_vertical_offset[0]=.1f;s_vertical_offset[1]=-.1f;s_cur_y[0]=.4f;s_cur_y[1]=.6f;draw(d);
+    assert(strstr(lv_label_get_text(s_lbl_cur_v1),"0mV"));
+    char measured_vpp[80];snprintf(measured_vpp,sizeof measured_vpp,"%s",lv_label_get_text(s_lbl_v1));
+    cb_move_channel(NULL);draw(d);assert(strstr(lv_label_get_text(s_lbl_cur_v2),"0mV"));
+    assert(strstr(lv_label_get_text(lv_obj_get_child(lv_obj_get_parent(s_lbl_cur_v2),0)),"CH2"));
+    assert(!strcmp(measured_vpp,lv_label_get_text(s_lbl_v1)));save(argv[1],"channel2_voltage_reference");
+    unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale scope_layout_cached_redraw_style_change harmonics scope_RAW_only supported_modes math4096 drag trigger_single unified_roll_scale voltage_reference");return 0;
 }

@@ -45,6 +45,9 @@ typedef struct {
     trace_t tr[PLOT_MAX_TRACE];
 
     bool  trig_vis;
+    bool voltage_ref,zero_visible[2];
+    int voltage_channel;
+    float zero_position[2];
     float trig_x;            /* 0..1 触发位置（水平轴） */
     bool  trig_lev_vis;
     float trig_y;            /* 0..1 触发电平（0=底 1=顶） */
@@ -157,6 +160,13 @@ void plot_set_mode(lv_obj_t *plot, plot_mode_t mode)
     }
     p->center_dash = true;
     lv_obj_invalidate(plot);
+}
+
+void plot_set_voltage_reference(lv_obj_t *plot,int channel,float zero0,float zero1,bool show0,bool show1)
+{
+    plot_t *p=PLOT_OF(plot);if(!p)return;
+    if(p->voltage_ref && p->voltage_channel==channel && p->zero_position[0]==zero0 && p->zero_position[1]==zero1 && p->zero_visible[0]==show0 && p->zero_visible[1]==show1)return;
+    p->voltage_ref=true;p->voltage_channel=channel;p->zero_position[0]=zero0;p->zero_position[1]=zero1;p->zero_visible[0]=show0;p->zero_visible[1]=show1;lv_obj_invalidate(plot);
 }
 
 void plot_set_grid(lv_obj_t *plot, int divx, int divy, bool center_dash)
@@ -634,7 +644,8 @@ static void draw_ticks(lv_layer_t *layer, plot_t *p,
             lv_point_t sz;
             lv_text_get_size(&sz, p->tk_y[j], V32_FONT_SMALL, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
             int32_t tx=gx-8-sz.x;if(tx<ox+2)tx=ox+2;
-            text_w(layer, tx, cy - sz.y / 2, sz.x + 8, p->tk_y[j], V32_C_LABEL, V32_FONT_SMALL);
+            lv_color_t color=p->voltage_ref?(p->voltage_channel?V32_C_CH2:V32_C_CH1):V32_C_LABEL;
+            text_w(layer, tx, cy - sz.y / 2, sz.x + 8, p->tk_y[j], color, V32_FONT_SMALL);
         }
     }
     (void)ow;
@@ -954,6 +965,17 @@ static void plot_draw_cb(lv_event_t *e)
 
     if(p->tk_nx > 0 || p->tk_ny > 0)
         draw_ticks(layer, p, ox, oy, ow, oh, x0, y0, w, h);
+    if(p->mode==PLOT_SCOPE && p->voltage_ref){
+        text_w(layer,ox+4,oy,70,p->voltage_channel?"CH2 V":"CH1 V",p->voltage_channel?V32_C_CH2:V32_C_CH1,V32_FONT_SMALL);
+        for(int ch=0;ch<2;ch++){
+            if(!p->zero_visible[ch] || !isfinite(p->zero_position[ch]) || p->zero_position[ch]<0.f || p->zero_position[ch]>1.f)continue;
+            int32_t zy=y0+(int32_t)((1.f-p->zero_position[ch])*(h-1));
+            lv_draw_triangle_dsc_t z;lv_draw_triangle_dsc_init(&z);z.bg_color=ch?V32_C_CH2:V32_C_CH1;z.bg_opa=LV_OPA_COVER;
+            z.p[0].x=x0+2+ch*9;z.p[0].y=zy;z.p[1].x=x0+10+ch*9;z.p[1].y=zy-4;z.p[2].x=x0+10+ch*9;z.p[2].y=zy+4;lv_draw_triangle(layer,&z);
+            int32_t ty=zy+(ch?5:-22);if(ty<y0)ty=y0;if(ty>y0+h-22)ty=y0+h-22;
+            text_plated(layer,x0+22+ch*52,ty,ch?"2 0V":"1 0V",z.bg_color,V32_FONT_SMALL);
+        }
+    }
 
     /* 顶部信息行（scope_proto 的 A1=… A2=… Time/Div=… Trig=…）：
      * 分段配色画在框上方的留白里（tk_ny>0 时顶部留了 20px）。 */

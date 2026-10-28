@@ -81,6 +81,7 @@ void plot_set_peak(lv_obj_t *plot, bool vis, float x, const char *txt);
 void plot_set_iq(lv_obj_t *plot, float phase_deg);
 void plot_hide_iq(lv_obj_t *plot);
 bool plot_get_data_area(lv_obj_t *plot,lv_area_t *area);
+void plot_set_voltage_reference(lv_obj_t *plot,int channel,float zero0,float zero1,bool show0,bool show1);
 
 /* ---- 画布内的角落文字（参考稿 FFT 页的 "0 MHz" / "32.5 MHz"）---- */
 void plot_set_axis_labels(lv_obj_t *plot, const char *left, const char *right);
