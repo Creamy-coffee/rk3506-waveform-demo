@@ -3,10 +3,12 @@
 The scope always displays the two physical ADC RAW channels. The former scope
 demodulation button and automatic takeover by legacy IQ frames are removed.
 Modulation configuration belongs to the modulation page. Its selectable list is
-OFF, AM, FM, PM, OOK, 2FSK and BPSK. PM has wrapped-phase analysis; it is not a
-digital protocol decoder. QPSK has only IQ observation in this codebase, so its
-selection is removed until carrier/symbol recovery and bit decisions exist.
-Protocol mode numbers retain their original values, including the unused UI ID 4.
+OFF, AM, FM, PM, OOK, 2FSK, BPSK and QPSK. PM has wrapped-phase analysis; it is not a
+digital protocol decoder. QPSK has IQ observation in this screen codebase. Its
+selection is retained: the project already passed four physical RF capture/PC
+offline symbol-recovery tests on 2026-10-22. That receiver has not been integrated
+into the screen's production QPSK bit path. See the audited evidence below.
+Protocol mode numbers retain their original values, including QPSK ID 4.
 Legacy IQ parsing remains available for recordings and NCO diagnostics.
 
 The lock page no longer exposes the obsolete AA5 modulation selector or a
@@ -110,7 +112,7 @@ is a different workload. Neither figure is a full-bandwidth acquisition-rate or
 all-pages FPS promise. Generator settings were restored and verified afterwards.
 
 Installed binary SHA256:
-`825a3aa69836739f77f918829b02ae1c370993397d0fd7bbb654491209ff25ef`.
+`788cb6aca97e38f95203915cc5f931ca28832d151c226400378feb10de705cda`.
 Rollback binary: `/usr/bin/waveform_demo.pre_clarity_20261028`.
 Host evidence: `firmware/reports/display_clarity_20261028/physical_v3`,
 `performance`, `deployed.json`; native validation in
@@ -132,3 +134,32 @@ or QPSK acceptance result.
 Palette references: [Nord](https://github.com/nordtheme/nord) and
 [Catppuccin](https://github.com/catppuccin/catppuccin). Their dark neutral backgrounds
 and restrained accents informed the display; no external UI code was copied.
+
+## QPSK evidence audit and correction
+
+The initial 2026-10-28 UI cleanup incorrectly treated missing screen bit recovery
+as grounds to remove the project's tested QPSK observation mode. The menu is
+restored. The historical source is the host report
+`firmware/reports/digital_board_20261022/数字调制实测报告.md`, with the corresponding
+raw captures and per-run `.analysis.json` records. These are physical ADC/DDC
+captures decoded on the PC using the C/liquid-dsp receiver, not synthetic signals.
+
+| ADC channel | Bandwidth | Requested Bd | CRC-good frames | Held-out symbols | Errors | EVM RMS |
+|---|---|---:|---:|---:|---:|---:|
+| CH0 | Standard | 2000 | 743 | 22341 | 0 | 7.777% |
+| CH0 | Wide | 2000 | 1241 | 18469 | 0 | 7.767% |
+| CH0 | Narrow | 500 | 309 | 3433 | 0 | 7.740% |
+| CH1 | Standard | 2000 | 624 | 18469 | 0 | 7.789% |
+
+All four runs report zero CRC errors and zero internal frame-gap events. The
+first run's raw SHA256 is
+`6389a3902729707611c76fd1a7419d1ab69e58f04d8059598d97a4275f48831e`.
+An initial 1024 recovered symbols were excluded; 512 training symbols selected
+PN7 offset, bit order and phase/label ambiguity before the held-out comparison.
+The generator's overlapping PN bit-pair model was inferred from this test.
+Zero errors cover those finite symbol comparisons, not arbitrary protocol BER.
+The 2026-10-26 screen QPSK test separately received 372 valid ANA frames and
+showed residual carrier rotation/no clean four clusters before symbol recovery.
+It did not establish real-time screen bit recovery. The menu therefore offers
+QPSK IQ/sample observation with its existing undecoded status; the image decoder
+continues to offer only OOK, 2FSK and BPSK.

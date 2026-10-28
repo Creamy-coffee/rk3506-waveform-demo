@@ -334,8 +334,8 @@ int main(int argc,char **argv)
     int border=lv_obj_get_style_border_width(s_plot_scope,LV_PART_MAIN);
     assert(grid.x1==widget.x1+80+border && grid.y1==widget.y1+20+border);save(argv[1],"scope_raw_only");
     s_an_type=0;
-    const int expected_modes[]={1,2,7,5,3,6,0};
-    for(unsigned i=0;i<7;i++){cb_an_type(NULL);assert(s_an_type==expected_modes[i]);}
-    analysis_apply(4,0,1);assert(s_an_type==0);
+    const int expected_modes[]={1,2,7,5,3,6,4,0};
+    for(unsigned i=0;i<8;i++){cb_an_type(NULL);assert(s_an_type==expected_modes[i]);}
+    analysis_apply(4,0,1);assert(s_an_type==4);
     unlink(fixture);puts("MODULATION_VIEW_PASS time_axes raw_stale independent_views local_controls gaps flags IQ FM pause exact_RAW_rate glyphs image_empty_partial_CRC_complete_stale scope_layout_cached_redraw_style_change harmonics scope_RAW_only supported_modes");return 0;
 }

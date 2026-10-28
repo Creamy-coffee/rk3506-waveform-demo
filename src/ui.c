@@ -2529,7 +2529,7 @@ static void build_mod(lv_obj_t *pg)
     }
     /* 制式=关 时的开始指引（否则下图一块空网格，不知道要干什么） */
     s_lbl_modhint = mk_label(s_plot_modana, 0, 0,
-                             "制式为「关」 · 点控制条「制式」选 AM/FM/PM/OOK/2FSK/BPSK 开始分析",
+                             "制式为「关」 · 选择 AM/FM/PM/OOK/2FSK/BPSK/QPSK",
                              V32_FONT_SMALL, V32_C_WARN);
     lv_obj_align(s_lbl_modhint, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_width(s_lbl_modhint,LV_PCT(95));
@@ -3120,7 +3120,7 @@ static int s_an_send_pending;
 
 static void analysis_apply(int type, int ch, int rate)
 {
-    if(type<0 || type>7 || type==4 || ch<0 || ch>1 || rate<0 || rate>2)return;
+    if(type<0 || type>7 || ch<0 || ch>1 || rate<0 || rate>2)return;
     ook_reset(&s_ook);
     bpsk_reset(&s_bpsk);
     s_an_type = type; s_an_ch = ch; s_an_rate = rate;
@@ -3165,7 +3165,7 @@ static void analysis_send_now(void)
 }
 
 static const char *AN_TYPE_NAME[8] = {
-    "关", "AM", "FM", "2FSK", "未支持", "OOK", "BPSK", "PM"
+    "关", "AM", "FM", "2FSK", "QPSK", "OOK", "BPSK", "PM"
 };
 static const char *AN_RATE_NAME[3] = { "档8k", "标准", "宽档" };
 
@@ -3219,8 +3219,9 @@ static void cb_bpsk_view(lv_event_t *e){LV_UNUSED(e);s_bpsk_symbols=!s_bpsk_symb
 static void cb_an_type(lv_event_t *e)
 {
     LV_UNUSED(e);
-    /* QPSK has raw IQ transport only; no symbol recovery/bit decision path. */
-    static const int available[]={0,1,2,7,5,3,6};
+    /* QPSK RF/host recovery was tested on 2026-10-22. The screen exposes
+       its existing IQ observation; host symbol recovery is not ported here. */
+    static const int available[]={0,1,2,7,5,3,6,4};
     int next=0;
     for(unsigned i=0;i<sizeof available/sizeof available[0];i++)
         if(s_an_type==available[i])next=available[(i+1)%(sizeof available/sizeof available[0])];
@@ -4743,7 +4744,7 @@ static void tick_mod(void)
         /* 制式关：给开始指引；切换中：等回显 */
         lv_label_set_text(s_lbl_modhint, s_an_type
             ? "○ 切换中 · 等待 FPGA 回显匹配帧…"
-            : "制式为「关」 · 点控制条「制式」选 AM/FM/PM/OOK/2FSK/BPSK 开始分析");
+            : "制式为「关」 · 选择 AM/FM/PM/OOK/2FSK/BPSK/QPSK");
         lv_obj_remove_flag(s_lbl_modhint, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_lbl_mst, s_an_type ? "○ 切换中" : "○ 未开");
         lv_obj_set_style_text_color(s_lbl_mst, V32_C_WARN, LV_PART_MAIN);
