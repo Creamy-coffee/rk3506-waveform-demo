@@ -622,7 +622,7 @@ static float    s_spec_fs_eff;
 static float s_real_fft_fs=65000000.f;
 static v32_spec_view_t s_spec_snapshot;
 static float s_spec_floor_dbfs;
-static int s_spec_floor_unresolved;
+static int s_spec_floor_unresolved,s_spec_has_peak;
 static int      s_spec_stale;        /* 有帧但已过期 */      /* 本帧频谱的等效采样率（逐帧变化！） */
 
 /*
@@ -1872,7 +1872,7 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
            （本地 FFT 依赖波形帧，只有频谱帧时会算出空数据）。 */
         if(S.use_real && s_real_fft_ch == 0 && sp.seq > 0
            && sp.got > 2 && sp.nfft > 0 && sp.fs_eff_hz > 0) {
-            int   bi = 2;
+            static float x_positions[PLOT_MAX_PTS];
             float bv = -1e30f;
             const uint32_t bins = sp.got;
             for(int i = 0; i < n; i++) {
@@ -1882,20 +1882,22 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
                 if(s1 <= s0) s1 = s0 + 1;
                 if(s1 > (int)bins) s1 = (int)bins;
 
-                int mx = 0;
-                for(int k = s0; k < s1; k++) if(sp.data[k] > mx) mx = sp.data[k];
+                int mx = 0, mxb=s0;
+                for(int k = s0; k < s1; k++) if(sp.data[k] > mx){mx = sp.data[k];mxb=k;}
+                x_positions[i]=mx?(float)(2.0*mxb/sp.nfft):(float)i/(n-1);
 
                 const float db = (float)v32_spec_dbfs_centi(mx, sp.scale_dbfs) / 100.0f;
                 float y = (db + V32_DEMO_DB_FULLSCALE) / V32_DEMO_DB_FULLSCALE;
                 if(y < 0.f) y = 0.f;
                 if(y > 1.f) y = 1.f;
                 y01[i] = y;
-                if(i >= 2 && y > bv) { bv = y; bi = i; }
+                if(y > bv)bv=y;
             }
             /* 峰值频率直接按 bin 算：k × fs_eff / nfft */
-            int pkb = 0;
+            int pkb = 1;
             for(uint32_t k = 1; k < bins; k++) if(sp.data[k] > sp.data[pkb]) pkb = (int)k;
-            s_spec_peak_hz = (float)((double)pkb * (double)sp.fs_eff_hz / (double)sp.nfft);
+            s_spec_has_peak=sp.data[pkb]!=0;
+            s_spec_peak_hz = s_spec_has_peak?(float)((double)pkb * (double)sp.fs_eff_hz / (double)sp.nfft):0.f;
             s_spec_in_use  = 1;
             s_spec_win     = (int)sp.window;
             s_spec_bins    = (int)bins;
@@ -1910,7 +1912,8 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
             s_spec_floor_unresolved=(median==0);
             s_spec_floor_dbfs=(float)median*(float)sp.scale_dbfs/255.f-(float)sp.scale_dbfs;
 
-            if(peak_x)   *peak_x   = (float)bi / (float)(n - 1);
+            plot_set_fft_positions(s_plot_fft,x_positions,n);
+            if(peak_x)   *peak_x   = (float)(2.0*pkb/sp.nfft);
             if(peak_y01) *peak_y01 = bv;
             if(dbg_on())
                 fprintf(stderr, "[spec] FPGA 谱 bins=%u nfft=%u 峰值 bin %d = %.3f MHz\n",
@@ -1920,6 +1923,7 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
         s_spec_in_use = 0;
     }
 
+    plot_set_fft_positions(s_plot_fft,NULL,0);
     if(S.use_real && s_real_valid && s_real_bins > 2) {
         int   bi = 2;
         float bv = -1e30f;
@@ -4071,14 +4075,14 @@ static void fft_cursor_tick(void)
 
 static void tick_fft(void)
 {
-    static float y[256];
+    static float y[PLOT_MAX_PTS];
     static char  peak_txt[24];
     float px = 0.3f, py = 0.8f;
 
     real_update();
 
-    fetch_spectrum(y, 256, &px, &py);
-    plot_set_trace(s_plot_fft, 0, y, 256, V32_C_FFT, 2);
+    fetch_spectrum(y, PLOT_MAX_PTS, &px, &py);
+    plot_set_trace(s_plot_fft, 0, y, PLOT_MAX_PTS, V32_C_FFT, 2);
 
     const bool real = (S.use_real && s_real_valid);
 
@@ -4108,10 +4112,11 @@ static void tick_fft(void)
         snprintf(peak_txt, sizeof(peak_txt), "▼ %d.000 MHz", FREQ_MHZ[S.freq_idx]);
         lv_label_set_text_fmt(s_lbl_fft_peakf, "%.3f MHz", (double)FREQ_MHZ[S.freq_idx]);
         lv_label_set_text_fmt(s_lbl_fft_peakl, "%.1f dBFS", (double)demo_dbfs_from_y01(py));
-        lv_label_set_text_fmt(s_lbl_fft_floor, "%.1f dBFS", (double)demo_noise_floor_dbfs(y, 256));
+        lv_label_set_text_fmt(s_lbl_fft_floor, "%.1f dBFS", (double)demo_noise_floor_dbfs(y, PLOT_MAX_PTS));
     }
 
-    plot_set_peak(s_plot_fft, true, px, peak_txt);
+    if(s_spec_in_use && !s_spec_has_peak){lv_label_set_text(s_lbl_fft_peakf,"—");lv_label_set_text(s_lbl_fft_peakl,"< RES");}
+    plot_set_peak(s_plot_fft, !(s_spec_in_use && !s_spec_has_peak), px, peak_txt);
     if(!s_fft_cur_on)lv_label_set_text(s_lbl_fft_cur,s_spec_in_use && s_spec_floor_unresolved?"0码谱线低于分辨率":"点击频谱读取");
 
     /*

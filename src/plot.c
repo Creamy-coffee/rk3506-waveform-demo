@@ -43,6 +43,8 @@ typedef struct {
     lv_color_t center_color;
 
     trace_t tr[PLOT_MAX_TRACE];
+    float fft_positions[PLOT_MAX_PTS];
+    int fft_positions_n;
 
     bool  trig_vis;
     bool voltage_ref,zero_visible[2];
@@ -180,6 +182,16 @@ void plot_set_grid(lv_obj_t *plot, int divx, int divy, bool center_dash)
 }
 
 /* ==================== 数据设置 ==================== */
+
+void plot_set_fft_positions(lv_obj_t *plot,const float *positions,int n)
+{
+    plot_t *p=PLOT_OF(plot);if(!p)return;
+    if(!positions || n<1)n=0;
+    if(n>PLOT_MAX_PTS)n=PLOT_MAX_PTS;
+    if(p->fft_positions_n==n && (!n || !memcmp(p->fft_positions,positions,n*sizeof(float))))return;
+    p->fft_positions_n=n;if(n)memcpy(p->fft_positions,positions,n*sizeof(float));
+    lv_obj_invalidate(plot);
+}
 
 /* 返回 1 = 数据真的变了（已拷贝），0 = 数据相同跳过（没拷） */
 static int set_trace(lv_obj_t *plot, int idx, const float *y, int n,
@@ -549,12 +561,13 @@ static void draw_one_trace(lv_layer_t *layer, plot_t *p, int ti,
         if(!isfinite(t->y[i])) { previous=-1;anchored=0; }
         else {
             float value=t->y[i];if(value<0.f)value=0.f;if(value>1.f)value=1.f;
-            int32_t cx=x0+(int32_t)((int64_t)i*xspan/nm1);
+            int32_t cx=x0+((p->mode==PLOT_FFT && p->fft_positions_n==t->n)?
+                (int32_t)(p->fft_positions[i]*xspan):(int32_t)((int64_t)i*xspan/nm1));
             int32_t cy=y0+yspan-(int32_t)(value*yspan);
             int gap=0;
             if(previous>=0)for(int k=previous+1;k<i;k++)if(!isfinite(t->y[k]))gap=1;
             if(!anchored || gap) { px=cx;py=cy;anchored=1; }
-            else if(cx>px) {
+            else if(cx>px || (p->mode==PLOT_FFT && cx==px)) {
                 ld.p1.x=px;ld.p1.y=py;ld.p2.x=cx;ld.p2.y=cy;
                 lv_draw_line(layer,&ld);
                 px=cx;py=cy;

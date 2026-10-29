@@ -29,6 +29,9 @@
  * 绘图区宽约 740 px，1024 点足够做到「每像素至少一个点」；
  * 演示源只发 512 点、V32CAP3 一帧 4096 点会先被压到 1024。 */
 #define PLOT_MAX_PTS   1024
+
+/* Optional true-bin horizontal positions for an FFT trace, normalized 0..1. */
+void plot_set_fft_positions(lv_obj_t *plot,const float *positions,int n);
 /* 一个波形区最多几条曲线（参考稿里 SCOPE/LOCK-IN 是两条，其余一条） */
 #define PLOT_MAX_TRACE 3   /* 2 路 + 1 条 Math */
 

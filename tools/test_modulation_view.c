@@ -323,6 +323,21 @@ int main(int argc,char **argv)
     assert(!strcmp(lv_label_get_text(s_lbl_fft_floor),"< RES"));
     s_fft_cur_x=.8f;fft_cursor_tick();
     assert(strstr(lv_label_get_text(s_lbl_fft_cur),"< RES"));spec_zero_floor=0;
+    {
+    float spec_test_y[PLOT_MAX_PTS],spec_test_x,spec_test_peak;
+    fetch_spectrum(spec_test_y,PLOT_MAX_PTS,&spec_test_x,&spec_test_peak);
+    assert(fabsf(spec_test_x-64.f/2048.f)<1e-7f);
+    assert(s_spec_has_peak);
+    /* A CRC-valid all-zero spectrum must not invent a peak or -100 dBFS value. */
+    fixture_write(214,21,1,0,0,0,1,1);append_spec();
+    FILE *zero_file=fopen(fixture,"r+b");assert(zero_file);fseek(zero_file,-2096,SEEK_END);
+    uint8_t zero_spec[2096];assert(fread(zero_spec,1,2096,zero_file)==2096);
+    memset(zero_spec+44,0,2048);put(zero_spec+2092,crc(zero_spec,2092));fseek(zero_file,-2096,SEEK_END);
+    assert(fwrite(zero_spec,1,2096,zero_file)==2096);fclose(zero_file);
+    assert(v32_init_file(fixture)==0);draw(d);assert(!s_spec_has_peak);
+    assert(!strcmp(lv_label_get_text(s_lbl_fft_peakf),"—"));
+    assert(!strcmp(lv_label_get_text(s_lbl_fft_peakl),"< RES"));
+    }
     /* Host THD must use exact powers, not the v2 on-wire zero placeholder. */
     fixture_write(215,22,1,0,0,0,1,1);append_harmonic(1,0,0,0);assert(v32_init_file(fixture)==0);
     s_hrm_on=1;s_hrm_baseline_seq=0;draw(d);assert(!strcmp(lv_label_get_text(s_hrm_thd),"CHECK"));
