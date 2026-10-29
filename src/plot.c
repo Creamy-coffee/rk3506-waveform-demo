@@ -45,7 +45,7 @@ typedef struct {
     trace_t tr[PLOT_MAX_TRACE];
     float fft_positions[PLOT_MAX_PTS];
     int fft_positions_n;
-    float fft_range_db,fft_nyquist;
+    float fft_range_db,fft_nyquist,fft_low;
     char fft_frequency_labels[3][20],fft_db_labels[5][12];
 
     bool  trig_vis;
@@ -185,15 +185,15 @@ void plot_set_grid(lv_obj_t *plot, int divx, int divy, bool center_dash)
 
 /* ==================== 数据设置 ==================== */
 
-void plot_set_fft_axes(lv_obj_t *plot,float range_db,float nyquist_hz)
+void plot_set_fft_axes(lv_obj_t *plot,float range_db,float low_hz,float nyquist_hz)
 {
     plot_t *p=PLOT_OF(plot);if(!p || range_db<=0 || nyquist_hz<=0)return;
-    if(p->fft_range_db==range_db && p->fft_nyquist==nyquist_hz)return;
-    p->fft_range_db=range_db;p->fft_nyquist=nyquist_hz;
+    if(p->fft_range_db==range_db && p->fft_nyquist==nyquist_hz && p->fft_low==low_hz)return;
+    p->fft_range_db=range_db;p->fft_nyquist=nyquist_hz;p->fft_low=low_hz;
     for(int i=0;i<5;i++)snprintf(p->fft_db_labels[i],12,"%.0f",i?-range_db*i/4:0.f);
     if(range_db>=120)snprintf(p->fft_db_labels[4],12,"<RES");
     for(int i=0;i<3;i++){
-        float f=nyquist_hz*(i+1)/4;
+        float f=low_hz+(nyquist_hz-low_hz)*(i+1)/4;
         snprintf(p->fft_frequency_labels[i],20,f>=1e6?"%.3fMHz":f>=1e3?"%.2fkHz":"%.1fHz",f>=1e6?f/1e6:f>=1e3?f/1e3:f);
     }
     lv_obj_invalidate(plot);
@@ -860,7 +860,7 @@ static int32_t peak_curve_y(plot_t *p, int ti, float at_x, int32_t y0, int32_t h
     int32_t best = -1;
     int i;
     for(i = 0; i < t->n; i++) {
-        const float u = (float)i / (float)(t->n - 1);
+        const float u = p->mode==PLOT_FFT && p->fft_positions_n==t->n?p->fft_positions[i]:(float)i / (float)(t->n - 1);
         if(fabsf(u - at_x) > 0.03f) continue;
         const int32_t y = (int32_t)(t->y[i] * (h - 1));
         if(y > best) best = y;          /* y 越大 = 屏幕越靠上 = 值越高 */
