@@ -55,6 +55,11 @@ typedef enum {
 void fft_magnitude_spectrum_zero_win(const float *x, int n_real, int n_fft,
                                      fft_win_t win, float *mag);
 
+/* Dominant AC component of a Hann magnitude spectrum; fractional zero-padded
+ * bin, with bounded log-parabolic interpolation. Zero for no positive energy.
+ * Not a promise to resolve tones closer than the original-frame resolution. */
+float fft_hann_peak_bin(const float *mag, int bins);
+
 /* 兼容旧调用：等价于 FFT_WIN_HANN */
 void fft_magnitude_spectrum_zero(const float *x, int n_real, int n_fft, float *mag);
 

@@ -1273,27 +1273,38 @@ static void real_compute_fft(int fn,float rate)
      *      （频率读数看着是对的，因为它从 bin 1 开始搜；错的是箭头和画面。）
      * 示波器的频谱本来就是交流耦合的，先减均值是标准做法。
      */
+    float center_bin = 0.f;
     {
         static float s_fft_tmp[WAVE_MAX_FRAME];
+        static float hann_mag[REAL_FFT_N/2];
         double sum = 0.0;
         for(int i = 0; i < fn; i++) sum += (double)spec_src[i];
         const float mean = (float)(sum / (double)fn);
         for(int i = 0; i < fn; i++) s_fft_tmp[i] = spec_src[i] - mean;
-        fft_magnitude_spectrum_zero_win(s_fft_tmp, fn, REAL_FFT_N,
-                                        (fft_win_t)S.win_idx, s_real_mag);
+        /* Same frozen samples, independent Hann center estimate. Hann itself
+         * needs one FFT; other windows add one for frequency localization. */
+        float *frequency_mag = S.win_idx==FFT_WIN_HANN ? s_real_mag : hann_mag;
+        fft_magnitude_spectrum_zero_win(s_fft_tmp,fn,REAL_FFT_N,FFT_WIN_HANN,frequency_mag);
+        center_bin=fft_hann_peak_bin(frequency_mag,REAL_FFT_N/2);
+        if(S.win_idx!=FFT_WIN_HANN)
+            fft_magnitude_spectrum_zero_win(s_fft_tmp, fn, REAL_FFT_N,
+                                            (fft_win_t)S.win_idx, s_real_mag);
     }
     s_real_bins = REAL_FFT_N / 2;
 
-    int pk = 1;
-    for(int i = 2; i < s_real_bins; i++)
-        if(s_real_mag[i] > s_real_mag[pk]) pk = i;
-
-    s_real_peak_hz   = (float)pk * (float)rate / (float)REAL_FFT_N;
+    int pk = (int)center_bin;
+    if(pk<0)pk=0;
+    if(pk>=s_real_bins-1)pk=s_real_bins-2;
+    const float fraction=center_bin-pk;
+    /* Selected-window amplitude at the estimated component center. A broader
+     * FlatTop lobe must not select a different frequency or a different tone. */
+    const float center_mag=s_real_mag[pk]+fraction*(s_real_mag[pk+1]-s_real_mag[pk]);
+    s_real_peak_hz   = center_bin * rate / (float)REAL_FFT_N;
     if(dbg_on())
         fprintf(stderr, "[fft] ch=CH%d(vpp %.0f/%.0f mV, sel=%d) pk_bin=%d (%.3f MHz) mag=%.1f\n",
                 s_real_fft_ch+1, (double)s_real_vpp0_mv, (double)s_real_vpp1_mv, S.fft_ch,
                 pk, (double)s_real_peak_hz/1e6, (double)s_real_mag[pk]);
-    s_real_peak_dbfs = 20.0f * log10f((s_real_mag[pk] + 1e-9f) / REAL_FULLSCALE_COUNTS);
+    s_real_peak_dbfs = 20.0f * log10f((center_mag + 1e-9f) / REAL_FULLSCALE_COUNTS);
     s_real_floor_dbfs = 20.0f * log10f((noise_floor_mag(s_real_mag, s_real_bins) + 1e-9f)
                                        / REAL_FULLSCALE_COUNTS);
     s_real_phase_deg = phase_diff_deg(s_full0, s_full1, fn, s_real_peak_hz, (float)rate);
@@ -1954,7 +1965,7 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
             y01[i] = y;
             if(i >= 2 && y > bv) { bv = y; bi = i; }
         }
-        if(peak_x)   *peak_x   = (float)bi / (float)(n - 1);
+        if(peak_x)   *peak_x   = s_real_fft_fs>0.f ? fmaxf(0.f,fminf(1.f,2.f*s_real_peak_hz/s_real_fft_fs)) : 0.f;
         if(peak_y01) *peak_y01 = bv;
         if(dbg_on()) {
             /* 列出曲线最高的三个点，确认 ▼ 落点对不对 */
@@ -2286,7 +2297,7 @@ static void build_fft(lv_obj_t *pg)
     lv_obj_set_width(p1, LV_PCT(100));
     lv_obj_set_flex_grow(p1, 1);
     mk_title(p1, 0, 0, "频谱分析");
-    s_lbl_fft_peakf = mk_metric(p1, TITLE_H + METRIC_H * 0, "峰值频率",   "10.000 MHz", V32_C_GREEN);
+    s_lbl_fft_peakf = mk_metric(p1, TITLE_H + METRIC_H * 0, "中心频率",   "10.000 MHz", V32_C_GREEN);
     s_lbl_fft_peakl = mk_metric(p1, TITLE_H + METRIC_H * 1, "峰值电平",   "-12.8 dBFS", V32_C_METRIC_VALUE);
     s_lbl_fft_floor = mk_metric(p1, TITLE_H + METRIC_H * 2, "底噪",      "-79.4 dBFS", V32_C_METRIC_VALUE);
     s_lbl_fft_res=mk_metric(p1, TITLE_H + METRIC_H * 3, "FFT Δf", "—", V32_C_METRIC_VALUE);

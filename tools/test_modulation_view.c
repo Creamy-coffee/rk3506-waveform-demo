@@ -316,9 +316,16 @@ int main(int argc,char **argv)
     /* Window taps must change the displayed source even with a valid SPEC frame. */
     S.running=false;S.win_idx=0;
     float window_prev[4096];memcpy(window_prev,s_real_mag,sizeof window_prev);
+    float frozen_center=0;
     for(int w=1;w<=3;w++){
         cb_win_cycle(NULL);draw(d);
         assert(s_fft_raw_source && !s_spec_in_use && S.win_idx==w%3);
+        if(w==1)frozen_center=s_real_peak_hz;
+        else assert(fabsf(s_real_peak_hz-frozen_center)<.01f);
+        float marker_y[PLOT_MAX_PTS],marker_x,marker_peak;
+        fetch_spectrum(marker_y,PLOT_MAX_PTS,&marker_x,&marker_peak);
+        assert(fabsf(marker_x-2.f*frozen_center/s_real_fft_fs)<1e-6f);
+        assert(strstr(lv_label_get_text(lv_obj_get_child(lv_obj_get_parent(s_lbl_fft_peakf),0)),"中心频率"));
         assert(strstr(lv_label_get_text(s_lbl_fft_win),WIN_NAME[w%3]));
         assert(strstr(lv_label_get_text(s_lbl_fft_win),"RAW"));
         assert(memcmp(window_prev,s_real_mag,sizeof window_prev));

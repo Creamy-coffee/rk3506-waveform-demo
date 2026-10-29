@@ -182,3 +182,20 @@ void fft_magnitude_spectrum_zero(const float *x, int n_real, int n_fft, float *m
 {
     fft_magnitude_spectrum_zero_win(x, n_real, n_fft, FFT_WIN_HANN, mag);
 }
+
+/* Center estimation is always based on Hann, never a FlatTop plateau maximum. */
+float fft_hann_peak_bin(const float *mag, int bins)
+{
+    if(!mag || bins<3)return 0.f;
+    int peak=0;float maximum=0.f;
+    for(int k=1;k<bins;k++)if(isfinite(mag[k]) && mag[k]>maximum){maximum=mag[k];peak=k;}
+    if(!peak)return 0.f;
+    if(peak==1 || peak==bins-1 || mag[peak-1]<=0.f || mag[peak+1]<=0.f)return (float)peak;
+    const float left=logf(mag[peak-1]),middle=logf(maximum),right=logf(mag[peak+1]);
+    const float curvature=left-2.f*middle+right;
+    if(!isfinite(curvature) || curvature>=-1e-9f)return (float)peak;
+    float offset=.5f*(left-right)/curvature;
+    if(!isfinite(offset))return (float)peak;
+    offset=fmaxf(-.5f,fminf(.5f,offset));
+    return peak+offset;
+}
