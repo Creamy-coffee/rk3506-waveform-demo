@@ -59,10 +59,11 @@ static void append_meas(unsigned hz0,unsigned hz1,unsigned valid){
     put(b+8,V32_MEAS_VERSION);put(b+12,128);put(b+16,raw_id);put(b+24,raw_id*1000000u);put(b+32,65000000);
     put(b+84,hz0);put(b+88,hz1);b[92]=(uint8_t)valid;put(b+124,crc(b,124));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
 }
+static int spec_zero_floor;
 static void append_spec(void){
     FILE *f=fopen(fixture,"ab");assert(f);uint8_t b[2096]={0};memcpy(b,"V32SPEC!",8);
     put(b+8,1);put(b+12,sizeof b);put(b+16,raw_id);put(b+24,4096);put(b+28,2048);put(b+32,1000000);put(b+36,0);put(b+40,120);
-    memset(b+44,64,2048);b[44+64]=240;put(b+2092,crc(b,2092));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
+    memset(b+44,spec_zero_floor?0:64,2048);b[44+64]=240;put(b+2092,crc(b,2092));assert(fwrite(b,1,sizeof b,f)==sizeof b);fclose(f);
 }
 static void append_harmonic(unsigned id,unsigned channel,unsigned noise_mask,unsigned flags){
     FILE *f=fopen(fixture,"ab");assert(f);uint8_t b[216]={0};memcpy(b,"V32HRM1!",8);
@@ -317,6 +318,11 @@ int main(int argc,char **argv)
     s_fft_cur_on=1;s_fft_cur_x=64.f/2048.f;fft_cursor_tick();
     assert(strstr(lv_label_get_text(s_lbl_fft_cur),"15.625kHz"));
     assert(strstr(lv_label_get_text(s_lbl_fft_cur),"-7.1 dBFS"));save(argv[1],"spectrum_fpga");
+    assert(strstr(lv_label_get_text(s_lbl_fft_floor),"dBFS"));
+    spec_zero_floor=1;fixture_write(214,21,1,0,0,0,1,1);append_spec();assert(v32_init_file(fixture)==0);draw(d);
+    assert(!strcmp(lv_label_get_text(s_lbl_fft_floor),"< RES"));
+    s_fft_cur_x=.8f;fft_cursor_tick();
+    assert(strstr(lv_label_get_text(s_lbl_fft_cur),"< RES"));spec_zero_floor=0;
     /* Host THD must use exact powers, not the v2 on-wire zero placeholder. */
     fixture_write(215,22,1,0,0,0,1,1);append_harmonic(1,0,0,0);assert(v32_init_file(fixture)==0);
     s_hrm_on=1;s_hrm_baseline_seq=0;draw(d);assert(!strcmp(lv_label_get_text(s_hrm_thd),"CHECK"));

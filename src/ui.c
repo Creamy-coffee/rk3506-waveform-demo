@@ -622,6 +622,7 @@ static float    s_spec_fs_eff;
 static float s_real_fft_fs=65000000.f;
 static v32_spec_view_t s_spec_snapshot;
 static float s_spec_floor_dbfs;
+static int s_spec_floor_unresolved;
 static int      s_spec_stale;        /* 有帧但已过期 */      /* 本帧频谱的等效采样率（逐帧变化！） */
 
 /*
@@ -1906,6 +1907,7 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
             for(unsigned k=2;k<sp.got;k++){histogram[sp.data[k]]++;total++;}
             unsigned accum=0,median=0;
             for(;median<255;median++){accum+=histogram[median];if(accum>total/2)break;}
+            s_spec_floor_unresolved=(median==0);
             s_spec_floor_dbfs=(float)median*(float)sp.scale_dbfs/255.f-(float)sp.scale_dbfs;
 
             if(peak_x)   *peak_x   = (float)bi / (float)(n - 1);
@@ -4049,9 +4051,11 @@ static void fft_cursor_tick(void)
     const float f  = s_fft_cur_x * fs * 0.5f;
 
     float db = -200.0f;
+    int unresolved=0;
     if(s_spec_in_use && s_spec_snapshot.got>0){
         unsigned bin=(unsigned)(f*s_spec_snapshot.nfft/s_spec_fs_eff+.5f);
         if(bin>=s_spec_snapshot.got)bin=s_spec_snapshot.got-1;
+        unresolved=(s_spec_snapshot.data[bin]==0);
         db=(float)s_spec_snapshot.data[bin]*s_spec_snapshot.scale_dbfs/255.f-s_spec_snapshot.scale_dbfs;
     }else if(s_real_bins > 2) {
         int b = (int)(s_fft_cur_x * (float)(s_real_bins - 1) + 0.5f);
@@ -4060,7 +4064,8 @@ static void fft_cursor_tick(void)
         db = 20.0f * log10f((s_real_mag[b] + 1e-9f) / REAL_FULLSCALE_COUNTS);
     }
     char frequency[32];fmt_hz(frequency,sizeof frequency,f);
-    lv_label_set_text_fmt(s_lbl_fft_cur,"%s · %.1f dBFS",frequency,(double)db);
+    if(unresolved)lv_label_set_text_fmt(s_lbl_fft_cur,"%s · < RES",frequency);
+    else lv_label_set_text_fmt(s_lbl_fft_cur,"%s · %.1f dBFS",frequency,(double)db);
     plot_set_trigger(s_plot_fft, true, s_fft_cur_x);
 }
 
@@ -4091,7 +4096,8 @@ static void tick_fft(void)
         char frequency[32];fmt_hz(frequency,sizeof frequency,pf);
         lv_label_set_text(s_lbl_fft_peakf,frequency);
         lv_label_set_text_fmt(s_lbl_fft_peakl, "%.1f dBFS", (double)pdb);
-        lv_label_set_text_fmt(s_lbl_fft_floor, "%.1f dBFS", (double)(s_spec_in_use?s_spec_floor_dbfs:s_real_floor_dbfs));
+        if(s_spec_in_use && s_spec_floor_unresolved)lv_label_set_text(s_lbl_fft_floor,"< RES");
+        else lv_label_set_text_fmt(s_lbl_fft_floor, "%.1f dBFS", (double)(s_spec_in_use?s_spec_floor_dbfs:s_real_floor_dbfs));
     } else if(S.use_real) {
         /* 没数据：读数归零，不要留着上一帧的数字 */
         snprintf(peak_txt, sizeof(peak_txt), "▼ —");
@@ -4106,6 +4112,7 @@ static void tick_fft(void)
     }
 
     plot_set_peak(s_plot_fft, true, px, peak_txt);
+    if(!s_fft_cur_on)lv_label_set_text(s_lbl_fft_cur,s_spec_in_use && s_spec_floor_unresolved?"0码谱线低于分辨率":"点击频谱读取");
 
     /*
      * 窗函数读数：画的是 FPGA 的谱就报 FPGA 实际用的窗（协议里窗函数不可远程改，
