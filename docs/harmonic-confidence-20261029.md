@@ -1,0 +1,9 @@
+# Harmonic display qualification — 2026-10-29
+
+A 2,994,036-byte physical UART capture contained 62 CRC-valid HRM frames. With the fixed 1 MHz sine input, 59 frames had noise_mask=30 (H2–H5 below the wire noise criterion), while three isolated frames had mask=22 (H4 crossed the criterion). Those isolated frames produced raw THD candidates of about 1.79–2.04 percent. This identifies the immediate display trigger; it does not establish whether the H4 excursion is analog interference, FFT/noise-estimation variance, or another upstream issue.
+
+Added a display-only qualification helper. Each order needs three distinct received result IDs above the existing criterion before its dBc value is confirmed. THD candidates wait until the base and all currently detected orders are confirmed. Pending readings show CHECK, below-noise readings remain < NOISE, and stale/mismatched configurations reset confirmation. Repeated UI refreshes of one frame never advance the counter. Configuration, reference frequency, channel, rate and window changes reset state. Raw frames, flags, power values and exact THD arithmetic are unchanged; no fake zero or last-good hold is introduced.
+
+Offline replay: all 62 packets accepted, three raw candidates and zero qualified isolated candidates. A synthetic persistent H3 is accepted on frame three; duplicate, stale and configuration reset checks pass. Production LVGL regression includes CHECK on the first frame and repeated refresh, then correct existing 6.325 percent and -30 dBc results after three distinct results. Native and ARM builds pass.
+
+This is conservative display qualification, not analog calibration or a correction of the upstream noise estimator. It adds at least two result intervals of confirmation latency and can suppress short real transients. Calibration remains outstanding; sustained false-positive components also require further investigation.

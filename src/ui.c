@@ -1,3 +1,4 @@
+#include "harmonic_confidence.h"
 /*
  * ui.c —— V32 SIGNAL ANALYZER 界面（参考稿 v32_linux_touch_ui-1.html 的 1:1 移植）
  *
@@ -2187,18 +2188,26 @@ static void hrm_settings(lv_event_t *e)
 }
 static void tick_harmonic(void)
 {
+    static harmonic_confidence confidence;
     v32_harmonic_view_t v;int have=v32_get_harmonic(&v);
     int match=have && v.valid && v.seq!=s_hrm_baseline_seq && v.m.channel==(unsigned)s_hrm_channel && v.m.reference_fcw==s_hrm_fcw;
     int ready=s_hrm_on && match;char reference[32];fmt_hz(reference,sizeof reference,(float)((double)s_hrm_fcw*65000000.0/4294967296.0));
+    unsigned confirmed=harmonic_confirm(&confidence,&v.m,ready);
+    unsigned detected=ready?(v.m.valid_mask & ~v.m.noise_mask & 30u):0;
+    int qualified=detected && (confirmed & (detected|1u))==(detected|1u);
     lv_label_set_text(s_hrm_ref,reference);lv_label_set_text(s_hrm_thd,"—");
     for(unsigned i=0;i<5;i++){
         double dbc;
-        if(ready && v32_harmonic_dbc(&v.m,i+1,&dbc))lv_label_set_text_fmt(s_hrm_orders[i],"%.1f dBc",dbc);
+        if(ready && v32_harmonic_dbc(&v.m,i+1,&dbc)){
+            if(confirmed&(1u<<i))lv_label_set_text_fmt(s_hrm_orders[i],"%.1f dBc",dbc);
+            else lv_label_set_text(s_hrm_orders[i],"CHECK");
+        }
         else lv_label_set_text(s_hrm_orders[i],ready && (v.m.noise_mask&(1u<<i))?"< NOISE":"—");
     }
     if(!s_hrm_on){lv_label_set_text(s_hrm_note,"HARM OFF · 未校准\n需新 bit 16556a03");return;}
     if(!ready){lv_label_set_text(s_hrm_note,have && !v.valid?"HRM 超时 · 读数已撤回":"等待 HRM 回显匹配\n检查 bit / 通道 / 基频");return;}
-    if(v.m.thd_valid)lv_label_set_text_fmt(s_hrm_thd,"%.3f %%",100.0*v.m.thd_q24/16777216.0);
+    if(v.m.thd_valid && !qualified)lv_label_set_text(s_hrm_thd,"CHECK");
+    else if(v.m.thd_valid)lv_label_set_text_fmt(s_hrm_thd,"%.3f %%",100.0*v.m.thd_q24/16777216.0);
     else if(v.m.thd_below_noise)lv_label_set_text(s_hrm_thd,"< NOISE");
     const char *reason=v.m.flags&8?"CLIP":v.m.flags&1?"NO H1":v.m.flags&2?"LOW RES":v.m.flags&4?"PARTIAL":v.m.flags&32?"OVERFLOW":v.m.flags&128?"WINDOW":v.m.thd_below_noise?"< NOISE":"HANN";
     lv_label_set_text_fmt(s_hrm_note,"CH%u · R%u · %s\nfs %.1fkHz · %ums\n%s · 未校准",v.m.channel+1,v.m.decimation,reason,(double)v.m.adc_fs/v.m.decimation/1000.0,v.age_ms,v.m.flags&256?"前端响应未校准":"THD 2–5");

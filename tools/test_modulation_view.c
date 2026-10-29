@@ -305,7 +305,10 @@ int main(int argc,char **argv)
     assert(strstr(lv_label_get_text(s_lbl_fft_cur),"-7.1 dBFS"));save(argv[1],"spectrum_fpga");
     /* Host THD must use exact powers, not the v2 on-wire zero placeholder. */
     fixture_write(215,22,1,0,0,0,1,1);append_harmonic(1,0,0,0);assert(v32_init_file(fixture)==0);
-    s_hrm_on=1;s_hrm_baseline_seq=0;draw(d);assert(strstr(lv_label_get_text(s_hrm_thd),"6.325"));
+    s_hrm_on=1;s_hrm_baseline_seq=0;draw(d);assert(!strcmp(lv_label_get_text(s_hrm_thd),"CHECK"));
+    draw(d);assert(!strcmp(lv_label_get_text(s_hrm_thd),"CHECK"));
+    for(int id=100;id<102;id++){fixture_write(215,22,1,0,0,0,1,1);append_harmonic(id,0,0,0);assert(v32_init_file(fixture)==0);draw(d);}
+    assert(strstr(lv_label_get_text(s_hrm_thd),"6.325"));
     assert(strstr(lv_label_get_text(s_hrm_orders[1]),"-30.0"));save(argv[1],"spectrum_harmonics");
     hrm_settings(NULL);assert(s_hrm_dialog);draw(d);save(argv[1],"harmonic_settings");hrm_close(NULL);
     fixture_write(216,22,1,0,0,0,1,1);append_harmonic(2,0,30,0);assert(v32_init_file(fixture)==0);draw(d);
