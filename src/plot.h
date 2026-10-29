@@ -32,6 +32,7 @@
 
 /* Optional true-bin horizontal positions for an FFT trace, normalized 0..1. */
 void plot_set_fft_positions(lv_obj_t *plot,const float *positions,int n);
+void plot_set_fft_axes(lv_obj_t *plot,float range_db,float nyquist_hz);
 /* 一个波形区最多几条曲线（参考稿里 SCOPE/LOCK-IN 是两条，其余一条） */
 #define PLOT_MAX_TRACE 3   /* 2 路 + 1 条 Math */
 

@@ -45,6 +45,8 @@ typedef struct {
     trace_t tr[PLOT_MAX_TRACE];
     float fft_positions[PLOT_MAX_PTS];
     int fft_positions_n;
+    float fft_range_db,fft_nyquist;
+    char fft_frequency_labels[3][20],fft_db_labels[5][12];
 
     bool  trig_vis;
     bool voltage_ref,zero_visible[2];
@@ -182,6 +184,20 @@ void plot_set_grid(lv_obj_t *plot, int divx, int divy, bool center_dash)
 }
 
 /* ==================== 数据设置 ==================== */
+
+void plot_set_fft_axes(lv_obj_t *plot,float range_db,float nyquist_hz)
+{
+    plot_t *p=PLOT_OF(plot);if(!p || range_db<=0 || nyquist_hz<=0)return;
+    if(p->fft_range_db==range_db && p->fft_nyquist==nyquist_hz)return;
+    p->fft_range_db=range_db;p->fft_nyquist=nyquist_hz;
+    for(int i=0;i<5;i++)snprintf(p->fft_db_labels[i],12,"%.0f",i?-range_db*i/4:0.f);
+    if(range_db>=120)snprintf(p->fft_db_labels[4],12,"<RES");
+    for(int i=0;i<3;i++){
+        float f=nyquist_hz*(i+1)/4;
+        snprintf(p->fft_frequency_labels[i],20,f>=1e6?"%.3fMHz":f>=1e3?"%.2fkHz":"%.1fHz",f>=1e6?f/1e6:f>=1e3?f/1e3:f);
+    }
+    lv_obj_invalidate(plot);
+}
 
 void plot_set_fft_positions(lv_obj_t *plot,const float *positions,int n)
 {
@@ -564,6 +580,7 @@ static void draw_one_trace(lv_layer_t *layer, plot_t *p, int ti,
             int32_t cx=x0+((p->mode==PLOT_FFT && p->fft_positions_n==t->n)?
                 (int32_t)(p->fft_positions[i]*xspan):(int32_t)((int64_t)i*xspan/nm1));
             int32_t cy=y0+yspan-(int32_t)(value*yspan);
+            if(p->mode==PLOT_FFT && cy>y0+yspan-2)cy=y0+yspan-2;
             int gap=0;
             if(previous>=0)for(int k=previous+1;k<i;k++)if(!isfinite(t->y[k]))gap=1;
             if(!anchored || gap) { px=cx;py=cy;anchored=1; }
@@ -930,7 +947,10 @@ static void plot_draw_cb(lv_event_t *e)
     draw_grid(layer, p, x0, y0, w, h);
     if(p->mode==PLOT_FFT){
         static const char *db[]={"0","-25","-50","-75","-100"};
-        for(int i=0;i<5;i++)text_w(layer,ox+6,y0+i*(h-1)/4-8,48,db[i],V32_C_LABEL,V32_FONT_SMALL);
+        for(int i=0;i<5;i++)text_w(layer,ox+6,y0+i*(h-1)/4-8,48,
+            p->fft_range_db>0?p->fft_db_labels[i]:db[i],V32_C_LABEL,V32_FONT_SMALL);
+        if(p->fft_nyquist>0)for(int i=1;i<4;i++)text_w(layer,
+            x0+(w-1)*i/4-45,y0+h+5,100,p->fft_frequency_labels[i-1],V32_C_TEXT,V32_FONT_SMALL);
     }
 
     if(p->mode == PLOT_IQ) {
