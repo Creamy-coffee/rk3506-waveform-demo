@@ -1887,7 +1887,7 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
                 x_positions[i]=mx?(float)(2.0*mxb/sp.nfft):(float)i/(n-1);
 
                 const float db = (float)v32_spec_dbfs_centi(mx, sp.scale_dbfs) / 100.0f;
-                float y = (db + 120.0f) / 120.0f;
+                float y = (db + V32_DEMO_DB_FULLSCALE) / V32_DEMO_DB_FULLSCALE;
                 if(y < 0.f) y = 0.f;
                 if(y > 1.f) y = 1.f;
                 y01[i] = y;
@@ -1946,7 +1946,7 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
                 if(s_real_mag[k] > mx) mx = s_real_mag[k];
 
             const float db = 20.0f * log10f((mx + 1e-9f) / REAL_FULLSCALE_COUNTS);
-            float y = (db + 120.0f) / 120.0f;
+            float y = (db + V32_DEMO_DB_FULLSCALE) / V32_DEMO_DB_FULLSCALE;
             if(y < 0.f) y = 0.f;
             if(y > 1.f) y = 1.f;
             y01[i] = y;
@@ -4093,7 +4093,7 @@ static void tick_fft(void)
          */
         const float pf  = s_spec_in_use ? s_spec_peak_hz : s_real_peak_hz;
         const float pdb = s_spec_in_use
-                        ? (py * 120.0f - 120.0f)
+                        ? (py * V32_DEMO_DB_FULLSCALE - V32_DEMO_DB_FULLSCALE)
                         : s_real_peak_dbfs;
         snprintf(peak_txt, sizeof(peak_txt), "▼ %.3f MHz %s", (double)pf / 1e6,
                  s_spec_in_use ? "FPGA" : (s_real_fft_ch ? "CH2" : "CH1"));
@@ -4145,7 +4145,6 @@ static void tick_fft(void)
         char left[16],right[24];
         snprintf(left,sizeof left,"0 Hz");fmt_hz(right,sizeof right,nyquist);
         plot_set_axis_labels(s_plot_fft,left,right);
-        plot_set_fft_axes(s_plot_fft,S.use_real?120.f:V32_DEMO_DB_FULLSCALE,nyquist);
     }
     if(S.use_real) {
         char tt[40];
