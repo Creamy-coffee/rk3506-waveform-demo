@@ -255,6 +255,20 @@ int main(int argc,char **argv)
     s_image.width=32;s_image.height=16;s_image.revision++;image_refresh();draw(d);save(argv[1],"image_landscape");
     assert(s_image_pixels[8*IMAGE_CANVAS_WIDTH]==0x1082);
     assert(s_image_pixels[16*IMAGE_CANVAS_WIDTH]!=0x1082);
+    for(int orientation=0;orientation<2;orientation++){
+        unsigned w=orientation?256:128,h=orientation?128:256;uint8_t data[4096],packet[68];
+        for(unsigned k=0;k<sizeof data;k++)data[k]=(uint8_t)(k*31+7);
+        uint32_t crc=image_crc32(data,sizeof data);cb_image_clear(NULL);
+        for(unsigned i=0;i<128;i++){
+            memset(packet,0,sizeof packet);memcpy(packet,"V32IMG1!",8);packet[8]=packet[9]=1;
+            packet[10]=w;packet[11]=w>>8;packet[12]=h;packet[13]=h>>8;packet[14]=32;
+            put(packet+16,123+orientation);put(packet+20,crc);put(packet+24,4096);packet[28]=i;packet[30]=32;
+            memcpy(packet+32,data+32*i,32);put(packet+64,image_crc32(packet,64));image_accept_packet(&s_image,packet);
+        }
+        image_refresh();assert(s_image.complete && s_image.received==128);
+        assert(strstr(lv_label_get_text(s_image_info),orientation?"256 x 128":"128 x 256"));draw(d);
+        save(argv[1],orientation?"image_256x128":"image_128x256");
+    }
     lv_tick_inc(4000);image_refresh();assert(strstr(lv_label_get_text(s_image_info),"NO NEW PACKETS"));draw(d);save(argv[1],"image_stale");
     cb_image_clear(NULL);assert(!s_image.have_image && !s_image.complete);
     ui_set_page(UI_PAGE_SYSTEM);assert(ui_page_from_name("5")==UI_PAGE_SYSTEM);

@@ -2458,14 +2458,13 @@ static void image_refresh(void)
     if(redraw){
         for(unsigned i=0;i<IMAGE_CANVAS_WIDTH*IMAGE_CANVAS_HEIGHT;i++)s_image_pixels[i]=0x1082;
         if(s_image.have_image){
-            unsigned scale=IMAGE_CANVAS_WIDTH/s_image.width;
-            if(scale>IMAGE_CANVAS_HEIGHT/s_image.height)scale=IMAGE_CANVAS_HEIGHT/s_image.height;
-            unsigned ox=(IMAGE_CANVAS_WIDTH-scale*s_image.width)/2,oy=(IMAGE_CANVAS_HEIGHT-scale*s_image.height)/2;
-            for(unsigned y=0;y<s_image.height;y++)for(unsigned x=0;x<s_image.width;x++){
-                int bit=image_receiver_pixel(&s_image,x,y);
-                uint16_t color=bit<0?0x528a:bit?0x0000:0xffff;
-                for(unsigned dy=0;dy<scale;dy++)for(unsigned dx=0;dx<scale;dx++)
-                    s_image_pixels[(oy+y*scale+dy)*IMAGE_CANVAS_WIDTH+ox+x*scale+dx]=color;
+            double scale=fmin((double)IMAGE_CANVAS_WIDTH/s_image.width,(double)IMAGE_CANVAS_HEIGHT/s_image.height);
+            unsigned dw=(unsigned)(s_image.width*scale),dh=(unsigned)(s_image.height*scale);
+            unsigned ox=(IMAGE_CANVAS_WIDTH-dw)/2,oy=(IMAGE_CANVAS_HEIGHT-dh)/2;
+            for(unsigned y=0;y<dh;y++)for(unsigned x=0;x<dw;x++){
+                unsigned sx=(unsigned)((uint64_t)x*s_image.width/dw),sy=(unsigned)((uint64_t)y*s_image.height/dh);
+                int bit=image_receiver_pixel(&s_image,sx,sy);
+                s_image_pixels[(oy+y)*IMAGE_CANVAS_WIDTH+ox+x]=bit<0?0x528a:bit?0x0000:0xffff;
             }
         }
         lv_obj_invalidate(s_image_canvas);s_image_drawn_revision=s_image.revision;

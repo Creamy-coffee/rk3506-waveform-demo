@@ -9,7 +9,7 @@
  * pair phases and sync polarity handle arbitrary entry/BPSK sign ambiguity.
  * Only CRC-valid packets become visible; complete requires whole-image CRC.
  */
-#define IMG_MAX_BYTES 2048u
+#define IMG_MAX_BYTES 4096u
 #define IMG_PACKET_BYTES 68u
 #define IMG_CHUNK_BYTES 32u
 typedef struct {
@@ -19,7 +19,7 @@ typedef struct {
 } image_bit_path_t;
 typedef struct {
     image_bit_path_t path[2];
-    uint64_t symbols,received_mask,packets,duplicates,crc_errors,invalid_packets,gaps,images;
+    uint64_t symbols,received_mask[2],packets,duplicates,crc_errors,invalid_packets,gaps,images;
     uint32_t image_id,image_crc,total_bytes,revision;
     unsigned width,height,chunks,received,complete,have_image;
     uint8_t pixels[IMG_MAX_BYTES];
@@ -40,33 +40,33 @@ static inline void image_accept_packet(image_receiver_t *r,const uint8_t *p){
     uint32_t id=image_le32(p+16),crc=image_le32(p+20),total=image_le32(p+24);
     unsigned index=image_le16(p+28),len=image_le16(p+30);
     unsigned size=((w+7)/8)*h,chunks=(size+31)/32;
-    if(p[8]!=1 || p[9]!=1 || !w || !h || w>128 || h>128 || total!=size || total>IMG_MAX_BYTES ||
+    if(p[8]!=1 || p[9]!=1 || !w || !h || w>256 || h>256 || total!=size || total>IMG_MAX_BYTES ||
        chunk!=32 || index>=chunks || len!=(size-index*32<32?size-index*32:32)){
         r->invalid_packets++;return;
     }
     if(!r->have_image || id!=r->image_id){
         r->have_image=1;r->image_id=id;r->image_crc=crc;r->total_bytes=total;
-        r->width=w;r->height=h;r->chunks=chunks;r->received=0;r->received_mask=0;r->complete=0;
+        r->width=w;r->height=h;r->chunks=chunks;r->received=0;memset(r->received_mask,0,sizeof r->received_mask);r->complete=0;
         memset(r->pixels,0,sizeof r->pixels);r->revision++;
     }else if(r->width!=w || r->height!=h || r->image_crc!=crc || r->total_bytes!=total){
         r->invalid_packets++;return;
     }
     r->packets++;
-    uint64_t mask=UINT64_C(1)<<index;
-    if(r->received_mask&mask){
+    uint64_t mask=UINT64_C(1)<<(index&63);
+    if(r->received_mask[index/64]&mask){
         r->duplicates++;
         if(!memcmp(r->pixels+index*32,p+32,len))return;
         /* A different CRC-valid replacement may repair a previous bad chunk.
          * It still cannot complete until the independent image CRC passes. */
         r->complete=0;
-    }else {r->received_mask|=mask;r->received++;}
+    }else {r->received_mask[index/64]|=mask;r->received++;}
     memcpy(r->pixels+index*32,p+32,len);r->revision++;
     if(r->received==r->chunks){
         if(image_crc32(r->pixels,r->total_bytes)==r->image_crc){
             if(!r->complete)r->images++;
             r->complete=1;
         }else{
-            r->crc_errors++;r->complete=0;r->received_mask=0;r->received=0;r->revision++;
+            r->crc_errors++;r->complete=0;memset(r->received_mask,0,sizeof r->received_mask);r->received=0;r->revision++;
         }
     }
 }
@@ -103,7 +103,7 @@ static inline void image_receiver_symbol(void *context,int bit){
 static inline int image_receiver_pixel(const image_receiver_t *r,unsigned x,unsigned y){
     if(!r->have_image || x>=r->width || y>=r->height)return -1;
     unsigned at=y*((r->width+7)/8)+x/8;
-    if(!(r->received_mask&(UINT64_C(1)<<(at/32))))return -1;
+    if(!(r->received_mask[at/2048]&(UINT64_C(1)<<((at/32)&63))))return -1;
     return (r->pixels[at]>>(7-x%8))&1u;
 }
 #endif
