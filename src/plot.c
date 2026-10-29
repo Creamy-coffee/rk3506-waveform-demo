@@ -45,6 +45,7 @@ typedef struct {
     trace_t tr[PLOT_MAX_TRACE];
     float fft_positions[PLOT_MAX_PTS];
     int fft_positions_n;
+    float fft_nyquist;
 
     bool  trig_vis;
     bool voltage_ref,zero_visible[2];
@@ -146,7 +147,7 @@ void plot_set_mode(lv_obj_t *plot, plot_mode_t mode)
      * 中间虚线 grid() 里无条件绘，所以四种模式都打开。 */
     switch(mode) {
         case PLOT_FFT:
-            p->divx = V32_GRID_FFT_X; p->divy = V32_GRID_Y; p->px_step_x10 = 10;
+            p->divx = V32_GRID_FFT_X; p->divy = 6; p->px_step_x10 = 10;
             break;
         case PLOT_IQ:
             p->divx = V32_GRID_IQ_X;  p->divy = V32_GRID_Y; p->px_step_x10 = 10;
@@ -374,6 +375,12 @@ void plot_set_cursors(lv_obj_t *plot, int n, const float *xs, const float *ys, b
     lv_obj_invalidate(plot);
 }
 
+void plot_set_fft_nyquist(lv_obj_t *plot,float hz)
+{
+    plot_t *p=PLOT_OF(plot);if(!p)return;
+    if(p->fft_nyquist!=hz){p->fft_nyquist=hz;lv_obj_invalidate(plot);}
+}
+
 void plot_set_axis_labels(lv_obj_t *plot, const char *left, const char *right)
 {
     plot_t *p = PLOT_OF(plot);
@@ -480,12 +487,12 @@ static void draw_grid(lv_layer_t *layer, plot_t *p,
      */
     ld.opa = (lv_opa_t)(LV_OPA_COVER / 3);
     int k;
-    for(k = 1; k < p->divx * 5; k++) {
+    for(k = 1; p->mode!=PLOT_FFT && k < p->divx * 5; k++) {
         if(k % 5 == 0) continue;                  /* 大格位置留空 */
         int32_t x = x0 + (int32_t)((int64_t)w * k / (p->divx * 5));
         line(layer, &ld, x, y0, x, y0 + h - 1);
     }
-    for(k = 1; k < p->divy * 5; k++) {
+    for(k = 1; p->mode!=PLOT_FFT && k < p->divy * 5; k++) {
         if(k % 5 == 0) continue;
         int32_t y = y0 + (int32_t)((int64_t)h * k / (p->divy * 5));
         line(layer, &ld, x0, y, x0 + w - 1, y);
@@ -503,6 +510,7 @@ static void draw_grid(lv_layer_t *layer, plot_t *p,
     }
 
     /* 中心十字的短刻度（照 HTML：沿中心线每 8px 一个小刻） */
+    if(p->mode==PLOT_FFT)return;
     ld.color = p->center_color;
     const int32_t yc = y0 + h / 2;
     const int32_t xc = x0 + w / 2;
@@ -929,8 +937,8 @@ static void plot_draw_cb(lv_event_t *e)
     if(p->mode==PLOT_FFT){x0+=58;w-=58;y0+=62;h-=92;}
     draw_grid(layer, p, x0, y0, w, h);
     if(p->mode==PLOT_FFT){
-        static const char *db[]={"0","-25","-50","-75","-100"};
-        for(int i=0;i<5;i++)text_w(layer,ox+6,y0+i*(h-1)/4-8,48,db[i],V32_C_LABEL,V32_FONT_SMALL);
+        static const char *db[]={"0","-20","-40","-60","-80","-100","-120"};
+        for(int i=0;i<7;i++)text_w(layer,ox+6,y0+i*(h-1)/6-8,48,db[i],V32_C_LABEL,V32_FONT_SMALL);
     }
 
     if(p->mode == PLOT_IQ) {
@@ -1007,6 +1015,18 @@ static void plot_draw_cb(lv_event_t *e)
 
     /* 角落坐标文字（参考稿 FFT 页画在画布左下角）。
      * 用 text_plated：这两处会被曲线穿过，白底上不垫底板就读不清。 */
+    if(p->mode==PLOT_FFT && p->fft_nyquist>0){
+        text(layer,x0+w-45,y0-22,"dBFS",V32_C_LABEL,V32_FONT_SMALL);
+        for(int i=1;i<4;i++){
+            const float hz=p->fft_nyquist*i/4;
+            char tick[24];
+            if(hz>=1e6f)snprintf(tick,sizeof tick,"%.3f MHz",(double)(hz/1e6f));
+            else if(hz>=1e3f)snprintf(tick,sizeof tick,"%.2f kHz",(double)(hz/1e3f));
+            else snprintf(tick,sizeof tick,"%.1f Hz",(double)hz);
+            lv_point_t size;lv_text_get_size(&size,tick,V32_FONT_SMALL,0,0,LV_COORD_MAX,LV_TEXT_FLAG_NONE);
+            text(layer,x0+i*(w-1)/4-size.x/2,y0+h+5,tick,V32_C_LABEL,V32_FONT_SMALL);
+        }
+    }
     if(p->axis_l[0]) text_plated(layer, x0 + 8, p->mode==PLOT_FFT?y0+h+5:y0+h-20, p->axis_l, V32_C_TEXT, V32_FONT_SMALL);
     if(p->axis_r[0]) {
         lv_point_t size;lv_text_get_size(&size,p->axis_r,V32_FONT_SMALL,0,0,LV_COORD_MAX,LV_TEXT_FLAG_NONE);

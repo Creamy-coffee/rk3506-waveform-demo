@@ -313,6 +313,20 @@ int main(int argc,char **argv)
     /* Mismatched RAW/SPEC sample rates must never mix axes or cursor data. */
     S.running=true;fixture_write(210,21,1,0,0,0,1,1);append_spec();assert(v32_init_file(fixture)==0);
     ui_set_page(UI_PAGE_FFT);fft_ch_set(1);draw(d);assert(s_spec_in_use);
+    /* Window taps must change the displayed source even with a valid SPEC frame. */
+    S.running=false;S.win_idx=0;
+    float window_prev[4096];memcpy(window_prev,s_real_mag,sizeof window_prev);
+    for(int w=1;w<=3;w++){
+        cb_win_cycle(NULL);draw(d);
+        assert(s_fft_raw_source && !s_spec_in_use && S.win_idx==w%3);
+        assert(strstr(lv_label_get_text(s_lbl_fft_win),WIN_NAME[w%3]));
+        assert(strstr(lv_label_get_text(s_lbl_fft_win),"RAW"));
+        assert(memcmp(window_prev,s_real_mag,sizeof window_prev));
+        memcpy(window_prev,s_real_mag,sizeof window_prev);
+    }
+    save(argv[1],"spectrum_selectable_windows");
+    cb_spec_source(NULL);draw(d);assert(s_spec_in_use && !s_fft_raw_source && S.win_idx==0);
+    S.running=true;
     assert(fabsf(s_spec_peak_hz-15625.f)<.1f);
     assert(strstr(lv_label_get_text(s_lbl_fft_res),"244.1Hz"));
     s_fft_cur_on=1;s_fft_cur_x=64.f/2048.f;fft_cursor_tick();

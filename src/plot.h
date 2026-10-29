@@ -87,6 +87,7 @@ bool plot_get_data_area(lv_obj_t *plot,lv_area_t *area);
 void plot_set_voltage_reference(lv_obj_t *plot,int channel,float zero0,float zero1,bool show0,bool show1);
 
 /* ---- 画布内的角落文字（参考稿 FFT 页的 "0 MHz" / "32.5 MHz"）---- */
+void plot_set_fft_nyquist(lv_obj_t *plot,float hz);
 void plot_set_axis_labels(lv_obj_t *plot, const char *left, const char *right);
 
 /* ---- SCOPE 专用：AM 上下包络叠加（金色虚线, 照原型 AM 视图）----

@@ -20,7 +20,7 @@ sources += [root/'src/image_transport.h',root/'src/decoded_bit_sink.h',root/'src
 sources += [root/'src/scope_acquisition.h',root/'src/harmonic_receiver.c',root/'src/harmonic_receiver.h']
 sources += [root/'src/port.c']
 sources += [root/'src/scope_processing.h']
-sources += [root/'src/main.c']
+sources += [root/'src/main.c',root/'src/fft.c',root/'src/fft.h',root/'src/demo_signal.h']
 before={str(x.relative_to(root)):hashlib.sha256(x.read_bytes()).hexdigest() for x in sources}
 cmd=['gcc','-std=gnu99','-O1','-g','-fno-omit-frame-pointer','-fsanitize=address,undefined,float-cast-overflow','-DLV_CONF_INCLUDE_SIMPLE','-DLV_CONF_PATH='+str(root/'lv_conf.h'),'-DLV_LVGL_H_INCLUDE_SIMPLE','-I'+str(root/'src'),'-I'+str(a.lvgl.resolve()),'-I'+str(root),str(root/'tools/test_modulation_view.c'),str(root/'src/plot.c'),str(root/'src/v32cap3.c'),str(root/'src/harmonic_receiver.c'),str(root/'src/wave_source_v32.c'),*[str(x) for x in objects],str(archives[0]),'-lm','-lpthread','-o',str(out/'test_modulation_view')]
 cmd.append('-Wl,--wrap=clock_gettime,--wrap=v32_cmd_apply,--wrap=port_touch_last_point')

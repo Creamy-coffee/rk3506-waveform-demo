@@ -67,7 +67,7 @@ float demo_vpp_mv(const float *y01, int n, int divy);
 
 /* ---- 频谱读数：峰值电平 / 底噪，单位 dBFS ---- */
 /* 口径：纵轴满刻度 = 0 dBFS，纵轴底部 = -100 dBFS */
-#define V32_DEMO_DB_FULLSCALE  100.0f
+#define V32_DEMO_DB_FULLSCALE  120.0f
 float demo_dbfs_from_y01(float y01);
 /* 取曲线中位数当底噪 */
 float demo_noise_floor_dbfs(const float *y01, int n);

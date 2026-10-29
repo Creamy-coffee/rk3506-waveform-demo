@@ -258,6 +258,8 @@ static int s_an_type = 0, s_an_ch = 0, s_an_rate = 1;   /* rate 0/1/2 = 8192/409
 
 
 
+static bool s_fft_raw_source; /* Window selection uses RAW; hardware SPEC is fixed Hann. */
+static lv_obj_t *s_chip_spec_source;
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
@@ -1870,7 +1872,7 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
         /* sp.valid 只管"新不新"，不代表"有没有"：
            过期时按交付说明应当**保留曲线并标注陈旧**，而不是退回本地 FFT
            （本地 FFT 依赖波形帧，只有频谱帧时会算出空数据）。 */
-        if(S.use_real && s_real_fft_ch == 0 && sp.seq > 0
+        if(S.use_real && !s_fft_raw_source && s_real_fft_ch == 0 && sp.seq > 0
            && sp.got > 2 && sp.nfft > 0 && sp.fs_eff_hz > 0) {
             static float x_positions[PLOT_MAX_PTS];
             float bv = -1e30f;
@@ -3092,9 +3094,19 @@ static void cb_math_cycle(lv_event_t *e)
     ui_tick();
 }
 
+static void cb_spec_source(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    s_fft_raw_source = !s_fft_raw_source;
+    if(!s_fft_raw_source) S.win_idx = WIN_DEF;
+    if(s_full_n>=64)real_compute_fft(s_full_n,s_real_fft_fs);
+    ui_tick();
+}
+
 static void cb_win_cycle(lv_event_t *e)
 {
     LV_UNUSED(e);
+    s_fft_raw_source = true;
     S.win_idx = (S.win_idx + 1) % 3;
     if(s_full_n>=64)real_compute_fft(s_full_n,s_real_fft_fs);
     const char *wn = WIN_NAME[S.win_idx];
@@ -3405,6 +3417,7 @@ static void cb_reset(lv_event_t *e)
     S.noise = DEMO_NOISE_PCT;
     S.freq_idx = FREQ_DEF; S.tb_idx = TIMEBASE_DEF;
     S.win_idx = WIN_DEF;
+    s_fft_raw_source = false;
     {
         const char *e = getenv("WAVE_FFT_CH");   /* 调试用：直接指定 FFT 通道 0/1/2 */
         S.fft_ch = e ? atoi(e) : 0;
@@ -3592,6 +3605,7 @@ static void build_controls(lv_obj_t *root)
         s_chip_fch[0] = mk_chip(rowc, "自动", cb_fch_auto);
         s_chip_fch[1] = mk_chip(rowc, "CH1",  cb_fch_ch1);
         s_chip_fch[2] = mk_chip(rowc, "CH2",  cb_fch_ch2);
+        s_chip_spec_source = mk_chip(rowc, "AUTO", cb_spec_source);
         chip_selected(s_chip_fch[0], S.fft_ch == 0);
         chip_selected(s_chip_fch[1], S.fft_ch == 1);
         chip_selected(s_chip_fch[2], S.fft_ch == 2);
@@ -4123,6 +4137,8 @@ static void tick_fft(void)
      * 窗函数读数：画的是 FPGA 的谱就报 FPGA 实际用的窗（协议里窗函数不可远程改，
      * 只有 Hann），画本地谱才报本地选的那个 —— 两者不能混。
      */
+    if(s_chip_spec_source) chip_set_text(s_chip_spec_source,s_fft_raw_source?"RAW":"AUTO");
+    if(s_chip_win) chip_set_text(s_chip_win,WIN_NAME[s_spec_in_use?0:S.win_idx]);
     if(s_spec_in_use) {
         /* FPGA 谱固定 Hann（三窗编号 0=Hann/1=Blackman/2=FlatTop，照实显示） */
         char wb[24];
@@ -4130,7 +4146,8 @@ static void tick_fft(void)
         snprintf(wb, sizeof wb, "%s·FPGA", WIN_NAME[w3]);
         lv_label_set_text(s_lbl_fft_win, wb);
     } else {
-        lv_label_set_text(s_lbl_fft_win, WIN_NAME[S.win_idx]);
+        char wb[24];snprintf(wb,sizeof wb,"%s·RAW",WIN_NAME[S.win_idx]);
+        lv_label_set_text(s_lbl_fft_win, wb);
     }
     {
         const wave_source_t *src=wave_source_get();
@@ -4145,6 +4162,7 @@ static void tick_fft(void)
         char left[16],right[24];
         snprintf(left,sizeof left,"0 Hz");fmt_hz(right,sizeof right,nyquist);
         plot_set_axis_labels(s_plot_fft,left,right);
+        plot_set_fft_nyquist(s_plot_fft,nyquist);
     }
     if(S.use_real) {
         char tt[40];
