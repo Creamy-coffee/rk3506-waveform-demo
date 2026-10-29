@@ -261,10 +261,6 @@ static int s_an_type = 0, s_an_ch = 0, s_an_rate = 1;   /* rate 0/1/2 = 8192/409
 static lv_obj_t *s_chip_win;            /* 窗函数：循环切换芯片（这个 UI 里下拉框点不开） */
 static lv_obj_t *s_chip_fch[3];          /* 频谱通道：自动/CH1/CH2 */               /* 窗函数下拉框，复位时要回位 */        /* 「FFT 频谱 · CH1」标题 */          /* 频谱页游标读数 */
 static float     s_fft_cur_x;            /* 0..1，游标横坐标 */
-static unsigned s_fft_zoom=32;
-static float s_fft_view_lo,s_fft_view_hi,s_fft_zoom_effective=1;
-static int s_fft_draw_n;
-static lv_obj_t *s_chip_fft_zoom;
 static bool      s_fft_cur_on;       /* 重建页下方图标题，随能否重建变化 */
 static lv_obj_t *s_lbl_wave;           /* 重建页右上角：波形类型 */
 static lv_obj_t *s_dd_tb;              /* 时基下拉框，真实模式下要跟着窗口同步 */
@@ -1842,16 +1838,8 @@ void ui_pinch_gain(float ratio)
     S.auto_fit=false;scope_scale_refresh();vg_label();update_axis_label();
 }
 
-static void fft_view_range(float nyquist,float resolution,float peak)
-{
-    float span=nyquist;
-    if(s_fft_zoom>1 && peak>0)span=fminf(nyquist,fmaxf(nyquist/s_fft_zoom,16*resolution));
-    s_fft_view_lo=fmaxf(0.f,fminf(peak-span*.5f,nyquist-span));
-    s_fft_view_hi=s_fft_view_lo+span;s_fft_zoom_effective=span>0?nyquist/span:1;
-}
 static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
 {
-    s_fft_draw_n=n;
     /*
      * 真实链路：直接用 real_update() 算好的幅度谱。
      * 纵轴是**绝对** dBFS（满刻度 2048 码 = 0 dBFS），不是相对峰值归一化 ——
@@ -1887,23 +1875,16 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
             static float x_positions[PLOT_MAX_PTS];
             float bv = -1e30f;
             const uint32_t bins = sp.got;
-            int pkb=1;for(unsigned k=2;k<bins;k++)if(sp.data[k]>sp.data[pkb])pkb=k;
-            float bin_hz=(float)sp.fs_eff_hz/sp.nfft;
-            fft_view_range(sp.fs_eff_hz*.5f,bin_hz,sp.data[pkb]?pkb*bin_hz:0.f);
-            int first=(int)ceilf(s_fft_view_lo/bin_hz),last=(int)floorf(s_fft_view_hi/bin_hz)+1;
-            if(first<0)first=0;if(last>(int)bins)last=bins;
-            int count=last-first;if(n>count)n=count;s_fft_draw_n=n;
-
             for(int i = 0; i < n; i++) {
                 /* 每点覆盖 [s0,s1) 这一段 bin，取组内最大值 —— 窄谱线不会被抽点漏掉 */
-                int s0 = first+(int)((long)i * (count - 1) / (n > 1 ? n - 1 : 1));
-                int s1 = first+(int)((long)(i + 1) * (count - 1) / (n > 1 ? n - 1 : 1));
+                int s0 = (int)((long)i * (long)(bins - 1) / (long)(n > 1 ? n - 1 : 1));
+                int s1 = (int)((long)(i + 1) * (long)(bins - 1) / (long)(n > 1 ? n - 1 : 1));
                 if(s1 <= s0) s1 = s0 + 1;
-                if(s1 > last) s1 = last;
+                if(s1 > (int)bins) s1 = (int)bins;
 
                 int mx = 0, mxb=s0;
                 for(int k = s0; k < s1; k++) if(sp.data[k] > mx){mx = sp.data[k];mxb=k;}
-                x_positions[i]=(mxb*bin_hz-s_fft_view_lo)/(s_fft_view_hi-s_fft_view_lo);
+                x_positions[i]=mx?(float)(2.0*mxb/sp.nfft):(float)i/(n-1);
 
                 const float db = (float)v32_spec_dbfs_centi(mx, sp.scale_dbfs) / 100.0f;
                 float y = (db + 120.0f) / 120.0f;
@@ -1913,7 +1894,8 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
                 if(y > bv)bv=y;
             }
             /* 峰值频率直接按 bin 算：k × fs_eff / nfft */
-
+            int pkb = 1;
+            for(uint32_t k = 1; k < bins; k++) if(sp.data[k] > sp.data[pkb]) pkb = (int)k;
             s_spec_has_peak=sp.data[pkb]!=0;
             s_spec_peak_hz = s_spec_has_peak?(float)((double)pkb * (double)sp.fs_eff_hz / (double)sp.nfft):0.f;
             s_spec_in_use  = 1;
@@ -1931,7 +1913,7 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
             s_spec_floor_dbfs=(float)median*(float)sp.scale_dbfs/255.f-(float)sp.scale_dbfs;
 
             plot_set_fft_positions(s_plot_fft,x_positions,n);
-            if(peak_x)   *peak_x   = (pkb*bin_hz-s_fft_view_lo)/(s_fft_view_hi-s_fft_view_lo);
+            if(peak_x)   *peak_x   = (float)(2.0*pkb/sp.nfft);
             if(peak_y01) *peak_y01 = bv;
             if(dbg_on())
                 fprintf(stderr, "[spec] FPGA 谱 bins=%u nfft=%u 峰值 bin %d = %.3f MHz\n",
@@ -1943,12 +1925,6 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
 
     plot_set_fft_positions(s_plot_fft,NULL,0);
     if(S.use_real && s_real_valid && s_real_bins > 2) {
-        static float local_x[PLOT_MAX_PTS];
-        float bin_hz=s_real_fft_fs/REAL_FFT_N;
-        fft_view_range(s_real_fft_fs*.5f,s_full_n?s_real_fft_fs/s_full_n:bin_hz,s_real_peak_hz);
-        int first=(int)ceilf(s_fft_view_lo/bin_hz),last=(int)floorf(s_fft_view_hi/bin_hz)+1;
-        if(first<0)first=0;if(last>s_real_bins)last=s_real_bins;
-        int count=last-first;if(n>count)n=count;s_fft_draw_n=n;
         int   bi = 2;
         float bv = -1e30f;
         for(int i = 0; i < n; i++) {
@@ -1960,15 +1936,14 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
              * 画出来的"频谱"全是噪声底，▼ 也会在噪声里乱跳（看着像停在原点）。
              * 取组内最大值才能保证窄谱线一定被画出来。
              */
-            int s0 = first+(int)((long)i * (count - 1) / (n > 1 ? n - 1 : 1));
-            int s1 = first+(int)((long)(i + 1) * (count - 1) / (n > 1 ? n - 1 : 1));
+            int s0 = (int)((long)i * (s_real_bins - 1) / (n > 1 ? n - 1 : 1));
+            int s1 = (int)((long)(i + 1) * (s_real_bins - 1) / (n > 1 ? n - 1 : 1));
             if(s1 <= s0) s1 = s0 + 1;
-            if(s1 > last) s1 = last;
+            if(s1 > s_real_bins) s1 = s_real_bins;
 
-            float mx = 0.0f;int mxb=s0;
+            float mx = 0.0f;
             for(int k = s0; k < s1; k++)
-                if(s_real_mag[k] > mx){mx = s_real_mag[k];mxb=k;}
-            local_x[i]=(mxb*bin_hz-s_fft_view_lo)/(s_fft_view_hi-s_fft_view_lo);
+                if(s_real_mag[k] > mx) mx = s_real_mag[k];
 
             const float db = 20.0f * log10f((mx + 1e-9f) / REAL_FULLSCALE_COUNTS);
             float y = (db + 120.0f) / 120.0f;
@@ -1977,8 +1952,7 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
             y01[i] = y;
             if(i >= 2 && y > bv) { bv = y; bi = i; }
         }
-        plot_set_fft_positions(s_plot_fft,local_x,n);
-        if(peak_x)   *peak_x   = (s_real_peak_hz-s_fft_view_lo)/(s_fft_view_hi-s_fft_view_lo);
+        if(peak_x)   *peak_x   = (float)bi / (float)(n - 1);
         if(peak_y01) *peak_y01 = bv;
         if(dbg_on()) {
             /* 列出曲线最高的三个点，确认 ▼ 落点对不对 */
@@ -2003,7 +1977,6 @@ static void fetch_spectrum(float *y01, int n, float *peak_x, float *peak_y01)
         return;
     }
 
-    s_fft_view_lo=0;s_fft_view_hi=s_real_fft_fs*.5f;
     demo_fft(&S.sig, y01, n, peak_x, peak_y01);
 }
 
@@ -2126,10 +2099,6 @@ static void build_scope(lv_obj_t *pg)
  * ========================================================= */
 /* 频谱页手指点选：把游标挪到点中的位置，读出那一点的频率和幅度。
  * 不做拖拽，只做点一下 —— 拖拽要跟触摸手势状态机抢事件，收益不大。 */
-static void cb_fft_full(lv_event_t *e){LV_UNUSED(e);s_fft_zoom=1;s_fft_cur_on=false;ui_tick();}
-static void cb_fft_focus(lv_event_t *e){LV_UNUSED(e);s_fft_zoom=32;s_fft_cur_on=false;ui_tick();}
-static void cb_fft_in(lv_event_t *e){LV_UNUSED(e);if(s_fft_zoom<128)s_fft_zoom*=2;s_fft_cur_on=false;ui_tick();}
-static void cb_fft_out(lv_event_t *e){LV_UNUSED(e);if(s_fft_zoom>1)s_fft_zoom/=2;s_fft_cur_on=false;ui_tick();}
 static void cb_fft_cursor(lv_event_t *e)
 {
     if(dbg_on()) fprintf(stderr, "[cur] ev=%d\n", (int)lv_event_get_code(e));
@@ -3623,9 +3592,6 @@ static void build_controls(lv_obj_t *root)
         s_chip_fch[0] = mk_chip(rowc, "自动", cb_fch_auto);
         s_chip_fch[1] = mk_chip(rowc, "CH1",  cb_fch_ch1);
         s_chip_fch[2] = mk_chip(rowc, "CH2",  cb_fch_ch2);
-        mk_chip(rowc,"全频",cb_fft_full);
-        s_chip_fft_zoom=mk_chip(rowc,"峰值 ×32",cb_fft_focus);
-        mk_chip(rowc,"−",cb_fft_out);mk_chip(rowc,"+",cb_fft_in);
         chip_selected(s_chip_fch[0], S.fft_ch == 0);
         chip_selected(s_chip_fch[1], S.fft_ch == 1);
         chip_selected(s_chip_fch[2], S.fft_ch == 2);
@@ -4083,10 +4049,10 @@ static void tick_scope(void)
 
 static void fft_cursor_tick(void)
 {
-    if(!s_lbl_fft_cur)return;
-    if(!s_fft_cur_on){plot_set_trigger(s_plot_fft,false,0);return;}
+    if(!s_fft_cur_on || !s_lbl_fft_cur) return;
 
-    const float f  = s_fft_view_lo+s_fft_cur_x*(s_fft_view_hi-s_fft_view_lo);
+    const float fs = s_spec_in_use?s_spec_fs_eff:s_real_fft_fs;
+    const float f  = s_fft_cur_x * fs * 0.5f;
 
     float db = -200.0f;
     int unresolved=0;
@@ -4096,7 +4062,7 @@ static void fft_cursor_tick(void)
         unresolved=(s_spec_snapshot.data[bin]==0);
         db=(float)s_spec_snapshot.data[bin]*s_spec_snapshot.scale_dbfs/255.f-s_spec_snapshot.scale_dbfs;
     }else if(s_real_bins > 2) {
-        int b = (int)(f*REAL_FFT_N/s_real_fft_fs+.5f);
+        int b = (int)(s_fft_cur_x * (float)(s_real_bins - 1) + 0.5f);
         if(b < 1) b = 1;
         if(b > s_real_bins - 1) b = s_real_bins - 1;
         db = 20.0f * log10f((s_real_mag[b] + 1e-9f) / REAL_FULLSCALE_COUNTS);
@@ -4116,7 +4082,7 @@ static void tick_fft(void)
     real_update();
 
     fetch_spectrum(y, PLOT_MAX_PTS, &px, &py);
-    plot_set_trace(s_plot_fft, 0, y, s_fft_draw_n, V32_C_FFT, 2);
+    plot_set_trace(s_plot_fft, 0, y, PLOT_MAX_PTS, V32_C_FFT, 2);
 
     const bool real = (S.use_real && s_real_valid);
 
@@ -4175,11 +4141,11 @@ static void tick_fft(void)
 
     /* 标题写明这条谱是谁算的、多少点 */
     {
+        float nyquist=.5f*(s_spec_in_use?s_spec_fs_eff:s_real_fft_fs);
         char left[16],right[24];
-        fmt_hz(left,sizeof left,s_fft_view_lo);fmt_hz(right,sizeof right,s_fft_view_hi);
+        snprintf(left,sizeof left,"0 Hz");fmt_hz(right,sizeof right,nyquist);
         plot_set_axis_labels(s_plot_fft,left,right);
-        plot_set_fft_axes(s_plot_fft,S.use_real?120.f:V32_DEMO_DB_FULLSCALE,s_fft_view_lo,s_fft_view_hi);
-        if(s_chip_fft_zoom){char z[24];if(s_fft_zoom==1)snprintf(z,sizeof z,"范围 全频");else snprintf(z,sizeof z,"峰值 ×%.0f",s_fft_zoom_effective);chip_set_text(s_chip_fft_zoom,z);}
+        plot_set_fft_axes(s_plot_fft,S.use_real?120.f:V32_DEMO_DB_FULLSCALE,nyquist);
     }
     if(S.use_real) {
         char tt[40];

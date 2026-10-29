@@ -119,7 +119,7 @@ int main(int argc,char **argv)
     assert(mod_view_count(256,65000000.0/4096,4)==64);
     lv_init();glyphs();lv_display_t *d=lv_display_create(1024,600);lv_display_set_color_format(d,LV_COLOR_FORMAT_XRGB8888);lv_display_set_buffers(d,pixels,NULL,sizeof pixels,LV_DISPLAY_RENDER_MODE_DIRECT);lv_display_set_flush_cb(d,flush_cb);
     fixture_write(1,3,1,0,0,0,1,1);char spec[128];snprintf(spec,sizeof spec,"file:%s",fixture);wave_source_v32_set_spec(spec);wave_source_select(&wave_source_v32);assert(wave_source_v32.init()==0);setenv("WAVE_SRC","real",1);
-    ui_create();s_fft_zoom=1;ui_set_page(UI_PAGE_MOD);draw(d);
+    ui_create();ui_set_page(UI_PAGE_MOD);draw(d);
     if(argc>=3){
         const unsigned capture_mode=argc==4 && !strcmp(argv[3],"bpsk")?6:argc==4 && !strcmp(argv[3],"fsk")?3:5;
         FILE *capture=fopen(argv[2],"rb");assert(capture);fseek(capture,0,SEEK_END);long size=ftell(capture);rewind(capture);assert(size>0 && size<64000000);
@@ -328,24 +328,6 @@ int main(int argc,char **argv)
     fetch_spectrum(spec_test_y,PLOT_MAX_PTS,&spec_test_x,&spec_test_peak);
     assert(fabsf(spec_test_x-64.f/2048.f)<1e-7f);
     assert(s_spec_has_peak);
-    cb_fft_focus(NULL);draw(d);assert(s_fft_zoom==32 && s_fft_draw_n<100);
-    assert(fabsf((s_fft_view_hi-s_fft_view_lo)-15625.f)<1.f);
-    assert(strstr(lv_label_get_text(s_lbl_fft_res),"244.1Hz"));
-    s_fft_cur_on=1;s_fft_cur_x=.5f;fft_cursor_tick();
-    assert(strstr(lv_label_get_text(s_lbl_fft_cur),"15.625kHz"));
-    save(argv[1],"spectrum_peak_zoom");
-    cb_fft_in(NULL);draw(d);assert(s_fft_zoom==64);
-    cb_fft_out(NULL);draw(d);assert(s_fft_zoom==32);
-    cb_fft_full(NULL);draw(d);assert(s_fft_zoom==1 && s_fft_view_lo==0);
-    fft_ch_set(2);cb_fft_focus(NULL);draw(d);
-    assert(!s_spec_in_use && s_fft_zoom_effective>1 && s_fft_draw_n<=PLOT_MAX_PTS);
-    s_fft_cur_on=1;s_fft_cur_x=.5f;fft_cursor_tick();
-    char local_center[32];fmt_hz(local_center,sizeof local_center,(s_fft_view_lo+s_fft_view_hi)*.5f);
-    assert(strstr(lv_label_get_text(s_lbl_fft_cur),local_center));
-    save(argv[1],"spectrum_local_zoom");
-    fft_ch_set(1);cb_fft_full(NULL);draw(d);
-
-
     assert(fabsf(spec_test_peak-((240.f*120.f/255.f)/120.f))<.001f);
     /* A CRC-valid all-zero spectrum must not invent a peak or -100 dBFS value. */
     fixture_write(214,21,1,0,0,0,1,1);append_spec();
